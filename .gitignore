@@ -24,3 +24,7 @@ data/
 # OS / editor
 .DS_Store
 .vscode/
+
+# Agent skill definitions (vendored tooling; tracked via skills-lock.json)
+.agents/skills/
+.claude/skills/
