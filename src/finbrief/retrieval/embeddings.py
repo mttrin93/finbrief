@@ -26,8 +26,7 @@ def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
         # OpenRouter documents `input` as a string or an array of strings. LangChain's
         # default length-safe path instead sends pre-tokenised integer arrays, which is
         # an OpenAI-specific extension — so it is disabled here and raw strings are
-        # sent. Safe because chunking (1000 chars, ADR-0007 sections) keeps every text
-        # far below the model's 8191-token limit; a chunker change is what would make
-        # this matter.
+        # sent. Nothing splits an over-long text once this is off, so the 8191-token
+        # ceiling is enforced by tests/test_chunk_token_limit.py rather than assumed.
         check_embedding_ctx_length=False,
     )

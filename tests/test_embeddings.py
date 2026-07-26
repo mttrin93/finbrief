@@ -19,7 +19,8 @@ def test_embeddings_are_bound_to_openrouter():
 
 def test_embeddings_send_strings_not_token_arrays():
     # OpenRouter documents `input` as a string or an array of strings; LangChain's
-    # length-safe path would send pre-tokenised integers instead.
+    # length-safe path would send pre-tokenised integers instead. The chunk-size
+    # assumption this relies on is enforced in test_chunk_token_limit.py.
     assert build_embeddings(SETTINGS).check_embedding_ctx_length is False
 
 
