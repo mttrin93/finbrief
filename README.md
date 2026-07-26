@@ -4,9 +4,11 @@ A domain-specialised RAG chatbot for equity research. Target user: a junior anal
 who needs a grounded, source-cited company snapshot before an earnings call —
 business overview, risk factors, current valuation, and recent news — in minutes.
 
-> **Status:** scaffolding. The plan lives in [`PLAN.md`](./PLAN.md); design decisions
-> are being sharpened via `grill-with-docs` and will be recorded in `CONTEXT.md` and
-> `docs/adr/` before implementation begins.
+> **Status:** walking skeleton. A typed message makes an OpenRouter round-trip and the
+> reply renders; retrieval, tools, and guardrails are the phases that follow. The plan
+> lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
+> [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
+> [`CONTEXT.md`](./CONTEXT.md), and the design decisions in [`docs/adr/`](./docs/adr/).
 
 ## Stack
 
@@ -19,9 +21,15 @@ business overview, risk factors, current valuation, and recent news — in minut
 
 ```bash
 uv sync
-cp .env.example .env   # fill in keys
+cp .env.example .env   # fill in OPENROUTER_API_KEY
 uv run streamlit run app/Home.py
 ```
 
-_(The runnable hello-chat + OpenRouter round-trip is Phase 0 in `PLAN.md` §6 —
-built once the plan is grilled.)_
+Lint and test the way CI does:
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+uv run pytest
+```
+
+Tests are hermetic — no API key, no `.env`, and no network calls — so they run anywhere.
