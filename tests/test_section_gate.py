@@ -12,6 +12,7 @@ from finbrief.ingestion.gate import (
     MIN_SECTION_CHARS,
     SectionGateError,
     check_filing,
+    incorporated_sections,
     run_gate,
 )
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
@@ -131,6 +132,86 @@ def test_a_table_of_contents_hit_fails_because_its_body_does_not_exceed_its_head
     assert [(f.section, f.check) for f in findings] == [
         (Section.RISK_FACTORS, "section_body_exceeds_heading")
     ]
+
+
+def test_a_section_that_runs_into_the_next_one_fails_however_long_it_is():
+    # JPM FY2025: `edgartools` returned 413,149 characters for Item 7, of which the last
+    # 12,837 are Item 8 — the auditor's report and the consolidated statements. Length
+    # alone cannot catch this: JPM's *legitimate* MD&A is 400,312 characters, so any
+    # ceiling that fails the runaway also fails the real thing. The auditor's report is
+    # the tell, because it is Item 8 content and never MD&A.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MDA] += (
+        "\n\nReport of Independent Registered Public Accounting Firm\n\n"
+        "To the Board of Directors and Shareholders:"
+    )
+
+    findings = check_filing(a_filing(sections=sections))
+
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MDA, "section_stops_before_the_next_item")
+    ]
+
+
+def test_a_very_long_but_clean_mda_passes():
+    # BAC (293,458) and GS (309,157) are not runaways; a large bank's MD&A is simply that
+    # big. The ceiling is a sanity backstop, not a verbosity policy.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MDA] = f"Item 7. {Section.MDA.heading}\n\n{BODY * 40}"
+
+    assert len(sections[Section.MDA]) > 300_000
+    assert check_filing(a_filing(sections=sections)) == ()
+
+
+# --- Incorporation by reference (ADR-0007 amendment; 6 of 15 Universe filers) -----------
+
+
+def test_an_item_7a_incorporated_by_reference_is_not_a_failure():
+    # JPM, BAC, GS, JNJ, LLY and PFE all answer Item 7A with a pointer into Item 7. That
+    # is a lawful filing, not a broken parse, and the content is still ingested — under
+    # the `Item 7` label, because that is where the filer put it.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk Management section of Management's discussion and "
+        "analysis on pages 133-142 for a discussion of quantitative and qualitative "
+        "disclosures about market risk."
+    )
+
+    assert check_filing(a_filing(sections=sections)) == ()
+    assert incorporated_sections(a_filing(sections=sections)) == frozenset(
+        {Section.MARKET_RISK}
+    )
+
+
+def test_a_short_section_with_no_reference_language_still_fails():
+    # The rule has to be a positive identification, not "short sections are forgiven".
+    # Otherwise a genuine extraction miss that happens to be brief goes silent — which is
+    # the entire failure mode this gate exists to prevent.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\nNot applicable."
+    )
+
+    findings = check_filing(a_filing(sections=sections))
+
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MARKET_RISK, "section_length_bounded")
+    ]
+    assert incorporated_sections(a_filing(sections=sections)) == frozenset()
+
+
+def test_a_full_section_that_merely_mentions_a_cross_reference_is_still_a_section():
+    # "incorporated by reference" appears in plenty of real Item 1A text. Only a short
+    # text that is *nothing but* a pointer counts.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.RISK_FACTORS] = (
+        f"Item 1A. Risk Factors\n\nThe information is incorporated by reference to "
+        f"Item 7 of this report.\n\n{BODY}"
+    )
+
+    assert check_filing(a_filing(sections=sections)) == ()
+    assert incorporated_sections(a_filing(sections=sections)) == frozenset()
 
 
 # --- Failing loudly --------------------------------------------------------------------

@@ -16,12 +16,21 @@ cl100k_base is byte-level BPE, so tokens can exceed characters — `ﬁ` and `�
 character and two tokens each, `≥≤±` is three characters and five tokens. What holds
 unconditionally is the byte bound below.
 
-**Ticket T2 (KB ingest, #3)**, when `ingestion/chunking.py` lands: add a test that counts
-real tokens over the chunker's actual output. That measures how much of the margin is
-really used, which this cannot; this stays as the guard on the constant itself.
+**Ticket T2 (#3) delivered the second half.** `test_real_chunks_*` below counts real
+cl100k_base tokens over the real chunker's output on a real recorded 10-K, which measures
+how much of the margin is actually used — something the bound above cannot do. The two
+answer different questions and both stay: the bound holds for *any* text including the
+adversarial, the measurement shows what filing prose really costs.
+
+Counting real tokens stayed compatible with the hermetic contract because `tiktoken`
+resolves cl100k_base from its installed wheel, and the chunks come from a recorded
+fixture (`tests/fixtures/edgar/`) rather than from EDGAR.
 """
 
+import tiktoken
+
 from finbrief.config import CHUNK_SIZE_CHARS
+from finbrief.ingestion.chunking import chunk_filing
 
 #: `openai/text-embedding-3-small` accepts 8191 tokens per input.
 EMBEDDING_CONTEXT_LIMIT = 8191
@@ -43,4 +52,44 @@ def test_a_chunk_can_never_exceed_the_embedding_window():
         f"config.CHUNK_SIZE_CHARS (max "
         f"{EMBEDDING_CONTEXT_LIMIT // MAX_TOKENS_PER_CHAR}) or re-enable "
         f"check_embedding_ctx_length in retrieval/embeddings.py."
+    )
+
+
+def token_counts(filing) -> list[int]:
+    """Real cl100k_base token counts for every chunk the chunker actually produces.
+
+    Counts `chunk.text`, not `chunk.body` — the provenance header is part of what gets
+    embedded, so leaving it out would measure a string the API never sees.
+    """
+    encoding = tiktoken.get_encoding("cl100k_base")
+    return [len(encoding.encode(chunk.text)) for chunk in chunk_filing(filing)]
+
+
+def test_real_chunks_from_a_real_10k_fit_the_embedding_window(recorded_filing):
+    """The measurement the bound above cannot make: what filing prose actually costs."""
+    counts = token_counts(recorded_filing)
+
+    assert counts, "the recorded filing should produce chunks"
+    assert max(counts) <= EMBEDDING_CONTEXT_LIMIT, (
+        f"a real chunk reached {max(counts)} tokens, over the "
+        f"{EMBEDDING_CONTEXT_LIMIT}-token window"
+    )
+
+
+def test_real_filing_prose_uses_only_a_small_part_of_the_worst_case_bound(recorded_filing):
+    """Real 10-K prose tokenises near 1 token per 4 characters, not the worst case of 4.
+
+    Pinned as a test rather than left as a comment because it is the number that says
+    whether `CHUNK_SIZE_CHARS` has room to grow. If a future tokeniser change or a filer
+    with very different text pushed real usage toward the bound, raising the chunk size
+    would stop being safe — and this is where that would surface, instead of in a failed
+    embedding request mid-ingest.
+    """
+    counts = token_counts(recorded_filing)
+    worst_case = CHUNK_SIZE_CHARS * MAX_TOKENS_PER_CHAR
+
+    assert max(counts) < worst_case // 4, (
+        f"real prose is using {max(counts)} of the {worst_case}-token worst case — the "
+        f"margin that makes CHUNK_SIZE_CHARS tunable has narrowed; re-measure before "
+        f"raising it."
     )

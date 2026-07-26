@@ -17,7 +17,12 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from finbrief.ingestion.model import ExtractedFiling, Section
+from finbrief.ingestion.model import (
+    NEXT_ITEM_MARKERS,
+    ExtractedFiling,
+    Section,
+    is_incorporated_by_reference,
+)
 
 #: Shortest text that can be a Section rather than a pointer to one. "Not applicable." and
 #: "The information required by this Item is incorporated by reference to..." are both
@@ -25,11 +30,17 @@ from finbrief.ingestion.model import ExtractedFiling, Section
 #: Sections (ADR-0002), and neither contains an answer to author against.
 MIN_SECTION_CHARS = 500
 
-#: Longest text a single Section plausibly is. A boundary miss does not truncate — it runs
-#: on to the end of the document, so the ceiling is what catches it. Set well above the
-#: real maximum (a large bank's Item 1A runs past 200k characters) because this rule exists
-#: to catch a runaway, not to police a verbose filer.
-MAX_SECTION_CHARS = 400_000
+#: Longest text a single Section plausibly is — a sanity backstop, not the runaway
+#: detector.
+#:
+#: It was 400,000 and that was very nearly a lie. JPM's FY2025 Item 7 came back at 413,149
+#: characters and did overrun, but only by 12,837: its *legitimate* MD&A is 400,312
+#: characters, so the ceiling fired 312 characters away from failing correct content.
+#: BAC (293,458) and GS (309,157) are clean at that size. A character count cannot
+#: separate "the parser ran into Item 8" from "this is a bank", so
+#: `section_stops_before_the_next_item` below does that job on content, and this is raised
+#: to 500,000 to stop it pretending to (ADR-0007 amendment, issue #3).
+MAX_SECTION_CHARS = 500_000
 
 #: How many times more prose the body must carry than the heading that introduces it.
 #: This is ADR-0007's "body >> heading", measured in words rather than characters on
@@ -77,6 +88,14 @@ def form_family(form: str) -> str:
 
     An amendment is still the same kind of annual report, and the gate's question is which
     kind the company files — so the suffix is noise here.
+
+    This stays correct in the awkward case: a company's most recent annual filing can be a
+    `10-K/A` that amends an *older* fiscal year, which is what Tesla's April Part III
+    amendments are. Normalising to the family answers "is this a 10-K filer?" with a
+    correct yes, and it is the only question this check asks. Which document to ingest is
+    a separate decision made in `edgar.fetch_filing`, where the exact-form filter lives —
+    conflating the two would either reject a legitimate 10-K filer or ingest a Part III
+    amendment that has no Item 1/1A/7/7A in it.
     """
     return form.split("/", 1)[0].strip().upper()
 
@@ -106,6 +125,22 @@ def check_filing(filing: ExtractedFiling) -> tuple[GateFinding, ...]:
             findings.append(finding)
 
     return tuple(findings)
+
+
+def incorporated_sections(filing: ExtractedFiling) -> frozenset[Section]:
+    """The Sections this filer answered with a pointer instead of text.
+
+    They pass the gate and are still not ingested — `chunking.chunk_filing` skips them.
+    Reported rather than silently dropped: the hand-verification artifact and the gate
+    table both name them, because "JPM has no Item 7A chunks" is a fact a reader of the
+    knowledge base needs, and the golden set must not ask an Item 7A question of a
+    company that has none (ADR-0002).
+    """
+    return frozenset(
+        section
+        for section, text in filing.sections.items()
+        if is_incorporated_by_reference(text)
+    )
 
 
 def run_gate(filings: Iterable[ExtractedFiling]) -> None:
@@ -140,6 +175,12 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
     if not text.strip():
         return finding("section_non_empty", "extracted, but the text is blank")
 
+    # Before the size and shape rules, because a pointer is short and heading-heavy and
+    # would otherwise fail one of them for the wrong reason. It is not a defect and not
+    # ingested either — see `incorporated_sections`.
+    if is_incorporated_by_reference(text):
+        return None
+
     if not MIN_SECTION_CHARS <= len(text) <= MAX_SECTION_CHARS:
         return finding(
             "section_length_bounded",
@@ -157,5 +198,17 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
             f"expected at least {heading_words * BODY_TO_HEADING_WORD_RATIO}. "
             f"This is what a table-of-contents hit looks like.",
         )
+
+    lowered = text.lower()
+    for marker in NEXT_ITEM_MARKERS.get(section, ()):
+        position = lowered.find(marker)
+        if position != -1:
+            return finding(
+                "section_stops_before_the_next_item",
+                f"contains {marker!r} at character {position:,} of {len(text):,} — that "
+                f"is Item 8 (financial statements and the auditor's report), so "
+                f"extraction crossed the {section.value}/Item 8 boundary. Not a length "
+                f"problem: the text before it may be a perfectly good {section.value}.",
+            )
 
     return None

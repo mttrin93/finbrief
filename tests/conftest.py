@@ -5,13 +5,24 @@ suite that passes only on a machine with a key is worse than no suite. Everythin
 needs comes from `monkeypatch.setenv` or an explicit mapping.
 """
 
+import gzip
+import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
 
 from finbrief import config
+from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.observability.logging_setup import PACKAGE_LOGGER
+
+#: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
+#: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather
+#: than hand-written because the failures worth testing (a bank's 400k MD&A, six different
+#: wordings of "incorporated by reference", an Item 7/8 boundary miss) are ones nobody
+#: would think to invent.
+FIXTURES = Path(__file__).parent / "fixtures" / "edgar"
 
 #: `LANGCHAIN_`/`LANGSMITH_` are here for the "no network" half of the contract, not the
 #: config half: with tracing exported, every LangChain invoke in the suite — the fake chat
@@ -37,6 +48,23 @@ def hermetic_env(monkeypatch):
     yield
     config.load_env.cache_clear()
     config.get_settings.cache_clear()
+
+
+@pytest.fixture(scope="session")
+def recorded_filing() -> ExtractedFiling:
+    """Apple's real FY2025 10-K, as extracted — all four Sections, verbatim."""
+    raw = json.loads(gzip.decompress((FIXTURES / "aapl-fy2025.json.gz").read_bytes()))
+    return ExtractedFiling(
+        ref=FilingRef(**raw["ref"]),
+        latest_annual_form=raw["latest_annual_form"],
+        sections={Section(key): text for key, text in raw["sections"].items()},
+    )
+
+
+@pytest.fixture(scope="session")
+def recorded_sections() -> dict[str, str]:
+    """Individual real Section texts that broke something: pointers and a boundary miss."""
+    return json.loads((FIXTURES / "section-samples.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)

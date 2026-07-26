@@ -36,6 +36,10 @@ _Avoid_: document, 10-Q (out of scope)
 **Section**:
 A named part of a filing that FinBrief ingests — Item 1 (business), 1A (risk factors),
 7 (MD&A), 7A (market-risk disclosures). The unit of grounding scope.
+A **Section** is text, never a pointer to text: six Universe companies (all three banks,
+all three healthcare names) answer Item 7A by incorporating Item 7 by reference, and their
+market-risk content is therefore in the KB labelled `Item 7`. Nine of fifteen companies
+have an `Item 7A` Section; all fifteen have market-risk grounding (ADR-0007 amendment).
 
 **Bucket**:
 A stratum of the evaluation golden set — `semantic`, `exact-identifier`, `tool-augmented`,

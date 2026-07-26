@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from finbrief.config import CHUNK_SIZE_CHARS
-from finbrief.ingestion.model import ExtractedFiling, Section
+from finbrief.ingestion.model import (
+    ExtractedFiling,
+    Section,
+    is_incorporated_by_reference,
+)
 
 #: Characters each chunk repeats from its predecessor. The overlap belongs to the chunker
 #: rather than to `config` (PLAN.md): unlike the chunk size it constrains nothing outside
@@ -78,6 +82,10 @@ def chunk_filing(filing: ExtractedFiling) -> tuple[Chunk, ...]:
 
     Call this only on a filing the gate has passed. Chunking a misdetected Section is how
     a table-of-contents row becomes a citation.
+
+    A Section the filer incorporated by reference is skipped rather than chunked: it is a
+    sentence pointing at Item 7, and as a chunk it would retrieve for every market-risk
+    question and ground none of them (ADR-0007 amendment).
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE_CHARS,
@@ -89,7 +97,7 @@ def chunk_filing(filing: ExtractedFiling) -> tuple[Chunk, ...]:
     chunks: list[Chunk] = []
     for section in Section:
         text = filing.sections.get(section)
-        if not text:
+        if not text or is_incorporated_by_reference(text):
             continue
         for index, body in enumerate(splitter.split_text(text)):
             chunks.append(

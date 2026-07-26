@@ -89,14 +89,20 @@ UNIVERSE: tuple[Company, ...] = (
 )
 
 #: Foreign private issuers file a 20-F, not a 10-K, so they cannot supply the Sections
-#: ADR-0007 scopes the KB to. Kept as a denylist rather than a comment because the
-#: `eu_tech` cluster this replaced (SAP/ASML/STM) was all three — see `test_config.py`.
+#: ADR-0007 scopes the KB to.
 #:
-#: A denylist can only catch a name someone thought to list, so it covers the plausible
-#: additions to the four existing clusters rather than only the tickers already removed.
-#: The invariant itself is the `UNIVERSE` docstring's "every member files a 10-K"; this is
-#: a tripwire under it, not a proof of it — confirm the filing type on EDGAR when adding
-#: any company, especially one not listed here.
+#: **No longer the source of truth.** Ticket T2 (#3) put the real check in
+#: `ingestion/gate.py`, which asks EDGAR for each company's most recent annual filing and
+#: fails loudly unless it is in the 10-K family — that catches *any* foreign private
+#: issuer, not merely one someone thought to write down.
+#:
+#: Kept anyway, in its demoted role, because it is free and offline: it fails in
+#: `test_config.py` in milliseconds with no network, where the gate needs a live EDGAR
+#: round trip and a full ingest run to say the same thing. A tripwire that catches the
+#: plausible re-addition (the `eu_tech` cluster this replaced — SAP/ASML/STM — was all
+#: three) before anyone waits for the gate. The invariant itself remains the `UNIVERSE`
+#: docstring's "every member files a 10-K"; neither list nor test proves it, and the gate
+#: is what enforces it.
 _TWENTY_F_FILERS: frozenset[str] = frozenset(
     {
         # Tech / big_tech candidates

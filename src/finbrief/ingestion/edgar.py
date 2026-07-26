@@ -17,7 +17,12 @@ import re
 from collections.abc import Mapping
 
 from finbrief.config import ConfigError, Settings, get_settings
-from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
+from finbrief.ingestion.model import (
+    NEXT_ITEM_MARKERS,
+    ExtractedFiling,
+    FilingRef,
+    Section,
+)
 from finbrief.observability.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
@@ -75,11 +80,26 @@ def fetch_filing(ticker: str) -> ExtractedFiling:
     if annual is None:
         raise LookupError(f"{ticker} has no annual filing on EDGAR at all.")
 
-    tenk_filings = company.get_filings(form="10-K")
-    # `.latest(1)` on the 10-K search, not `annual`: a 20-F filer must still produce an
-    # `ExtractedFiling` so the gate can report *which* company is wrong. Only a company
-    # with no 10-K in its whole history has nothing to hand the gate.
-    filing = tenk_filings.latest(1) if len(tenk_filings) else None
+    # Not `annual`, and not `get_filings(form="10-K").latest(1)` either. Two distinct
+    # traps, both from EDGAR's prefix matching:
+    #
+    # 1. A 20-F filer must still produce an `ExtractedFiling`, so the gate can report
+    #    *which* company is wrong rather than the run dying with a traceback. Only a
+    #    company with no 10-K in its entire history has nothing to hand the gate.
+    # 2. A `10-K` search returns `10-K/A` amendments too, and `.latest(1)` will happily
+    #    hand one back. Tesla files a Part III amendment every April, so as of this
+    #    writing its most recent 10-K-search hit is a 10-K/A filed 2026-04-30 — a
+    #    document with no Item 1/1A/7/7A in it at all. The gate would catch the empty
+    #    result, but it would report "TSLA has no Item 1" when the truth is "we fetched
+    #    the wrong document", so the exact-form filter belongs here.
+    #
+    # The gate's separate form-family check is unaffected and deliberately so: there,
+    # `10-K/A` *is* a 10-K, because the question is what kind of filer this is. It stays
+    # right even when the most recent annual filing is an amendment to an older fiscal
+    # year — that company is still a 10-K filer, and `filing` below is still its real
+    # latest annual report.
+    tenk_filings = [f for f in company.get_filings(form="10-K") if str(f.form) == "10-K"]
+    filing = max(tenk_filings, key=lambda f: f.filing_date, default=None)
     if filing is None:
         raise LookupError(
             f"{ticker} has never filed a 10-K (its latest annual filing is a "
@@ -143,9 +163,55 @@ def _extract_sections(filing) -> dict[Section, str]:
                     chars=len(text),
                 )
         if text:
-            sections[section] = text
+            trimmed = trim_at_next_item(text, section)
+            if len(trimmed) != len(text):
+                log_event(
+                    logger,
+                    "section_trimmed",
+                    level=logging.WARNING,
+                    ticker=str(filing.company),
+                    accession=str(filing.accession_no),
+                    section=section.value,
+                    chars_before=len(text),
+                    chars_after=len(trimmed),
+                    reason="ran into the next Item",
+                )
+            sections[section] = trimmed
 
     return sections
+
+
+def trim_at_next_item(text: str, section: Section) -> str:
+    """Cut a Section at the first marker belonging to the Item that follows it.
+
+    The second documented repair in this module, and the same species as the regex
+    fallback ADR-0007 already sanctions: bounded, one rule, and never silent — every trim
+    logs a `section_trimmed` event.
+
+    Two real filings need it. `edgartools` returned JPM's FY2025 Item 7 as 413,149
+    characters, the last 12,837 of which are Item 8; and GM's Item 7A as 26,450, of which
+    only the first 11,790 are market risk. Both overran the Item 7/Item 8 boundary and
+    both have an intact prefix, so discarding the whole Section would throw away a bank's
+    entire MD&A over 3% contamination.
+
+    What keeps this from being the extractor grading its own homework: the result still
+    faces `gate.check_filing`, which applies the same marker check. If a trim misses, the
+    Section fails exactly as it did before this function existed. The repair proposes; the
+    gate disposes.
+
+    Always a prefix of the input — never a rewrite, so BM25 still indexes the filer's own
+    words (ADR-0004).
+    """
+    lowered = text.lower()
+    cut = min(
+        (
+            position
+            for marker in NEXT_ITEM_MARKERS.get(section, ())
+            if (position := lowered.find(marker)) != -1
+        ),
+        default=-1,
+    )
+    return text[:cut].rstrip() if cut != -1 else text
 
 
 def _from_edgartools(report, section: Section) -> str:

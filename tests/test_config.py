@@ -73,11 +73,12 @@ def test_every_peer_cluster_is_populated():
     assert populated == set(PeerCluster)
 
 
-def test_the_universe_holds_only_10k_filers():
-    # ADR-0007 scopes the KB to Items 1/1A/7/7A of the annual 10-K. A foreign private
-    # issuer files a 20-F, which has no such items, so it would contribute zero Sections
-    # at ingest — and the failure would surface in Phase 1, long after the Universe was
-    # settled. The `eu_tech` cluster this replaced (SAP/ASML/STM) was all three.
+def test_the_universe_trips_no_known_20f_filer():
+    # A tripwire, not the proof. `ingestion/gate.py` asks EDGAR whether each company's
+    # most recent annual filing is a 10-K and is the real check (ADR-0007 amendment, #3);
+    # this one is kept because it is offline and instant, so a plausible re-addition
+    # (the `eu_tech` cluster this replaced — SAP/ASML/STM — was all three) fails here in
+    # milliseconds rather than waiting on a live ingest run.
     offenders = TICKERS & _TWENTY_F_FILERS
     assert not offenders, (
         f"{sorted(offenders)} file a 20-F, not a 10-K — no Item 1A/7/7A to ingest (ADR-0007)"

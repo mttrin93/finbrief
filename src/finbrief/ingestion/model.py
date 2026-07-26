@@ -44,6 +44,82 @@ _HEADINGS: Mapping[Section, str] = {
 }
 
 
+#: Text that belongs to the *next* Item and can never belong to this one. Finding any of
+#: it means extraction crossed a boundary, whatever the character count says.
+#:
+#: One definition, two readers, and they must not drift: `edgar.trim_at_next_item` cuts at
+#: these markers and `gate` fails a Section that still contains one. A second copy would
+#: let the repair and its judge disagree, which is the one way the repair could hide a
+#: real boundary miss.
+#:
+#: Only Items 7 and 7A have entries, deliberately. Item 8 is the financial statements, and
+#: the auditor's report opens it with language no MD&A contains — unambiguous. Item 1 ->
+#: Item 1A and Item 1A -> Item 1B have no equivalent: a business section discusses its
+#: risks in passing, so "Risk Factors" inside Item 1 is ordinary prose, not evidence. A
+#: false accusation would be worse than the miss, because it trains a reader to wave the
+#: gate through. For those two, `gate.MAX_SECTION_CHARS` is the only backstop — a stated
+#: limitation (ADR-0007).
+_ITEM_8_MARKERS = (
+    "report of independent registered public accounting firm",
+    "we have served as the",
+    "critical audit matter",
+)
+NEXT_ITEM_MARKERS: Mapping[Section, tuple[str, ...]] = {
+    Section.MDA: _ITEM_8_MARKERS,
+    Section.MARKET_RISK: _ITEM_8_MARKERS,
+}
+
+#: Longest a text can be and still be *nothing but* a cross-reference. Deliberately well
+#: above `gate.MIN_SECTION_CHARS`: J&J's Item 7A is 502 characters — a pointer plus a page
+#: footer — so a threshold at the gate's floor would classify it as a real, if stubby,
+#: Section and then fail it on body-vs-heading. The question this constant answers ("is
+#: this only a pointer?") is not the question the floor answers ("is there enough text to
+#: ground an answer?"), so they are separate numbers on purpose.
+POINTER_MAX_CHARS = 1500
+
+#: Phrases with which a filer hands an Item off to somewhere else. Drawn from the six
+#: Universe filers that do it, whose wordings share no single formula: "Refer to" (JPM),
+#: "See" (BAC), "are set forth in" (GS), "incorporated herein by reference" (JNJ),
+#: "You can find" (LLY), "incorporated by reference" (PFE).
+_REFERENCE_PHRASES = (
+    "incorporated by reference",
+    "incorporated herein by reference",
+    "refer to",
+    "set forth in",
+    "you can find",
+    "see ",
+    "required by this item",
+    "called for by this item",
+)
+
+#: Where the hand-off has to point for the content to still be in the knowledge base.
+#: Item 7 is ingested, so a pointer into it loses nothing but the label; this is what
+#: makes skipping the pointer acceptable rather than a silent hole.
+_REFERENCE_TARGETS = ("item 7", "md&a", "management's discussion", "management’s discussion")
+
+
+def is_incorporated_by_reference(text: str) -> bool:
+    """Is this text only a pointer to another Item, rather than a Section itself?
+
+    Six of the fifteen Universe companies — every bank and every healthcare name — answer
+    Item 7A with a sentence directing the reader to Item 7 (ADR-0007 amendment). That is a
+    lawful filing, not a broken parse, and it must not be ingested: "Refer to the Market
+    Risk Management section on pages 133-142" would embed cleanly, retrieve for every
+    market-risk question, and ground nothing.
+
+    The test is a *positive* identification — short, plus hand-off language, plus a target
+    that is itself ingested — and not merely "short texts are forgiven". A genuine
+    extraction miss that happens to be brief has to keep failing loudly, or the gate stops
+    being a gate. "Item 7A. Not applicable." matches nothing here and still fails.
+    """
+    if len(text) > POINTER_MAX_CHARS:
+        return False
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _REFERENCE_PHRASES) and any(
+        target in lowered for target in _REFERENCE_TARGETS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FilingRef:
     """Identity and provenance of one Filing — the metadata every chunk inherits.
