@@ -10,10 +10,15 @@ check it.
 import pytest
 from langchain_core.embeddings import FakeEmbeddings
 
+from finbrief.ingestion.chunking import chunk_filing
 from finbrief.ingestion.gate import SectionGateError
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
-from finbrief.ingestion.pipeline import fetch_filings, ingest
-from finbrief.retrieval.vectorstore import build_filings_store, ingested_accessions
+from finbrief.ingestion.pipeline import ingest
+from finbrief.retrieval.vectorstore import (
+    build_filings_store,
+    ingested_accessions,
+    write_chunks,
+)
 
 #: Long enough to clear the gate's body-vs-heading ratio for *every* Section — Item 7's
 #: heading is twelve words, so it needs 240 words of body where Item 1's needs 40.
@@ -95,14 +100,25 @@ def test_force_re_embeds_without_leaving_orphaned_chunks(store):
     assert ingested_accessions(store) == {"0000320193-25-000079"}
 
 
-def test_fetch_filings_visits_every_ticker_in_order():
-    seen = []
+def test_a_new_fiscal_years_filing_supersedes_the_old_one(store):
+    # The KB is the *latest* 10-K per company (spec §Knowledge base), and idempotency is
+    # keyed on the accession — a fiscal-year rollover is a new accession, so without the
+    # eviction the old year's chunks would sit beside the new ones and retrieval would
+    # mix two fiscal years for the same ticker with no error.
+    ingest([a_filing(accession="0000320193-24-000123")], store=store)
 
-    def fake_fetch(ticker):
-        seen.append(ticker)
-        return a_filing(ticker)
+    ingest([a_filing(accession="0000320193-25-000079")], store=store)
 
-    filings = fetch_filings(["AAPL", "MSFT", "NVDA"], fetch=fake_fetch)
+    assert ingested_accessions(store) == {"0000320193-25-000079"}
 
-    assert seen == ["AAPL", "MSFT", "NVDA"]
-    assert [f.ref.ticker for f in filings] == ["AAPL", "MSFT", "NVDA"]
+
+def test_eviction_happens_even_when_the_current_filing_is_skipped(store):
+    # A store built before the eviction existed can already hold two years for one
+    # ticker; the idempotent skip must not preserve that state.
+    write_chunks(store, chunk_filing(a_filing(accession="0000320193-24-000123")))
+    write_chunks(store, chunk_filing(a_filing(accession="0000320193-25-000079")))
+
+    report = ingest([a_filing(accession="0000320193-25-000079")], store=store)
+
+    assert report.skipped == ("AAPL",)
+    assert ingested_accessions(store) == {"0000320193-25-000079"}

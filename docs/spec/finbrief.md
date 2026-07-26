@@ -100,7 +100,12 @@ fallback), section-aware chunked with metadata (ticker, section, fiscal year), s
 Chroma `filings` collection. A separate `news` collection holds ingested headlines; a small
 `glossary` collection holds financial terms. A **dedicated injection-test collection** is
 isolated from the demo KB. Idempotent by accession id. Phase-1 gate: per company×section
-assert found / non-empty / length-bounded / body≫heading; fail loudly.
+assert found / non-empty / length-bounded / body≫heading / starts at its own heading /
+stops before the next Item, plus per filing that EDGAR's latest annual filing is a 10-K;
+fail loudly. Item 7A incorporated by reference into Item 7 (six of fifteen Universe
+filers) passes the gate but is not chunked, and the excusal only fires for filers
+recorded in `config.ITEM_7A_POINTER_FILERS` — so those six companies have **no Item 7A
+chunks**, which constrains golden-set authoring (ADR-0002, ADR-0007 amendment).
 
 **Security gate (ADR-0006).** Input gate (front door), cheap-first, one model call per turn,
 ≤800ms p50: normalization → bounded regex denylist (catch exits early; pass always
@@ -150,7 +155,9 @@ Six seams (confirmed):
 5. **Tool functions** — chiefly `calculate_ratios` peer-average math (ADR-0009) and cache
    behavior, deterministic, `get_stock_data` mocked.
 6. **Ingestion section-detection** — the Phase-1 data-quality gate (found / non-empty /
-   length-bounded / body≫heading), failing loudly.
+   length-bounded / body≫heading / starts-at-its-own-heading / stops-before-the-next-Item,
+   plus the 10-K-filer and recorded-pointer-filer checks — ADR-0007 amendment), failing
+   loudly.
 
 ## Out of Scope
 

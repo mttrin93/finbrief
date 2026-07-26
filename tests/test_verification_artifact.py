@@ -64,11 +64,7 @@ def test_only_the_section_that_moved_loses_its_tick():
 
 def test_a_verifiers_own_notes_survive_a_rerender():
     # A tick can be redone by reading the filing again; a finding written by hand cannot.
-    verified = tick_everything(render_section_starts([a_filing()])).replace(
-        "- [x] Verified — ",
-        "- [x] Verified — ",
-        1,
-    )
+    verified = tick_everything(render_section_starts([a_filing()]))
     note = "**Finding (hand-verification):** starts three pages early, see pp.46-160."
     verified = verified.replace("```text", f"{note}\n\n```text", 1)
 
@@ -83,3 +79,44 @@ def test_a_changed_row_reports_what_it_used_to_be():
     rerendered = render_section_starts([a_filing(mda_prefix="Table of Contents\n\n")], verified)
 
     assert "was " in rerendered.split("**CHANGED**")[1][:40]
+
+
+def pointer_filing(*, pages: str = "133-142"):
+    """A filing whose Item 7A is a pointer long enough to outrun the 320-char excerpt."""
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        f"Item 7A. {Section.MARKET_RISK.heading}\n\n"
+        "Refer to the Market Risk Management section of Management's Discussion and "
+        "Analysis of Financial Condition and Results of Operations, including the "
+        "quantitative and qualitative disclosures about interest rate, currency, "
+        "commodity and equity price risk presented there, which is incorporated herein "
+        f"by reference, on pages {pages}."
+    )
+    filing = a_filing()
+    return type(filing)(
+        ref=filing.ref, latest_annual_form=filing.latest_annual_form, sections=sections
+    )
+
+
+def test_an_unchanged_pointer_row_keeps_its_tick():
+    verified = tick_everything(render_section_starts([pointer_filing()]))
+
+    rerendered = render_section_starts([pointer_filing()], verified)
+
+    assert rerendered.count("- [x]") == len(Section)
+    assert "**CHANGED**" not in rerendered
+
+
+def test_a_pointer_that_changes_beyond_the_excerpt_loses_its_tick():
+    # The excerpt shows 320 characters and a pointer may run to 1,500. Without the
+    # character count on referenced rows, a pointer whose page range changed past the
+    # excerpt kept a tick no human had re-checked — and the artifact then attested to
+    # text nobody has seen.
+    verified = tick_everything(render_section_starts([pointer_filing()]))
+
+    rerendered = render_section_starts([pointer_filing(pages="90-101")], verified)
+
+    assert rerendered.count("- [x]") == len(Section) - 1
+    assert rerendered.count("**CHANGED**") == 1
+    item_7a = rerendered.split("### Item 7A.")[1]
+    assert "- [ ] Verified **incorporated by reference" in item_7a

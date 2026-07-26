@@ -17,9 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from finbrief.config import TICKERS, UNIVERSE, get_settings
-from finbrief.ingestion.edgar import configure_edgar
+from finbrief.ingestion.edgar import configure_edgar, fetch_filing
 from finbrief.ingestion.gate import check_filing
-from finbrief.ingestion.pipeline import fetch_filings, ingest
+from finbrief.ingestion.pipeline import ingest
 from finbrief.ingestion.reporting import (
     render_gate_table,
     render_ingest_report,
@@ -98,8 +98,6 @@ def _write_ingest_report(filings, findings, *, generated, store_counts, **run) -
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging()
-    settings = get_settings()
-    configure_edgar(settings)
 
     tickers = args.tickers or [company.ticker for company in UNIVERSE]
     unknown = sorted(set(tickers) - TICKERS)
@@ -109,8 +107,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Not in the Universe: {', '.join(unknown)}", file=sys.stderr)
         return 2
 
+    # No `get_settings()` yet, deliberately: the full Settings hard-requires
+    # OPENROUTER_API_KEY, which fetching and gating never spend. It is resolved below,
+    # only on the branch that actually builds the store — so a --dry-run (or a run the
+    # gate fails) works on a machine that has an EDGAR identity and no paid key.
+    configure_edgar()
+
     print(f"Fetching {len(tickers)} filing(s) from EDGAR: {', '.join(tickers)}\n")
-    filings = fetch_filings(tickers)
+    filings = tuple(fetch_filing(ticker) for ticker in tickers)
 
     findings = [finding for filing in filings for finding in check_filing(filing)]
     print(render_gate_table(filings, findings))
@@ -135,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nGATE PASSED. --dry-run: nothing written.")
         return 0
 
+    settings = get_settings()
     store = build_filings_store(settings)
     report = ingest(filings, store=store, force=args.force)
     _write_ingest_report(

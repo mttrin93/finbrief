@@ -15,16 +15,16 @@ from finbrief.ingestion.reporting import render_gate_table, render_ingest_report
 BODY = "The Company designs and sells devices to customers worldwide. " * 40
 
 
-def a_filing(ticker="AAPL", accession="0000320193-25-000079", *, sections=None):
+def a_filing(ticker="AAPL", accession="0000320193-25-000079", *, sections=None, form="10-K"):
     return ExtractedFiling(
         ref=FilingRef(
             ticker=ticker,
-            form="10-K",
+            form=form,
             accession=accession,
             fiscal_year=2025,
             filing_date="2025-10-31",
         ),
-        latest_annual_form="10-K",
+        latest_annual_form=form,
         sections=sections
         if sections is not None
         else {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section},
@@ -50,6 +50,31 @@ def test_the_gate_table_separates_the_count_from_the_fail_marker():
     assert table.count(" FAIL") == 2
 
 
+def test_a_referenced_section_renders_as_a_pointer_cell_not_a_count():
+    # The cell has to say where the content went, not pretend a character count is a
+    # Section — "JPM has no Item 7A chunks" is a fact a reader of the table needs.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk Management section of Management's discussion and "
+        "analysis on pages 133-142."
+    )
+    filing = a_filing("JPM", sections=sections)
+
+    table = render_gate_table([filing], [])
+
+    assert "->Item 7" in table
+    assert "incorporated by reference" in table
+
+
+def test_a_non_10k_filer_is_flagged_on_its_row():
+    filing = a_filing("SAP", form="20-F", sections={})
+
+    table = render_gate_table([filing], check_filing(filing))
+
+    assert "!ANNUAL" in table
+
+
 # --- The ingest report ----------------------------------------------------------------
 
 
@@ -72,6 +97,22 @@ def test_a_passing_run_reports_per_company_counts_and_the_total():
     assert "0000320193-25-000079" in report, "each row pins its accession"
     assert "skipped" in report, "an idempotent re-run says so instead of claiming writes"
     assert "2026-07-26 12:00 UTC" in report
+
+
+def test_a_ticker_in_the_store_but_absent_from_the_run_still_gets_a_row():
+    # A --tickers run fetches one company, but the report attests to the whole
+    # collection: what it holds for companies the run never touched must not vanish.
+    report = render_ingest_report(
+        [a_filing("AAPL")],
+        [],
+        generated="2026-07-26 12:00 UTC",
+        store_counts={"AAPL": 152, "NVDA": 296},
+        written={"AAPL": 152},
+    )
+
+    nvda_row = next(line for line in report.splitlines() if line.startswith("| NVDA"))
+    assert "296" in nvda_row
+    assert nvda_row.count("—") == 3, "no fiscal year, accession, or action to claim"
 
 
 def test_a_dry_run_reports_the_gate_and_says_no_store_was_consulted():

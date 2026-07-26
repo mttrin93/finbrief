@@ -13,11 +13,16 @@ run on to the end of the document. Whatever it produces still faces the gate.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Mapping
 
-from finbrief.config import ConfigError, Settings, get_settings
-from finbrief.ingestion.gate import MAX_SECTION_CHARS
+from finbrief.config import (
+    ConfigError,
+    Settings,
+    load_env,
+    resolve_sec_edgar_user_agent,
+)
 from finbrief.ingestion.model import (
     NEXT_ITEM_MARKERS,
     WORD,
@@ -46,14 +51,6 @@ _NEXT_ITEM: Mapping[Section, str] = {
     Section.MARKET_RISK: r"8",
 }
 
-#: Hard cap on a fallback span whose closing Item heading was never found. An
-#: unterminated span is a boundary miss by definition, so the only question is how much
-#: of the document it drags in — and running to EOF hands the gate a whole 10-K to
-#: reject, which says nothing about where the parse went wrong. Set at `gate`'s ceiling:
-#: anything this long fails there anyway, so the cap changes the diagnosis, not the
-#: verdict.
-MAX_FALLBACK_CHARS = MAX_SECTION_CHARS
-
 #: How a table-of-contents row ends: dot leaders, a page number, or a page range
 #: ("Risk Factors. 9-31" is JPM's). A real heading is followed by a line break and prose,
 #: never by its own page number.
@@ -66,9 +63,18 @@ def configure_edgar(settings: Settings | None = None) -> None:
     The SEC rejects unidentified traffic, and `edgartools` would otherwise raise deep in a
     request with a stack trace that says nothing about `.env`. Ingestion is a script a
     human runs, so it can afford to say what is wrong in one line.
+
+    Called bare, it reads `SEC_EDGAR_USER_AGENT` without building the full `Settings`,
+    which hard-requires `OPENROUTER_API_KEY`. A `--dry-run` fetches and gates but embeds
+    nothing, so demanding the paid key would fail on exactly the machine a dry run is
+    for — the same reasoning that keeps `config.resolve_log_level` Settings-independent.
     """
-    settings = settings or get_settings()
-    if not settings.sec_edgar_user_agent:
+    if settings is not None:
+        user_agent = settings.sec_edgar_user_agent
+    else:
+        load_env()
+        user_agent = resolve_sec_edgar_user_agent(os.environ)
+    if not user_agent:
         raise ConfigError(
             "SEC_EDGAR_USER_AGENT is not set, and the SEC requires a contact identity "
             "on every request. Set it to 'FinBrief your-email@example.com' in .env "
@@ -76,7 +82,7 @@ def configure_edgar(settings: Settings | None = None) -> None:
         )
     from edgar import set_identity
 
-    set_identity(settings.sec_edgar_user_agent)
+    set_identity(user_agent)
 
 
 def fetch_filing(ticker: str) -> ExtractedFiling:
@@ -307,10 +313,15 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
       with wordiest-wins, an Item 1 fallback would have cheerfully returned the Risk
       Factors span — a mislabelled chunk, which is the single failure this module exists
       to prevent.
-    - A candidate with no following Item heading is capped at `MAX_FALLBACK_CHARS` instead
-      of running to the end of the document. An unterminated span is a boundary miss by
-      definition; letting it reach EOF hands the gate an entire 10-K to reject, where a
-      capped span at least shows where the parse went wrong.
+    - A candidate with no following Item heading is no candidate at all. The next Item's
+      heading always sits behind a real Section — none of the four is a 10-K's last — so
+      an unterminated span is a boundary miss by definition. It used to be capped at the
+      gate's ceiling on the theory that it would fail there anyway; that was false twice
+      over (`_clean` shrinks the text *after* the cap, and Items 1/1A have no
+      `NEXT_ITEM_MARKERS`), so a capped span could pass the whole gate carrying the rest
+      of the document under one Item's label. Skipping it means the worst outcome is a
+      *missing* Section — a loud `section_found` finding naming the company — never a
+      mislabelled chunk.
     """
     start = item_heading(section.item)
     end = item_heading(_NEXT_ITEM[section])
@@ -321,8 +332,9 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
         if _is_toc_line(full_text, match.start()):
             continue
         stop = end.search(full_text, match.start() + 1)
-        cut = stop.start() if stop else match.start() + MAX_FALLBACK_CHARS
-        candidate = full_text[match.start() : cut]
+        if stop is None:
+            continue
+        candidate = full_text[match.start() : stop.start()]
         words = len(WORD.findall(candidate))
         if words > best_words:
             best, best_words = candidate, words

@@ -14,6 +14,7 @@ from finbrief.retrieval.vectorstore import (
     FILINGS_COLLECTION,
     build_filings_store,
     chunk_counts_by_ticker,
+    delete_superseded,
     ingested_accessions,
     write_chunks,
 )
@@ -83,6 +84,32 @@ def test_a_second_company_adds_to_the_collection_rather_than_replacing_it(store)
 
 def test_an_empty_collection_reports_no_ingested_accessions(store):
     assert ingested_accessions(store) == set()
+
+
+def test_writing_no_chunks_is_a_no_op(store):
+    # A filing whose every Section was incorporated by reference produces exactly this
+    # input, and Chroma raises on an empty `add_texts` — so the guard is behavior.
+    assert write_chunks(store, []) == 0
+    assert count(store) == 0
+
+
+def test_delete_superseded_removes_only_the_tickers_other_accessions(store):
+    write_chunks(store, chunk_filing(a_filing(ticker="AAPL", accession="0-24-old")))
+    write_chunks(store, chunk_filing(a_filing(ticker="AAPL", accession="0-25-new")))
+    write_chunks(store, chunk_filing(a_filing(ticker="MSFT", accession="0-25-msft")))
+
+    removed = delete_superseded(store, "AAPL", "0-25-new")
+
+    assert removed > 0
+    assert ingested_accessions(store) == {"0-25-new", "0-25-msft"}
+
+
+def test_delete_superseded_is_a_no_op_when_the_ticker_holds_one_filing(store):
+    write_chunks(store, chunk_filing(a_filing()))
+    before = count(store)
+
+    assert delete_superseded(store, "AAPL", "0000320193-25-000079") == 0
+    assert count(store) == before
 
 
 def test_chunk_counts_by_ticker_reads_back_what_each_company_holds(store):

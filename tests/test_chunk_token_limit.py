@@ -34,6 +34,7 @@ import tiktoken
 
 from finbrief.config import CHUNK_SIZE_CHARS
 from finbrief.ingestion.chunking import chunk_filing
+from finbrief.ingestion.model import Section
 
 #: `openai/text-embedding-3-small` accepts 8191 tokens per input.
 EMBEDDING_CONTEXT_LIMIT = 8191
@@ -44,17 +45,27 @@ EMBEDDING_CONTEXT_LIMIT = 8191
 #: dense identifiers, CJK, or emoji.
 MAX_TOKENS_PER_CHAR = 4
 
+#: The longest provenance header `Chunk.text` can put in front of a body. What gets
+#: embedded is header **plus** body (`token_counts` below measures exactly that string),
+#: so a bound computed over the body alone would drift under the real request. Derived
+#: from the real headings, with room for the longest ticker and an amended form.
+MAX_HEADER_CHARS = max(
+    len(f"WWWWW | FY99999 10-K/A | {section.value}. {section.heading}\n\n")
+    for section in Section
+)
+
 
 def test_a_chunk_can_never_exceed_the_embedding_window():
-    """The chunk size, at its worst case, still fits one embedding request."""
-    worst_case_tokens = CHUNK_SIZE_CHARS * MAX_TOKENS_PER_CHAR
+    """The chunk size plus its provenance header, at worst case, fits one request."""
+    worst_case_tokens = (CHUNK_SIZE_CHARS + MAX_HEADER_CHARS) * MAX_TOKENS_PER_CHAR
 
     assert worst_case_tokens <= EMBEDDING_CONTEXT_LIMIT, (
-        f"CHUNK_SIZE_CHARS={CHUNK_SIZE_CHARS} allows a chunk of up to {worst_case_tokens} "
-        f"tokens, over the {EMBEDDING_CONTEXT_LIMIT}-token embedding window. Either lower "
+        f"CHUNK_SIZE_CHARS={CHUNK_SIZE_CHARS} plus a {MAX_HEADER_CHARS}-char provenance "
+        f"header allows a chunk of up to {worst_case_tokens} tokens, over the "
+        f"{EMBEDDING_CONTEXT_LIMIT}-token embedding window. Either lower "
         f"config.CHUNK_SIZE_CHARS (max "
-        f"{EMBEDDING_CONTEXT_LIMIT // MAX_TOKENS_PER_CHAR}) or re-enable "
-        f"check_embedding_ctx_length in retrieval/embeddings.py."
+        f"{EMBEDDING_CONTEXT_LIMIT // MAX_TOKENS_PER_CHAR - MAX_HEADER_CHARS}) or "
+        f"re-enable check_embedding_ctx_length in retrieval/embeddings.py."
     )
 
 

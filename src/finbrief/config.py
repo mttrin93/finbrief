@@ -264,7 +264,7 @@ class Settings:
             max_sub_queries=_integer(env, "FINBRIEF_MAX_SUB_QUERIES", 3, minimum=0, maximum=3),
             eval_mode=_boolean(env, "FINBRIEF_EVAL_MODE", False),
             alphavantage_enabled=_boolean(env, "FINBRIEF_ALPHAVANTAGE_ENABLED", False),
-            sec_edgar_user_agent=_string(env, "SEC_EDGAR_USER_AGENT", ""),
+            sec_edgar_user_agent=resolve_sec_edgar_user_agent(env),
             # Where the persisted Chroma collections live. An override exists because a
             # deployment's writable path is not the repo's, and because the evaluation
             # harness builds throwaway indexes; the default keeps ingest and app pointed
@@ -358,6 +358,17 @@ def get_settings() -> Settings:
     """The application's settings. Cached; call `get_settings.cache_clear()` in tests."""
     load_env()
     return Settings.from_env(os.environ)
+
+
+def resolve_sec_edgar_user_agent(env: Mapping[str, str]) -> str:
+    """Resolve `SEC_EDGAR_USER_AGENT` alone, without the rest of `Settings`.
+
+    Deliberately independent of `Settings` for the same reason `resolve_log_level` is:
+    a `--dry-run` ingest needs an EDGAR identity and no OpenRouter key, and
+    `Settings.from_env` hard-requires the key. `Settings.from_env` reads the field
+    through this same function, so the two resolutions cannot drift.
+    """
+    return _raw(env, "SEC_EDGAR_USER_AGENT")
 
 
 def resolve_log_level(env: Mapping[str, str]) -> int:

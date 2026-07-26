@@ -15,7 +15,7 @@ PARAGRAPH = (
 )
 
 
-def a_filing(*, ticker: str = "AAPL", accession: str = "0000320193-25-000079"):
+def a_filing(*, ticker: str = "AAPL", accession: str = "0000320193-25-000079", sections=None):
     return ExtractedFiling(
         ref=FilingRef(
             ticker=ticker,
@@ -25,7 +25,9 @@ def a_filing(*, ticker: str = "AAPL", accession: str = "0000320193-25-000079"):
             filing_date="2025-10-31",
         ),
         latest_annual_form="10-K",
-        sections={s: f"{s.value}. {s.heading}\n\n{PARAGRAPH * 40}" for s in Section},
+        sections=sections
+        if sections is not None
+        else {s: f"{s.value}. {s.heading}\n\n{PARAGRAPH * 40}" for s in Section},
     )
 
 
@@ -90,12 +92,46 @@ def test_chunk_bodies_respect_the_configured_chunk_size():
 
 
 def test_chunks_overlap_so_a_sentence_split_across_them_is_still_retrievable():
-    chunks = [c for c in chunk_filing(a_filing()) if c.section is Section.BUSINESS]
+    # Every sentence is unique to its position — with the repeated-paragraph fixture any
+    # word of chunk 0's tail appeared in chunk 1 whether or not overlap existed, and the
+    # test stayed green with the overlap deleted outright.
+    prose = " ".join(
+        f"Sentence number {i:04d} of the business narrative continues here." for i in range(60)
+    )
+    sections = dict(a_filing().sections)
+    sections[Section.BUSINESS] = f"Item 1. Business\n\n{prose}"
+
+    chunks = [
+        c
+        for c in chunk_filing(a_filing(sections=sections))
+        if c.section is Section.BUSINESS and "Sentence number" in c.body
+    ]
 
     assert len(chunks) > 1, "the fixture needs to be long enough to split"
-    assert CHUNK_OVERLAP_CHARS > 0
-    tail = chunks[0].body[-CHUNK_OVERLAP_CHARS:]
-    assert any(word in chunks[1].body for word in tail.split()[-5:])
+    for previous, current in zip(chunks, chunks[1:], strict=False):
+        head = current.body.lstrip(". ")[:40]
+        assert head in previous.body, (
+            f"each chunk must reopen inside its predecessor's tail "
+            f"({CHUNK_OVERLAP_CHARS}-char overlap), but {head!r} appears nowhere there"
+        )
+
+
+def test_a_section_incorporated_by_reference_is_not_chunked():
+    # The gate deliberately *passes* a pointer Section (it is a lawful filing), so this
+    # skip is the only thing keeping it out of the KB: as a chunk it would retrieve for
+    # every market-risk question and ground none of them (ADR-0007 amendment). Six of
+    # fifteen Universe filers answer Item 7A this way.
+    sections = dict(a_filing().sections)
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk Management section of Management's discussion and "
+        "analysis on pages 133-142 for a discussion of quantitative and qualitative "
+        "disclosures about market risk."
+    )
+
+    chunks = chunk_filing(a_filing(sections=sections))
+
+    assert {c.section for c in chunks} == set(Section) - {Section.MARKET_RISK}
 
 
 def test_each_chunk_names_its_company_and_section_for_bm25():

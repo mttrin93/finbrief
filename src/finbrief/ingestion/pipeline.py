@@ -9,16 +9,16 @@ index is exactly the thing that produces unexplainable ones.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from finbrief.ingestion.chunking import chunk_filing
-from finbrief.ingestion.edgar import fetch_filing
 from finbrief.ingestion.gate import run_gate
 from finbrief.ingestion.model import ExtractedFiling
 from finbrief.observability.logging_setup import log_event
 from finbrief.retrieval.vectorstore import (
     delete_accession,
+    delete_superseded,
     ingested_accessions,
     write_chunks,
 )
@@ -38,13 +38,6 @@ class IngestReport:
         return sum(self.chunks_written.values())
 
 
-def fetch_filings(
-    tickers: Sequence[str], *, fetch: Callable[[str], ExtractedFiling] = fetch_filing
-) -> tuple[ExtractedFiling, ...]:
-    """Download and extract every ticker. `fetch` is the seam tests replace."""
-    return tuple(fetch(ticker) for ticker in tickers)
-
-
 def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) -> IngestReport:
     """Gate every filing, then write the ones the collection does not already hold.
 
@@ -54,6 +47,11 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
     correctness one: chunk ids are derived from the accession, so a re-write would upsert
     onto the same rows. What it saves is paying to embed them again. `force` re-embeds
     anyway, which is what a chunker or embedding-model change needs.
+
+    A ticker's chunks from any *other* accession are evicted, skip or no skip: the KB is
+    the latest 10-K per company (spec §Knowledge base), and a fiscal-year rollover gives
+    the new filing a new accession — without the eviction the old year's chunks would sit
+    beside the new ones, and retrieval would mix two fiscal years with no error.
     """
     filings = tuple(filings)
     run_gate(filings)
@@ -63,6 +61,15 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
     skipped: list[str] = []
 
     for filing in filings:
+        evicted = delete_superseded(store, filing.ref.ticker, filing.ref.accession)
+        if evicted:
+            log_event(
+                logger,
+                "superseded_filing_removed",
+                ticker=filing.ref.ticker,
+                kept_accession=filing.ref.accession,
+                chunks_removed=evicted,
+            )
         if filing.ref.accession in already:
             skipped.append(filing.ref.ticker)
             log_event(

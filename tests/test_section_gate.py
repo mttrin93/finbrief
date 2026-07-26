@@ -16,6 +16,7 @@ from finbrief.ingestion.gate import (
     run_gate,
 )
 from finbrief.ingestion.model import (
+    POINTER_MAX_CHARS,
     ExtractedFiling,
     FilingRef,
     Section,
@@ -251,6 +252,61 @@ def test_a_handoff_phrase_and_target_in_different_sentences_is_no_pointer():
     assert [(f.section, f.check) for f in findings] == [
         (Section.MARKET_RISK, "section_length_bounded")
     ]
+
+
+def test_a_word_merely_containing_a_handoff_phrase_is_not_a_handoff():
+    # "see" used to be matched as a bare substring, so "oversee" (and "foresee") made a
+    # sentence a hand-off. For a recorded pointer filer that is the silent drop the
+    # three-cut design exists to prevent: a truncated real Item 7A whose surviving
+    # fragment reads like this would be excused as a pointer and leave the KB with no
+    # finding.
+    text = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Our risk committees oversee the exposures described in Management's Discussion "
+        "and Analysis of Financial Condition and Results of Operations."
+    )
+
+    assert not is_incorporated_by_reference(Section.MARKET_RISK, text)
+
+
+def test_the_length_bounds_are_inclusive_at_both_ends():
+    # The bounds state the plausible range; an off-by-one in the comparison would
+    # silently narrow what a legal Section is.
+    floor = ("Item 1. Business\n\n" + "wordy text " * 60)[:MIN_SECTION_CHARS]
+    ceiling = ("Item 1. Business\n\n" + "wordy text " * 50_000)[:MAX_SECTION_CHARS]
+    assert len(floor) == MIN_SECTION_CHARS and len(ceiling) == MAX_SECTION_CHARS
+
+    for text in (floor, ceiling):
+        sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+        sections[Section.BUSINESS] = text
+        assert check_filing(a_filing(sections=sections)) == ()
+
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.BUSINESS] = ceiling + "x"
+    assert checks_that_failed(a_filing(sections=sections)) == {"section_length_bounded"}
+
+
+def test_the_pointer_size_and_residue_limits_are_inclusive():
+    # `POINTER_MAX_CHARS` and `POINTER_RESIDUE_MAX_WORDS` are calibrated against the six
+    # real pointers; the boundary itself must count as "still a pointer".
+    handoff = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk section of Management's Discussion and Analysis."
+    )
+    at_limit = handoff + " " * (POINTER_MAX_CHARS - len(handoff))
+    assert len(at_limit) == POINTER_MAX_CHARS
+
+    assert is_incorporated_by_reference(Section.MARKET_RISK, at_limit)
+    assert not is_incorporated_by_reference(Section.MARKET_RISK, at_limit + "x")
+
+    fifteen_words = (
+        "Alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike "
+        "november oscar."
+    )
+    assert is_incorporated_by_reference(Section.MARKET_RISK, f"{handoff} {fifteen_words}")
+    assert not is_incorporated_by_reference(
+        Section.MARKET_RISK, f"{handoff} {fifteen_words} Papa."
+    )
 
 
 def test_a_short_section_with_no_reference_language_still_fails():

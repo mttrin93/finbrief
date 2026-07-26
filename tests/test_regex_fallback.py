@@ -6,7 +6,7 @@ two ways it was not, before these tests: `Item 1` prefix-matched `Item 1A`, and 
 with no closing heading ran to the end of the document.
 """
 
-from finbrief.ingestion.edgar import MAX_FALLBACK_CHARS, _extract_by_regex
+from finbrief.ingestion.edgar import _extract_by_regex
 from finbrief.ingestion.model import Section
 
 BUSINESS = "We design and sell devices to customers worldwide. " * 30
@@ -75,15 +75,16 @@ def test_a_section_ends_at_the_next_item_heading():
     assert "Unresolved Staff Comments" not in _extract_by_regex(FILING, Section.RISK_FACTORS)
 
 
-def test_an_unterminated_span_is_capped_rather_than_running_to_the_end():
-    # No "Item 1A" heading anywhere, so nothing closes Item 1. Bounded means bounded even
-    # then: without the cap this returned the entire remaining document.
+def test_an_unterminated_span_is_a_miss_not_a_candidate():
+    # No "Item 1A" heading anywhere, so nothing closes Item 1. This used to be capped at
+    # the gate's ceiling on the theory that it would fail there anyway — false twice
+    # over: `_clean` shrinks the text *after* the cap, and Items 1/1A have no next-Item
+    # content markers, so the capped span could pass the whole gate carrying half the
+    # document under `Item 1`. A missing Section fails loudly (`section_found`); a
+    # mislabelled chunk never does.
     unterminated = "Item 1. Business\n\n" + "word " * 400_000
 
-    extracted = _extract_by_regex(unterminated, Section.BUSINESS)
-
-    assert len(extracted) <= MAX_FALLBACK_CHARS
-    assert len(extracted) < len(unterminated)
+    assert _extract_by_regex(unterminated, Section.BUSINESS) == ""
 
 
 def test_a_missing_section_yields_nothing_rather_than_a_guess():

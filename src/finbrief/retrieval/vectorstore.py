@@ -35,20 +35,17 @@ def build_filings_store(
     still exercising real Chroma semantics. Production passes nothing and gets the one
     shared model.
 
-    Settings are resolved lazily, per argument. A test that supplies both overrides names
-    everything this function needs, and reading `.env` anyway would make it fail on a
-    machine that has no API key — the one thing `conftest.py` exists to prevent.
+    Settings are resolved only when an argument is missing. A test that supplies both
+    overrides names everything this function needs, and reading `.env` anyway would make
+    it fail on a machine that has no API key — the one thing `conftest.py` exists to
+    prevent.
     """
-
-    def resolved() -> Settings:
-        nonlocal settings
+    if embeddings is None or persist_directory is None:
         settings = settings or get_settings()
-        return settings
-
     return Chroma(
         collection_name=FILINGS_COLLECTION,
-        embedding_function=embeddings or build_embeddings(resolved()),
-        persist_directory=persist_directory or resolved().chroma_dir,
+        embedding_function=embeddings or build_embeddings(settings),
+        persist_directory=persist_directory or settings.chroma_dir,
     )
 
 
@@ -78,6 +75,25 @@ def delete_accession(store: Chroma, accession: str) -> None:
     says.
     """
     store.delete(where={"accession": accession})
+
+
+def delete_superseded(store: Chroma, ticker: str, accession: str) -> int:
+    """Remove `ticker`'s chunks belonging to any filing other than `accession`.
+
+    The KB holds the *latest* 10-K per company (spec §Knowledge base), and idempotency is
+    keyed on the accession — so when a company files a new year's 10-K, the new accession
+    would be written *beside* the old one, and retrieval would mix two fiscal years for
+    the same ticker with no error to show for it. Returns how many chunks were evicted,
+    so the caller can leave evidence of what a re-run removed.
+    """
+    stale = store.get(
+        where={"$and": [{"ticker": ticker}, {"accession": {"$ne": accession}}]},
+        include=[],
+    )
+    ids = stale["ids"]
+    if ids:
+        store.delete(ids=ids)
+    return len(ids)
 
 
 def chunk_counts_by_ticker(store: Chroma) -> dict[str, int]:

@@ -277,18 +277,22 @@ def render_section_starts(
             unchanged = bool(was and was.excerpt == excerpt and was.chars in (None, len(text)))
             box = "x" if (unchanged and was and was.ticked) else " "
             changed = " **CHANGED**" if was and not unchanged else ""
+            was_chars = (
+                f" — was {was.chars:,}" if changed and was and was.chars is not None else ""
+            )
 
             if section in referenced:
+                # The character count is load-bearing here too: the excerpt shows only
+                # the first 320 characters and a pointer may run to 1,500, so without
+                # the count a pointer whose tail changed would keep a tick no human has
+                # re-checked.
                 lines.append(
-                    f"- [{box}] Verified **incorporated by reference — not ingested**"
-                    f"{changed}. Confirm the filing really does hand this Item off to "
-                    f"Item 7 (which *is* ingested), rather than the extractor having "
-                    f"found a stub."
+                    f"- [{box}] Verified **incorporated by reference — not ingested** — "
+                    f"{len(text):,} characters extracted{changed}{was_chars}. Confirm "
+                    f"the filing really does hand this Item off to Item 7 (which *is* "
+                    f"ingested), rather than the extractor having found a stub."
                 )
             else:
-                was_chars = (
-                    f" — was {was.chars:,}" if changed and was and was.chars is not None else ""
-                )
                 lines.append(
                     f"- [{box}] Verified — {len(text):,} characters extracted"
                     f"{changed}{was_chars}"

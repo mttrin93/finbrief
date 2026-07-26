@@ -174,7 +174,8 @@ finbrief/
 ├── src/finbrief/
 │   ├── config.py          # models, universe (peer clusters), PEERS map, flags, strategy switches
 │   ├── llm.py             # shared OpenRouter chat-model client (agent, translation, classifier)
-│   ├── ingestion/         # edgar.py, pdf_docs.py, news.py, chunking.py
+│   ├── ingestion/         # edgar.py, model.py, gate.py, chunking.py, pipeline.py,
+│   │                      # reporting.py (Phase 1); pdf_docs.py, news.py later
 │   ├── retrieval/         # embeddings.py (shared by ingest+query), vectorstore.py, hybrid.py, query_translation.py
 │   ├── tools/             # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
 │   ├── agent/             # agent.py (create_agent), prompts.py, guardrails.py
@@ -183,14 +184,18 @@ finbrief/
 ├── app/
 │   ├── Home.py            # chat page
 │   └── pages/Dashboard.py # analytics (P2)
-├── scripts/               # ingest_all.py, update_kb.py (scheduled)
+├── scripts/               # ingest_filings.py, record_edgar_fixtures.py (Phase 1);
+│                          # scheduled KB update lands with Tier-2
 ├── tests/                 # unit: chunking, tools, guardrails, validation
-│   ├── conftest.py        # hermetic env: no .env, no key, no network (Phase 0)
+│   ├── conftest.py        # hermetic env: no .env, no key, no network (Phase 0);
+│   │                      # recorded EDGAR + vendored tiktoken fixtures (Phase 1)
 │   ├── test_config.py     # Universe/Peers invariants + env resolution (Phase 0)
 │   ├── test_logging_setup.py       # the JSON-lines contract (Phase 0)
 │   ├── test_agent.py               # answer() + the OpenRouter binding (Phase 0)
 │   ├── test_embeddings.py          # the one shared embedding model (Phase 0)
 │   ├── test_chunk_token_limit.py   # CHUNK_SIZE_CHARS vs. the embedding window (Phase 0)
+│   ├── test_section_gate.py + 8 more   # seam 6: gate rules, recorded filings, chunker,
+│   │                      # store, pipeline, reports, EDGAR selection, CLI (Phase 1)
 │   ├── test_app_smoke.py  # AppTest — page renders, a message reaches the agent seam
 │   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
 │                          # reruns, distinctness across sessions,
@@ -217,7 +222,9 @@ Each step ends with something runnable/testable.
 - uv project, config, .env handling, logging setup, CI lint+test workflow
 - Streamlit hello-chat with OpenRouter round-trip
 
-**Phase 1 — Knowledge base (Tier-1, ~4 h)** *(see ADR-0007)*
+**Phase 1 — Knowledge base (Tier-1, ~4 h)** *(see ADR-0007)* — ✅ **done except the
+retrieval smoke test** (`t2-kb-ingestion`, #3; top-k sanity checks need Phase 2's
+retrieval chain and land there)
 - EDGAR ingest for the universe (latest 10-K per company; accession-id idempotency).
   KB = **curated sections only** (Items 1, 1A, 7, 7A), not full filings.
 - Structure-anchored section extraction via **edgartools**; bounded regex as documented
@@ -227,8 +234,12 @@ Each step ends with something runnable/testable.
 - **Phase-1 gate — section-detection sanity check:** per company × section assert found,
   non-empty, within length bounds, and body ≫ heading (catches TOC hits); fail loudly
   before any retrieval numbers exist. One-time hand-verification checklist of extracted
-  section starts committed as an artifact.
-- Smoke test: top-k retrieval sanity checks for 5 hand-written queries.
+  section starts committed as an artifact. *(As shipped, the gate grew four more checks
+  the fifteen real filings demanded: starts-at-its-own-heading, stops-before-the-next-
+  Item, the-filer-files-10-Ks, and the recorded-pointer-filer cross-check on the Item 7A
+  incorporation-by-reference excusal — ADR-0007 amendment.)*
+- Smoke test: top-k retrieval sanity checks for 5 hand-written queries — **not done**;
+  lands with Phase 2.
 
 **Phase 2 — Baseline RAG (P0, ~3 h)**
 - Vector-only retrieval chain, source citations, sources panel in UI

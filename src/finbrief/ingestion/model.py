@@ -124,9 +124,18 @@ _REFERENCE_PHRASES = (
     "refer to",
     "set forth in",
     "you can find",
-    "see ",
+    "see",
     "required by this item",
     "called for by this item",
+)
+
+#: The phrases as whole-word patterns. Substring matching made "see" fire inside
+#: "oversee" and "foresee" — and for a recorded pointer filer that is a silent drop: a
+#: truncated real Item 7A whose fragment reads "our committees oversee the exposures
+#: described in Management's Discussion and Analysis" would be excused as a pointer and
+#: leave the KB with no finding.
+_REFERENCE_PHRASE_PATTERNS = tuple(
+    re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE) for phrase in _REFERENCE_PHRASES
 )
 
 #: Where the hand-off has to point for the content to still be in the knowledge base.
@@ -190,7 +199,7 @@ def is_incorporated_by_reference(section: Section, text: str) -> bool:
         return False
     body = _without_own_heading(text, section)
     sentences = _SENTENCE_END.split(_ITEM_LABEL_DOT.sub(r"\1", body))
-    handoff = [s for s in sentences if any(p in s.lower() for p in _REFERENCE_PHRASES)]
+    handoff = [s for s in sentences if any(p.search(s) for p in _REFERENCE_PHRASE_PATTERNS)]
     if not any(t in s.lower() for s in handoff for t in _REFERENCE_TARGETS):
         return False
     residue = sum(len(WORD.findall(s)) for s in sentences if s not in handoff)
