@@ -70,6 +70,7 @@ UNIVERSE: tuple[Company, ...] = (
     Company("GS", "The Goldman Sachs Group, Inc.", Sector.BANKS),
     Company("SAP", "SAP SE", Sector.EU_TECH),
     Company("ASML", "ASML Holding N.V.", Sector.EU_TECH),
+    Company("STM", "STMicroelectronics N.V.", Sector.EU_TECH),
 )
 
 
@@ -99,9 +100,9 @@ COMPANIES: Mapping[str, Company] = _index_by_ticker(UNIVERSE)
 TICKERS: frozenset[str] = frozenset(COMPANIES)
 
 #: ticker -> same-sector Universe peers, excluding the ticker itself.
-#: NOTE: `eu_tech` has only two members, so SAP/ASML compare against a single peer.
-#: Phase 3 (`calculate_ratios`) reports the peer set and n inline, so a thin cluster is
-#: visible rather than silent — but it is worth revisiting when the tool is built.
+#: Every cluster holds at least three members, so no company is ever compared against a
+#: single peer (a "peer mean" of one). Phase 3 (`calculate_ratios`) still reports the peer
+#: set and n inline, per ADR-0009.
 PEERS: Mapping[str, tuple[str, ...]] = _build_peers(UNIVERSE)
 
 

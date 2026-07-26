@@ -31,10 +31,11 @@ def test_universe_is_ten_to_fifteen_unique_companies():
     assert len(TICKERS) == len(UNIVERSE)
 
 
-def test_every_company_has_at_least_one_peer():
-    # A cluster of one would silently make `calculate_ratios` peer-less.
+def test_every_company_has_at_least_two_peers():
+    # A two-member cluster would make "the peer mean" a mean of one, which is a
+    # comparison against a single company wearing a statistic's clothes.
     for ticker in TICKERS:
-        assert PEERS[ticker], f"{ticker} has no peer in its cluster"
+        assert len(PEERS[ticker]) >= 2, f"{ticker}'s cluster is too thin to average"
 
 
 def test_peers_are_same_sector_universe_members_excluding_self():
