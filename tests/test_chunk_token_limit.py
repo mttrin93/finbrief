@@ -5,10 +5,10 @@ nothing splits an over-long text before it is sent: a chunk above the model's in
 window would fail the request outright. The justification is that chunking keeps every
 text far below that window — so it is asserted here rather than left as prose.
 
-The chunk size comes from `config.CHUNK_SIZE_CHARS`, not a copy — so when T2 tunes it
+The chunk size comes from `config.CHUNK_SIZE_CHARS`, not a copy — so when Tier-2 tunes it
 there, this guarantee is re-checked against the real value rather than a stale duplicate.
 
-**T2: repoint `chunks_under_test()` at the real chunker's output** over ingested
+**Tier-2: repoint `chunks_under_test()` at the real chunker's output** over ingested
 Sections (`ingestion/chunking.py`). The placeholder below stands in only while no
 chunker exists; `assert_embeddable()` is the assertion that carries over unchanged, so
 the switch is a one-function edit.
@@ -31,7 +31,7 @@ def count_tokens(text: str) -> int:
 
 
 def assert_embeddable(chunks: list[str]) -> None:
-    """The assertion T2 reuses against real chunks: every chunk fits in one request."""
+    """The assertion Tier-2 reuses against real chunks: every chunk fits in one request."""
     oversized = {
         index: count_tokens(chunk)
         for index, chunk in enumerate(chunks)
@@ -50,9 +50,9 @@ def _filled_to_chunk_size(text: str) -> str:
 
 
 def chunks_under_test() -> list[str]:
-    """PLACEHOLDER (T1) — filing-shaped text at exactly the configured chunk size.
+    """PLACEHOLDER (Tier-1) — filing-shaped text at exactly the configured chunk size.
 
-    TODO(T2): return the real chunker's output over ingested Sections instead
+    TODO(Tier-2): return the real chunker's output over ingested Sections instead
     (`ingestion/chunking.py`). Sized off `config.CHUNK_SIZE_CHARS` so that until then a
     change to that constant still produces worst-case-sized inputs here.
     """
@@ -84,8 +84,8 @@ def test_a_chunk_can_never_exceed_the_window_at_this_chunk_size():
 
     cl100k_base never emits more tokens than there are characters, so a chunk capped at
     `CHUNK_SIZE_CHARS` characters cannot reach the token window while that cap stays
-    below it. This is what makes the placeholder above adequate for T1 — and the final
-    assertion is what fires if T2 ever tunes the chunk size past the ceiling.
+    below it. This is what makes the placeholder above adequate for Tier-1 — and the final
+    assertion is what fires if Tier-2 ever tunes the chunk size past the ceiling.
     """
     for chunk in chunks_under_test():
         assert count_tokens(chunk) <= len(chunk)

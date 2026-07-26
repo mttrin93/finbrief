@@ -15,8 +15,8 @@ from finbrief.config import (
     TICKERS,
     UNIVERSE,
     ConfigError,
+    PeerCluster,
     RetrievalStrategy,
-    Sector,
     Settings,
     resolve_log_level,
 )
@@ -39,12 +39,12 @@ def test_every_company_has_at_least_two_peers():
         assert len(PEERS[ticker]) >= 2, f"{ticker}'s cluster is too thin to average"
 
 
-def test_peers_are_same_sector_universe_members_excluding_self():
+def test_peers_are_same_cluster_universe_members_excluding_self():
     assert set(PEERS) == TICKERS
     for ticker, peers in PEERS.items():
         assert ticker not in peers
         assert set(peers) <= TICKERS, "peers must be drawn exclusively from the Universe"
-        assert {COMPANIES[p].sector for p in peers} == {COMPANIES[ticker].sector}
+        assert {COMPANIES[p].cluster for p in peers} == {COMPANIES[ticker].cluster}
 
 
 def test_peer_relation_is_symmetric():
@@ -53,9 +53,9 @@ def test_peer_relation_is_symmetric():
             assert ticker in PEERS[peer]
 
 
-def test_every_sector_is_populated():
-    populated = {company.sector for company in UNIVERSE}
-    assert populated == set(Sector)
+def test_every_peer_cluster_is_populated():
+    populated = {company.cluster for company in UNIVERSE}
+    assert populated == set(PeerCluster)
 
 
 def test_the_universe_holds_only_10k_filers():

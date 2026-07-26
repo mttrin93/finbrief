@@ -31,11 +31,16 @@ class ConfigError(RuntimeError):
 # --------------------------------------------------------------------------------------
 
 
-class Sector(StrEnum):
+class PeerCluster(StrEnum):
     """A curated same-sector peer cluster within the Universe.
 
     Doubles as the peer pool: `calculate_ratios` compares a company against the other
-    Universe members of its sector and never against an out-of-Universe ticker.
+    Universe members of its cluster and never against an out-of-Universe ticker.
+
+    Deliberately not named `Sector`: these are curated for ratio comparability, not drawn
+    from a sector taxonomy. `big_tech` spans three GICS sectors, and AMZN sits apart from
+    the autos despite sharing one with them — the cluster is the unit, GICS an input to
+    curating it (ADR-0009).
     """
 
     BIG_TECH = "big_tech"
@@ -50,32 +55,32 @@ class Company:
 
     ticker: str
     name: str
-    sector: Sector
+    cluster: PeerCluster
 
 
 #: The Universe: fixed at ingest time, curated as same-sector peer clusters so it can
 #: serve triple duty — KB scope, demo cast, and peer pool (CONTEXT.md, ADR-0009).
 #:
 #: **Every member must file a 10-K.** ADR-0007 scopes the KB to Items 1/1A/7/7A of the
-#: annual 10-K, and foreign private issuers file a 20-F, which has no such items — so an
-#: ADR filer here would silently produce zero sections at ingest. `test_config.py` guards
+#: annual 10-K, and foreign private issuers file a 20-F, which has no such items — so a
+#: 20-F filer here would silently produce zero Sections at ingest. `test_config.py` guards
 #: this; ADR-0007 records it as a stated limitation.
 UNIVERSE: tuple[Company, ...] = (
-    Company("AAPL", "Apple Inc.", Sector.BIG_TECH),
-    Company("MSFT", "Microsoft Corporation", Sector.BIG_TECH),
-    Company("NVDA", "NVIDIA Corporation", Sector.BIG_TECH),
-    Company("AMZN", "Amazon.com, Inc.", Sector.BIG_TECH),
-    Company("GOOGL", "Alphabet Inc.", Sector.BIG_TECH),
-    Company("META", "Meta Platforms, Inc.", Sector.BIG_TECH),
-    Company("TSLA", "Tesla, Inc.", Sector.AUTOS),
-    Company("F", "Ford Motor Company", Sector.AUTOS),
-    Company("GM", "General Motors Company", Sector.AUTOS),
-    Company("JPM", "JPMorgan Chase & Co.", Sector.BANKS),
-    Company("BAC", "Bank of America Corporation", Sector.BANKS),
-    Company("GS", "The Goldman Sachs Group, Inc.", Sector.BANKS),
-    Company("JNJ", "Johnson & Johnson", Sector.HEALTHCARE),
-    Company("LLY", "Eli Lilly and Company", Sector.HEALTHCARE),
-    Company("PFE", "Pfizer Inc.", Sector.HEALTHCARE),
+    Company("AAPL", "Apple Inc.", PeerCluster.BIG_TECH),
+    Company("MSFT", "Microsoft Corporation", PeerCluster.BIG_TECH),
+    Company("NVDA", "NVIDIA Corporation", PeerCluster.BIG_TECH),
+    Company("AMZN", "Amazon.com, Inc.", PeerCluster.BIG_TECH),
+    Company("GOOGL", "Alphabet Inc.", PeerCluster.BIG_TECH),
+    Company("META", "Meta Platforms, Inc.", PeerCluster.BIG_TECH),
+    Company("TSLA", "Tesla, Inc.", PeerCluster.AUTOS),
+    Company("F", "Ford Motor Company", PeerCluster.AUTOS),
+    Company("GM", "General Motors Company", PeerCluster.AUTOS),
+    Company("JPM", "JPMorgan Chase & Co.", PeerCluster.BANKS),
+    Company("BAC", "Bank of America Corporation", PeerCluster.BANKS),
+    Company("GS", "The Goldman Sachs Group, Inc.", PeerCluster.BANKS),
+    Company("JNJ", "Johnson & Johnson", PeerCluster.HEALTHCARE),
+    Company("LLY", "Eli Lilly and Company", PeerCluster.HEALTHCARE),
+    Company("PFE", "Pfizer Inc.", PeerCluster.HEALTHCARE),
 )
 
 #: Foreign private issuers file a 20-F, not a 10-K, so they cannot supply the Sections
@@ -89,18 +94,18 @@ def _index_by_ticker(universe: tuple[Company, ...]) -> Mapping[str, Company]:
 
 
 def _build_peers(universe: tuple[Company, ...]) -> Mapping[str, tuple[str, ...]]:
-    """Derive the static PEERS map from the Universe's sector clusters.
+    """Derive the static PEERS map from the Universe's peer clusters.
 
     ADR-0009 calls for a static map in `config.py`. Deriving it from the single Universe
     declaration keeps it static (computed once at import, no I/O) while making it
     impossible for the map to drift from the Universe it describes.
     """
-    by_sector: dict[Sector, list[str]] = {}
+    by_cluster: dict[PeerCluster, list[str]] = {}
     for company in universe:
-        by_sector.setdefault(company.sector, []).append(company.ticker)
+        by_cluster.setdefault(company.cluster, []).append(company.ticker)
     return MappingProxyType(
         {
-            company.ticker: tuple(t for t in by_sector[company.sector] if t != company.ticker)
+            company.ticker: tuple(t for t in by_cluster[company.cluster] if t != company.ticker)
             for company in universe
         }
     )
@@ -109,7 +114,7 @@ def _build_peers(universe: tuple[Company, ...]) -> Mapping[str, tuple[str, ...]]
 COMPANIES: Mapping[str, Company] = _index_by_ticker(UNIVERSE)
 TICKERS: frozenset[str] = frozenset(COMPANIES)
 
-#: ticker -> same-sector Universe peers, excluding the ticker itself.
+#: ticker -> same-cluster Universe peers, excluding the ticker itself.
 #: Every cluster holds at least three members, so no company is ever compared against a
 #: single peer (a "peer mean" of one). Phase 3 (`calculate_ratios`) still reports the peer
 #: set and n inline, per ADR-0009.
@@ -136,7 +141,7 @@ DEFAULT_TRANSLATION_ENABLED = True
 #: (RecursiveCharacterTextSplitter, 1000 chars with a 200-char overlap; the overlap
 #: belongs to the chunker itself and lands with it in Phase 1).
 #:
-#: **T2 owns tuning this value**, and it is the single source of truth for it: two things
+#: **Tier-2 owns tuning this value**, and it is the single source of truth for it: two things
 #: depend on it. `retrieval/embeddings.py` sends raw strings with no length-safe
 #: splitting, so a chunk over the embedding model's 8191-token window would fail the
 #: request outright — `tests/test_chunk_token_limit.py` imports this constant and guards
