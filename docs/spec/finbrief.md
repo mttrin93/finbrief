@@ -35,8 +35,8 @@ evaluated (RAGAs + per-bucket A/B), so the quality claims are measured, not asse
 5. As an analyst, I want to optionally see how my query was translated and which chunks each variant surfaced, so that I understand and trust the retrieval.
 6. As an analyst, I want exact-identifier queries ("what's in Item 1A?", a ticker, a ratio name) to retrieve precisely, so that jargon and identifiers aren't blurred away by semantic search.
 7. As an analyst, I want to ask for current valuation and get live price/market-cap data via a tool, so that the brief reflects today, not the filing date.
-8. As an analyst, I want computed ratios (P/E, D/E, margins) compared against same-sector peers, so that I can judge whether a company is cheap or expensive relative to its cluster.
-9. As an analyst, I want the peer set and its size shown alongside the comparison (e.g. "vs. mean of 3 sector peers: F, GM"), so that I know the basis of the comparison.
+8. As an analyst, I want computed ratios (P/E, D/E, margins) compared against its peer cluster, so that I can judge whether a company is cheap or expensive relative to that cluster.
+9. As an analyst, I want the peer set and its size shown alongside the comparison (e.g. "vs. mean of 2 `autos` peers: F, GM"), so that I know the basis of the comparison.
 10. As an analyst, I want recent news headlines for a company via a tool, so that I can connect current events to the filing's stated risks.
 11. As an analyst, I want to ask a combined question ("anything in the news related to those risks?") and have the assistant interleave retrieval and the news tool in one answer, so that I don't have to run two separate queries.
 12. As an analyst, I want a single "give me the full brief" command that assembles business, risks, valuation, and news into one structured output, so that I have a ready pre-call document.
@@ -88,7 +88,7 @@ LLM access via OpenRouter (OpenAI-compatible). Embeddings via OpenRouter
 `text-embedding-3-small`.
 
 **Tools.** `get_stock_data(ticker)` (yfinance, TTL-cached); `calculate_ratios(ticker)`
-(P/E, D/E, margins vs. mean of same-sector **in-Universe** peers resolved through the same
+(P/E, D/E, margins vs. mean of same-cluster **in-Universe** peers resolved through the same
 cached `get_stock_data` path — zero new API surface; reports peer set + n, ADR-0009);
 `get_recent_news(ticker, days)` (RSS via feedparser, HTML-stripped on ingest). Tiered error
 handling: API level (retry/backoff/cache), retrieval level (empty → fallback message),
@@ -141,7 +141,8 @@ Six seams (confirmed):
 3. **Streamlit app via `streamlit.testing.v1.AppTest`** — session/rendering only: thread_id
    stability across reruns, distinctness across sessions, fresh-uuid+surviving-agent on
    start-over, toggles, panels render. **The agent is stubbed entirely — no LLM calls.**
-   Prior art: `test_app_state.py`.
+   Lands as `test_app_state.py` in Phase 3; `test_app_smoke.py` is the Phase-0 subset
+   (page renders, a message reaches the agent seam).
 4. **Security gate** — normalize/regex tested as **pure functions**; the classifier layer via
    **mocked responses in unit runs**, live only in the cached security-suite evals. Indirect
    injection asserted against the dedicated test collection (obeys nothing / no prompt leak);
@@ -159,14 +160,16 @@ axis), MCP client + tools-as-MCP-server, multi-model support, real-time KB refre
 generic tail (auth + watchlists, multi-format export, analytics dashboard, scheduled KB
 updates, rate limiting, help guide, multi-language toggle). Also out of scope: adaptive
 per-query strategy routing (ADR-0005); out-of-Universe peers (ADR-0009); full-filing
-ingestion and table/figure fidelity (ADR-0007); 10-Q filings.
+ingestion and table/figure fidelity (ADR-0007); 10-Q filings; foreign private issuers
+(20-F), which have no Item 1A/7/7A and so cannot supply a Section (ADR-0007).
 
 ## Further Notes
 
 - Governing scope split and the Tier-1 gate: ADR-0001. Build order: PLAN.md §6, phases
   1 → 2 → 3 → 4 → 5 → 6 (logging) → 7 (evaluation) → **gate** → 8 (Tier-2).
 - Known limitations for the review reflection: single-language KB; faithfulness vs.
-  useful-but-uncontexted trade-off; yfinance as an unofficial API; Universe fixed at ingest;
-  no re-ranking in Tier-1.
-- Domain vocabulary is fixed in `CONTEXT.md` (Brief, Universe, Filing, Section, Bucket,
-  Golden set, Peer) — use it in ticket titles and test names.
+  useful-but-uncontexted trade-off; yfinance as an unofficial API; Universe fixed at ingest
+  and restricted to 10-K filers (20-F filers out of scope — ADR-0007); no re-ranking in
+  Tier-1.
+- Domain vocabulary is fixed in `CONTEXT.md` (Brief, Universe, Peer cluster, Peer, Filing,
+  Section, Bucket, Golden set) — use it in ticket titles and test names.

@@ -28,3 +28,7 @@ data/
 # Agent skill definitions (vendored tooling; tracked via skills-lock.json)
 .agents/skills/
 .claude/skills/
+
+# ralphex run state (progress logs, worktrees). It ships a nested .gitignore that already
+# covers its contents; this makes the exclusion the repo's, not a tool-generated file's.
+.ralphex/

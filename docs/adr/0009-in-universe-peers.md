@@ -9,12 +9,23 @@ would need a separate cached snapshot table.
 no snapshot table.
 
 - The **Universe is curated as same-sector peer clusters** (big tech / autos / banks /
-  EU ADRs), so it serves triple duty: KB scope, demo cast, and peer pool.
+  healthcare), so it serves triple duty: KB scope, demo cast, and peer pool.
 - Every `calculate_ratios` call resolves peers via the **same TTL-cached `get_stock_data`
   path**, so peer averaging adds **zero new API surface**.
-- `PEERS` is a **static map in `config.py`**. Selection rule: *same GICS sector within the
-  Universe*.
-- Tool output reports the peer set and n inline — e.g. "vs. mean of 3 sector peers: F, GM".
+- `PEERS` is a **static map in `config.py`**. Selection rule: *same curated peer cluster
+  within the Universe*.
+
+  Not *same GICS sector* — an earlier wording of this rule that the clusters never
+  implemented. `big_tech` spans three GICS sectors (Information Technology for
+  AAPL/MSFT/NVDA, Consumer Discretionary for AMZN, Communication Services for
+  GOOGL/META), and AMZN sits apart from TSLA/F/GM despite sharing a GICS sector with
+  them. That is deliberate: the clusters are curated for **ratio comparability**, which
+  is also the ground on which this ADR rejects grouping TSLA with mega-cap tech below —
+  a GICS rule would have forced exactly that pairing. The cluster is the unit; GICS is
+  an input to curating it, not the rule.
+- Tool output reports the peer set and n inline — e.g. for TSLA, "vs. mean of 2 `autos`
+  peers: F, GM" (n comes from the cluster: 2 for the three-member clusters, 5 for
+  `big_tech`).
 
 **Considered and rejected.**
 - *TSLA grouped with mega-cap tech* — rejected on ratio-comparability grounds (autos and
