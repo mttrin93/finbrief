@@ -20,6 +20,10 @@ dependencies = [
     "pypdf",
     # NOTE: eval / guardrails / mcp deps intentionally deferred until the
     # grilling + spec settle which of them earn their place. See PLAN.md §2.
+    "edgartools>=5.43.0",
+    "langchain-chroma>=1.1.0",
+    "langchain-text-splitters>=1.1.2",
+    "tiktoken>=0.13.0",
 ]
 
 [dependency-groups]
