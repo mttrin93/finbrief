@@ -86,8 +86,9 @@ def log_event(
 ) -> None:
     """Emit one structured event. `event` is the stable key analyses filter on.
 
-    `logger` and `event` are positional-only so that almost any field name is usable;
-    `level` is the one reserved word — pass it as `fields={"level": ...}`-style data
-    under a different key if a payload ever needs it.
+    `logger` and `event` are positional-only so that almost any field name is usable.
+    `level` is the one reserved word: it selects the log level, so a payload cannot use it
+    as a field key — give the datum a different name. The envelope's own `level` is
+    unreachable from `fields` either way, since fields are nested rather than flattened.
     """
     logger.log(level, event, extra={"event": event, "fields": fields})

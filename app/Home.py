@@ -9,7 +9,7 @@ checkpointer that gives them a purpose.
 import streamlit as st
 
 from finbrief.agent.agent import answer
-from finbrief.config import PEERS, UNIVERSE, ConfigError, PeerCluster, get_settings
+from finbrief.config import CLUSTERS, PEERS, UNIVERSE, ConfigError, get_settings
 from finbrief.observability.logging_setup import configure_logging
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
@@ -47,10 +47,9 @@ with st.sidebar:
     st.caption("Retrieval settings are declared but not yet wired up (Phase 2 onward).")
 
     st.subheader("Universe")
-    st.caption(f"{len(UNIVERSE)} companies in {len(PeerCluster)} peer clusters.")
-    for cluster in PeerCluster:
-        tickers = [c.ticker for c in UNIVERSE if c.cluster is cluster]
-        st.markdown(f"**{cluster.value.replace('_', ' ').title()}** — {', '.join(tickers)}")
+    st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
+    for cluster, tickers in CLUSTERS.items():
+        st.markdown(f"**{cluster.label}** — {', '.join(tickers)}")
     st.caption(f"Peers come only from this set, e.g. TSLA vs. {', '.join(PEERS['TSLA'])}.")
 
 if "messages" not in st.session_state:

@@ -48,6 +48,11 @@ class PeerCluster(StrEnum):
     BANKS = "banks"
     HEALTHCARE = "healthcare"
 
+    @property
+    def label(self) -> str:
+        """Display name for the UI: `big_tech` -> "Big Tech"."""
+        return self.value.replace("_", " ").title()
+
 
 @dataclass(frozen=True, slots=True)
 class Company:
@@ -93,19 +98,28 @@ def _index_by_ticker(universe: tuple[Company, ...]) -> Mapping[str, Company]:
     return MappingProxyType({company.ticker: company for company in universe})
 
 
-def _build_peers(universe: tuple[Company, ...]) -> Mapping[str, tuple[str, ...]]:
+def _build_clusters(
+    universe: tuple[Company, ...],
+) -> Mapping[PeerCluster, tuple[str, ...]]:
+    """Group the Universe by peer cluster, preserving declaration order."""
+    by_cluster: dict[PeerCluster, list[str]] = {}
+    for company in universe:
+        by_cluster.setdefault(company.cluster, []).append(company.ticker)
+    return MappingProxyType({cluster: tuple(t) for cluster, t in by_cluster.items()})
+
+
+def _build_peers(
+    clusters: Mapping[PeerCluster, tuple[str, ...]], universe: tuple[Company, ...]
+) -> Mapping[str, tuple[str, ...]]:
     """Derive the static PEERS map from the Universe's peer clusters.
 
     ADR-0009 calls for a static map in `config.py`. Deriving it from the single Universe
     declaration keeps it static (computed once at import, no I/O) while making it
     impossible for the map to drift from the Universe it describes.
     """
-    by_cluster: dict[PeerCluster, list[str]] = {}
-    for company in universe:
-        by_cluster.setdefault(company.cluster, []).append(company.ticker)
     return MappingProxyType(
         {
-            company.ticker: tuple(t for t in by_cluster[company.cluster] if t != company.ticker)
+            company.ticker: tuple(t for t in clusters[company.cluster] if t != company.ticker)
             for company in universe
         }
     )
@@ -114,11 +128,15 @@ def _build_peers(universe: tuple[Company, ...]) -> Mapping[str, tuple[str, ...]]
 COMPANIES: Mapping[str, Company] = _index_by_ticker(UNIVERSE)
 TICKERS: frozenset[str] = frozenset(COMPANIES)
 
+#: peer cluster -> its tickers. The one place the grouping is computed: `_build_peers` and
+#: the UI's Universe panel both read it rather than re-deriving it from `UNIVERSE`.
+CLUSTERS: Mapping[PeerCluster, tuple[str, ...]] = _build_clusters(UNIVERSE)
+
 #: ticker -> same-cluster Universe peers, excluding the ticker itself.
 #: Every cluster holds at least three members, so no company is ever compared against a
 #: single peer (a "peer mean" of one). Phase 3 (`calculate_ratios`) still reports the peer
 #: set and n inline, per ADR-0009.
-PEERS: Mapping[str, tuple[str, ...]] = _build_peers(UNIVERSE)
+PEERS: Mapping[str, tuple[str, ...]] = _build_peers(CLUSTERS, UNIVERSE)
 
 
 # --------------------------------------------------------------------------------------
@@ -214,20 +232,28 @@ class Settings:
         )
 
 
+def _raw(env: Mapping[str, str], name: str) -> str:
+    """The trimmed value of `name`, or `""` when unset or blank.
+
+    The single entry point the typed readers below share, so "unset" and "whitespace only"
+    mean the same thing everywhere — see `test_blank_api_key_is_treated_as_missing`.
+    """
+    return env.get(name, "").strip()
+
+
 def _required(env: Mapping[str, str], name: str) -> str:
-    value = env.get(name, "").strip()
+    value = _raw(env, name)
     if not value:
         raise ConfigError(f"{name} is not set. {_ENV_FILE_HINT}")
     return value
 
 
 def _string(env: Mapping[str, str], name: str, default: str) -> str:
-    value = env.get(name, "").strip()
-    return value or default
+    return _raw(env, name) or default
 
 
 def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
-    raw = env.get(name, "").strip().lower()
+    raw = _raw(env, name).lower()
     if not raw:
         return default
     if raw in _TRUE:
@@ -248,7 +274,7 @@ def _integer(
     minimum: int,
     maximum: int | None = None,
 ) -> int:
-    raw = env.get(name, "").strip()
+    raw = _raw(env, name)
     if not raw:
         return default
     try:
@@ -265,7 +291,7 @@ def _integer(
 def _strategy(
     env: Mapping[str, str], name: str, default: RetrievalStrategy
 ) -> RetrievalStrategy:
-    raw = env.get(name, "").strip().lower()
+    raw = _raw(env, name).lower()
     if not raw:
         return default
     try:

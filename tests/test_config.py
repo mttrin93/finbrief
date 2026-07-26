@@ -10,6 +10,7 @@ import pytest
 
 from finbrief.config import (
     _TWENTY_F_FILERS,
+    CLUSTERS,
     COMPANIES,
     PEERS,
     TICKERS,
@@ -51,6 +52,19 @@ def test_peer_relation_is_symmetric():
     for ticker, peers in PEERS.items():
         for peer in peers:
             assert ticker in PEERS[peer]
+
+
+def test_clusters_partition_the_universe():
+    # CLUSTERS is the one computed grouping — PEERS and the UI's Universe panel both read
+    # it instead of re-deriving it, so it has to be a true partition.
+    assert set(CLUSTERS) == set(PeerCluster)
+    grouped = [ticker for cluster in CLUSTERS.values() for ticker in cluster]
+    assert sorted(grouped) == sorted(TICKERS), "every company belongs to exactly one cluster"
+
+
+def test_a_cluster_label_is_display_ready():
+    assert PeerCluster.BIG_TECH.label == "Big Tech"
+    assert PeerCluster.HEALTHCARE.label == "Healthcare"
 
 
 def test_every_peer_cluster_is_populated():
