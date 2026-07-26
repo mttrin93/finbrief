@@ -128,6 +128,7 @@ def test_environment_overrides_every_switch():
             "FINBRIEF_EVAL_MODE": "yes",
             "FINBRIEF_ALPHAVANTAGE_ENABLED": "true",
             "SEC_EDGAR_USER_AGENT": "finbrief someone@example.com",
+            "FINBRIEF_CHROMA_DIR": "/tmp/finbrief-index",
         }
     )
     assert settings.openrouter_api_key == "sk-override"
@@ -141,6 +142,7 @@ def test_environment_overrides_every_switch():
     assert settings.eval_mode is True
     assert settings.alphavantage_enabled is True
     assert settings.sec_edgar_user_agent == "finbrief someone@example.com"
+    assert settings.chroma_dir == "/tmp/finbrief-index"
 
 
 def test_get_settings_reads_the_process_environment_and_caches(monkeypatch):

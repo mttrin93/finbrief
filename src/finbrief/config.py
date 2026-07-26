@@ -218,6 +218,7 @@ class Settings:
     eval_mode: bool
     alphavantage_enabled: bool
     sec_edgar_user_agent: str
+    chroma_dir: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -246,6 +247,11 @@ class Settings:
             eval_mode=_boolean(env, "FINBRIEF_EVAL_MODE", False),
             alphavantage_enabled=_boolean(env, "FINBRIEF_ALPHAVANTAGE_ENABLED", False),
             sec_edgar_user_agent=_string(env, "SEC_EDGAR_USER_AGENT", ""),
+            # Where the persisted Chroma collections live. An override exists because a
+            # deployment's writable path is not the repo's, and because the evaluation
+            # harness builds throwaway indexes; the default keeps ingest and app pointed
+            # at the same directory without configuration.
+            chroma_dir=_string(env, "FINBRIEF_CHROMA_DIR", "data/chroma"),
         )
 
 

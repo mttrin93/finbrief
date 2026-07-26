@@ -56,6 +56,11 @@ class FilingRef:
     10-K filed in October 2025 for a fiscal year ending September 2025 is FY2025, and
     JPM's filed in February 2026 covers FY2025 — the golden set cites the fiscal year the
     text is *about* (ADR-0002).
+
+    `url` comes from EDGAR rather than being rebuilt from the accession number. The
+    leading block of an accession is the *filer agent's* CIK, not the company's — JPM's
+    10-K is accession `0001628280-…`, which is Donnelley's — so a URL composed from it
+    points at the wrong company's directory, or nowhere.
     """
 
     ticker: str
@@ -63,6 +68,7 @@ class FilingRef:
     accession: str
     fiscal_year: int
     filing_date: str
+    url: str = ""
 
 
 @dataclass(frozen=True, slots=True)

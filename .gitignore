@@ -32,3 +32,6 @@ data/
 # ralphex run state (progress logs, worktrees). It ships a nested .gitignore that already
 # covers its contents; this makes the exclusion the repo's, not a tool-generated file's.
 .ralphex/
+
+# Persisted Chroma index — rebuilt by scripts/ingest_filings.py, never committed
+data/
