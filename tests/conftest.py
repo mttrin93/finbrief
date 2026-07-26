@@ -13,7 +13,18 @@ import pytest
 from finbrief import config
 from finbrief.observability.logging_setup import PACKAGE_LOGGER
 
-_MANAGED_PREFIXES = ("OPENROUTER_", "FINBRIEF_", "SEC_EDGAR_", "ALPHAVANTAGE_", "FRED_")
+#: `LANGCHAIN_`/`LANGSMITH_` are here for the "no network" half of the contract, not the
+#: config half: with tracing exported, every LangChain invoke in the suite — the fake chat
+#: models included — POSTs its run to LangSmith.
+_MANAGED_PREFIXES = (
+    "OPENROUTER_",
+    "FINBRIEF_",
+    "SEC_EDGAR_",
+    "ALPHAVANTAGE_",
+    "FRED_",
+    "LANGCHAIN_",
+    "LANGSMITH_",
+)
 
 
 @pytest.fixture(autouse=True)

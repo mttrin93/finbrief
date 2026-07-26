@@ -2,6 +2,7 @@
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
+from finbrief.agent import agent as agent_module
 from finbrief.agent.agent import SKELETON_SYSTEM_PROMPT, answer
 from finbrief.config import Settings
 from finbrief.llm import build_chat_model
@@ -64,3 +65,29 @@ def test_chat_model_honours_a_model_override():
     # The Phase-5 injection classifier gets its own (cheaper) model this way.
     model = build_chat_model(SETTINGS, model="anthropic/claude-haiku-4.5")
     assert model.model_name == "anthropic/claude-haiku-4.5"
+
+
+def test_chat_model_falls_back_to_the_application_settings(monkeypatch):
+    # The production path: no settings argument, so `get_settings()` supplies them. Every
+    # other test here injects, which would leave a wrong constructor here green in CI.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-environ")
+    monkeypatch.setenv("FINBRIEF_CHAT_MODEL", "openai/gpt-4o")
+
+    model = build_chat_model()
+
+    assert model.model_name == "openai/gpt-4o"
+    assert model.openai_api_key.get_secret_value() == "sk-from-environ"
+
+
+def test_answer_builds_the_openrouter_model_when_none_is_injected(monkeypatch):
+    """The default branch the app takes — unexercised, a swapped constructor ships green."""
+    built = []
+
+    def fake_build_chat_model():
+        built.append(True)
+        return GenericFakeChatModel(messages=iter(["grounded reply"]))
+
+    monkeypatch.setattr(agent_module, "build_chat_model", fake_build_chat_model)
+
+    assert answer("What are Tesla's risks?") == "grounded reply"
+    assert built == [True], "answer() must build the shared chat model, not its own client"

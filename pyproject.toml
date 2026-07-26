@@ -26,9 +26,6 @@ dependencies = [
 dev = [
     "pytest",
     "ruff",
-    # Already a hard requirement of langchain-openai; declared here because
-    # tests/test_chunk_token_limit.py imports it directly.
-    "tiktoken",
 ]
 
 [build-system]

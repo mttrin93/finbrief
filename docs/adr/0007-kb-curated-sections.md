@@ -26,8 +26,10 @@ with TOC/boilerplate and mislabels chunks silently.
 - **Foreign private issuers (20-F) are out of scope.** A 20-F has no Item 1A/7/7A, so a
   foreign private issuer cannot supply a Section under this decision at all — supporting
   one would require a separate 20-F section mapping and its own extraction gate. The
-  Universe is therefore curated to 10-K filers only, and `config._TWENTY_F_FILERS` guards
-  against reintroducing one. This surfaced late: the Universe originally carried an
+  Universe is therefore curated to 10-K filers only. `config._TWENTY_F_FILERS` is a
+  tripwire under that rule, not a proof of it: a denylist catches the plausible additions
+  to the existing clusters, so the filing type still has to be confirmed on EDGAR when
+  adding any company. This surfaced late: the Universe originally carried an
   `eu_tech` cluster (SAP, ASML, STM) that ADR-0009 and CONTEXT.md both sanctioned as
   "EU ADRs" while this ADR scoped the KB to 10-K sections — the two documents disagreed
   and the code faithfully implemented the wrong one. Stated limitation; README reflection

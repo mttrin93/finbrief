@@ -19,6 +19,7 @@ from finbrief.config import (
     PeerCluster,
     RetrievalStrategy,
     Settings,
+    get_settings,
     resolve_log_level,
 )
 
@@ -111,23 +112,57 @@ def test_defaults_match_the_pre_registered_shipping_strategy():
 
 
 def test_environment_overrides_every_switch():
+    # Every field, so a misread name (the failure mode: an override that silently does
+    # nothing) cannot hide — `FINBRIEF_EMBEDDING_MODEL` above all, since ingest and query
+    # drifting apart degrades retrieval to noise with no error.
     settings = Settings.from_env(
-        MINIMAL_ENV
-        | {
+        {
+            "OPENROUTER_API_KEY": "sk-override",
             "OPENROUTER_BASE_URL": "https://proxy.example/v1",
             "FINBRIEF_CHAT_MODEL": "anthropic/claude-haiku-4.5",
+            "FINBRIEF_EMBEDDING_MODEL": "openai/text-embedding-3-large",
             "FINBRIEF_RETRIEVAL_STRATEGY": "vector",
             "FINBRIEF_QUERY_TRANSLATION": "off",
             "FINBRIEF_RETRIEVAL_K": "8",
+            "FINBRIEF_MAX_SUB_QUERIES": "1",
             "FINBRIEF_EVAL_MODE": "yes",
+            "FINBRIEF_ALPHAVANTAGE_ENABLED": "true",
+            "SEC_EDGAR_USER_AGENT": "finbrief someone@example.com",
         }
     )
+    assert settings.openrouter_api_key == "sk-override"
     assert settings.openrouter_base_url == "https://proxy.example/v1"
     assert settings.chat_model == "anthropic/claude-haiku-4.5"
+    assert settings.embedding_model == "openai/text-embedding-3-large"
     assert settings.retrieval_strategy is RetrievalStrategy.VECTOR
     assert settings.query_translation_enabled is False
     assert settings.retrieval_k == 8
+    assert settings.max_sub_queries == 1
     assert settings.eval_mode is True
+    assert settings.alphavantage_enabled is True
+    assert settings.sec_edgar_user_agent == "finbrief someone@example.com"
+
+
+def test_get_settings_reads_the_process_environment_and_caches(monkeypatch):
+    # The path the app actually takes. `Settings.from_env` being correct is worth nothing
+    # if `get_settings` hands it the wrong mapping.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-environ")
+    monkeypatch.setenv("FINBRIEF_RETRIEVAL_K", "9")
+
+    settings = get_settings()
+    assert settings.openrouter_api_key == "sk-from-environ"
+    assert settings.retrieval_k == 9
+    assert get_settings() is settings, "settings are cached for the process"
+
+
+def test_get_settings_raises_rather_than_caching_a_failure(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
+        get_settings()
+
+    # A cached failure would make the banner's "copy .env.example" advice unfollowable.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-late")
+    assert get_settings().openrouter_api_key == "sk-late"
 
 
 def test_the_api_key_never_appears_in_a_repr():
@@ -163,3 +198,25 @@ def test_log_level_defaults_to_info_and_accepts_a_name():
 def test_unknown_log_level_fails_loudly():
     with pytest.raises(ConfigError, match="LOG_LEVEL"):
         resolve_log_level({"LOG_LEVEL": "chatty"})
+
+
+def test_notset_is_rejected_rather_than_silently_muting_the_logs():
+    # NOTSET is in `logging.getLevelNamesMapping()` but means "inherit", not a threshold:
+    # accepting it would set the package logger to 0, and with `propagate=False` its
+    # effective level would fall back to root's WARNING — every INFO event Phase 6/7 reads
+    # back would vanish with no error at all.
+    with pytest.raises(ConfigError, match="LOG_LEVEL"):
+        resolve_log_level({"LOG_LEVEL": "NOTSET"})
+
+
+def test_the_log_level_error_lists_only_levels_it_accepts():
+    with pytest.raises(ConfigError) as excinfo:
+        resolve_log_level({"LOG_LEVEL": "chatty"})
+    message = str(excinfo.value)
+    assert "NOTSET" not in message, "the message must not offer a level that is rejected"
+    for accepted in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        assert accepted in message
+
+
+def test_a_blank_log_level_falls_back_to_info():
+    assert resolve_log_level({"LOG_LEVEL": "   "}) == logging.INFO

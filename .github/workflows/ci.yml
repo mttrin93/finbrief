@@ -5,9 +5,20 @@ on:
     branches: ["**"]
   pull_request:
 
+# Read-only: this workflow only lints and tests, so it never needs a writable token.
+permissions:
+  contents: read
+
+# `push` and `pull_request` both fire on a PR branch — supersede the older run instead of
+# paying for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 

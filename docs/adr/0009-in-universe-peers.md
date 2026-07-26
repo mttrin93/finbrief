@@ -23,7 +23,9 @@ no snapshot table.
   is also the ground on which this ADR rejects grouping TSLA with mega-cap tech below —
   a GICS rule would have forced exactly that pairing. The cluster is the unit; GICS is
   an input to curating it, not the rule.
-- Tool output reports the peer set and n inline — e.g. "vs. mean of 3 sector peers: F, GM".
+- Tool output reports the peer set and n inline — e.g. for TSLA, "vs. mean of 2 `autos`
+  peers: F, GM" (n comes from the cluster: 2 for the three-member clusters, 5 for
+  `big_tech`).
 
 **Considered and rejected.**
 - *TSLA grouped with mega-cap tech* — rejected on ratio-comparability grounds (autos and

@@ -91,11 +91,26 @@ UNIVERSE: tuple[Company, ...] = (
 #: Foreign private issuers file a 20-F, not a 10-K, so they cannot supply the Sections
 #: ADR-0007 scopes the KB to. Kept as a denylist rather than a comment because the
 #: `eu_tech` cluster this replaced (SAP/ASML/STM) was all three — see `test_config.py`.
-_TWENTY_F_FILERS: frozenset[str] = frozenset({"SAP", "ASML", "STM", "TSM", "SHEL", "TM"})
-
-
-def _index_by_ticker(universe: tuple[Company, ...]) -> Mapping[str, Company]:
-    return MappingProxyType({company.ticker: company for company in universe})
+#:
+#: A denylist can only catch a name someone thought to list, so it covers the plausible
+#: additions to the four existing clusters rather than only the tickers already removed.
+#: The invariant itself is the `UNIVERSE` docstring's "every member files a 10-K"; this is
+#: a tripwire under it, not a proof of it — confirm the filing type on EDGAR when adding
+#: any company, especially one not listed here.
+_TWENTY_F_FILERS: frozenset[str] = frozenset(
+    {
+        # Tech / big_tech candidates
+        "SAP", "ASML", "STM", "TSM", "BABA", "INFY", "SONY", "SHOP",
+        # Autos candidates
+        "TM", "HMC", "RACE", "STLA",
+        # Banks candidates
+        "HSBC", "UBS", "DB", "BCS", "MUFG", "RY", "TD",
+        # Healthcare candidates
+        "NVO", "AZN", "SNY", "GSK", "NVS", "TAK",
+        # Energy / other frequently-suggested large caps
+        "SHEL", "BP", "TTE", "PBR", "BHP", "RIO",
+    }
+)  # fmt: skip
 
 
 def _build_clusters(
@@ -125,7 +140,7 @@ def _build_peers(
     )
 
 
-COMPANIES: Mapping[str, Company] = _index_by_ticker(UNIVERSE)
+COMPANIES: Mapping[str, Company] = MappingProxyType({c.ticker: c for c in UNIVERSE})
 TICKERS: frozenset[str] = frozenset(COMPANIES)
 
 #: peer cluster -> its tickers. The one place the grouping is computed: `_build_peers` and
@@ -162,9 +177,10 @@ DEFAULT_TRANSLATION_ENABLED = True
 #: **Tier-2 owns tuning this value**, and it is the single source of truth for it: two things
 #: depend on it. `retrieval/embeddings.py` sends raw strings with no length-safe
 #: splitting, so a chunk over the embedding model's 8191-token window would fail the
-#: request outright — `tests/test_chunk_token_limit.py` imports this constant and guards
-#: that ceiling, so raising it here re-checks the guarantee instead of silently voiding
-#: it. Changing it also invalidates an existing index, which must be re-ingested.
+#: request outright — `tests/test_chunk_token_limit.py` imports this constant and asserts
+#: the worst-case token count it implies stays under that window, so raising it here
+#: re-checks the guarantee instead of silently voiding it.
+#: Changing it also invalidates an existing index, which must be re-ingested.
 #: A deliberately plain constant, not a `Settings` field: chunk size is not a Tier-1 A/B
 #: axis, and an env override would let a running app disagree with the index on disk.
 CHUNK_SIZE_CHARS = 1000
@@ -319,18 +335,28 @@ def get_settings() -> Settings:
     return Settings.from_env(os.environ)
 
 
-def resolve_log_level(env: Mapping[str, str] | None = None) -> int:
+def resolve_log_level(env: Mapping[str, str]) -> int:
     """Resolve `LOG_LEVEL` to a `logging` level.
 
     Deliberately independent of `Settings`: logging must be configurable before — and
     without — a valid API key, so a config failure can still be reported through it.
+    Takes an explicit mapping for the same reason `Settings.from_env` does — one
+    resolution path, and no hidden `.env` read on the way; the caller loads the
+    environment (`load_env()`) and passes it in.
     """
-    load_env()
-    raw = (env if env is not None else os.environ).get("LOG_LEVEL", "").strip().upper()
+    raw = _raw(env, "LOG_LEVEL").upper()
     if not raw:
         return logging.INFO
-    levels = logging.getLevelNamesMapping()
+    # `getLevelNamesMapping()` includes NOTSET (0), which is not a threshold but "inherit
+    # from the parent". Accepting it would set the package logger to 0 and — with
+    # `propagate=False` — let its effective level fall back to root's WARNING, silently
+    # dropping every INFO event Phase 6/7 reads back. A blackout is worse than a failure.
+    levels = {
+        name: level
+        for name, level in logging.getLevelNamesMapping().items()
+        if name != "NOTSET"
+    }
     if raw not in levels:
-        valid = ", ".join(sorted(name for name in levels if name != "NOTSET"))
+        valid = ", ".join(sorted(levels))
         raise ConfigError(f"LOG_LEVEL={raw!r} is not a log level. Use one of: {valid}.")
     return levels[raw]

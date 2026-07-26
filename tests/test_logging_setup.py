@@ -6,6 +6,7 @@ import logging
 
 import pytest
 
+from finbrief.config import ConfigError
 from finbrief.observability.logging_setup import PACKAGE_LOGGER, configure_logging, log_event
 
 
@@ -58,6 +59,31 @@ def test_configuring_twice_does_not_duplicate_lines(captured):
     logger = configure_logging(logging.DEBUG, stream=stream)
     log_event(logger, "chat_turn")
     assert len(lines(stream)) == 1
+
+
+def test_the_configured_level_is_a_threshold_not_an_inherited_default(captured):
+    stream, logger = captured
+    configure_logging(logging.WARNING, stream=stream)
+
+    log_event(logger, "chat_turn")  # INFO — below the threshold
+    log_event(logger, "chat_turn_failed", level=logging.ERROR)
+
+    (record,) = lines(stream)
+    assert record["event"] == "chat_turn_failed"
+    assert record["level"] == "ERROR"
+
+
+def test_a_bad_log_level_in_the_environment_raises_before_anything_is_installed(
+    monkeypatch,
+):
+    monkeypatch.setenv("LOG_LEVEL", "chatty")
+    logger = logging.getLogger(PACKAGE_LOGGER)
+    logger.handlers.clear()
+
+    with pytest.raises(ConfigError, match="LOG_LEVEL"):
+        configure_logging()
+
+    assert not logger.handlers, "a config failure must not leave a half-configured logger"
 
 
 def test_child_loggers_are_captured(captured):

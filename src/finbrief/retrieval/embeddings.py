@@ -27,6 +27,7 @@ def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
         # default length-safe path instead sends pre-tokenised integer arrays, which is
         # an OpenAI-specific extension — so it is disabled here and raw strings are
         # sent. Nothing splits an over-long text once this is off, so the 8191-token
-        # ceiling is enforced by tests/test_chunk_token_limit.py rather than assumed.
+        # ceiling rests on `config.CHUNK_SIZE_CHARS`, which
+        # tests/test_chunk_token_limit.py holds under that window in the worst case.
         check_embedding_ctx_length=False,
     )

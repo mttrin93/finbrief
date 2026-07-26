@@ -604,7 +604,6 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "tiktoken" },
 ]
 
 [package.metadata]
@@ -625,7 +624,6 @@ requires-dist = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-    { name = "tiktoken" },
 ]
 
 [[package]]

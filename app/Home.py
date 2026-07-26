@@ -26,9 +26,9 @@ st.caption(
 # in this banner like any other config problem, not in a raw traceback.
 #
 # Called per rerun rather than under `@st.cache_resource`: `configure_logging` is
-# idempotent by design (it swaps its own tagged handler), so the cache saved a handler
-# swap while making the failure invisible — a cached success means a later bad `LOG_LEVEL`
-# never raises again in that process.
+# idempotent by design (it replaces the package logger's handler under a lock), so the
+# cache saved a handler swap while making the failure invisible — a cached success means a
+# later bad `LOG_LEVEL` never raises again in that process.
 try:
     configure_logging()
     settings = get_settings()
@@ -50,7 +50,14 @@ with st.sidebar:
     st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
     for cluster, tickers in CLUSTERS.items():
         st.markdown(f"**{cluster.label}** — {', '.join(tickers)}")
-    st.caption(f"Peers come only from this set, e.g. TSLA vs. {', '.join(PEERS['TSLA'])}.")
+    # The thinnest cluster makes the crispest example, and picking it from the data keeps
+    # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
+    # the Universe changed.
+    example = min(UNIVERSE, key=lambda company: len(PEERS[company.ticker]))
+    st.caption(
+        f"Peers come only from this set, e.g. {example.ticker} vs. "
+        f"{', '.join(PEERS[example.ticker])}."
+    )
 
 if "messages" not in st.session_state:
     st.session_state.messages = []

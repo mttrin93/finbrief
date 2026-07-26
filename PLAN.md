@@ -45,10 +45,10 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 | Requirement | Implementation |
 |---|---|
 | Knowledge base | 10-K **curated sections** (Items 1, 1A, 7, 7A) via edgartools + ECB/Fed publications + a small financial-glossary set (ADR-0007) |
-| Standard retrieval w/ embeddings | ChromaDB + `text-embedding-3-small` via OpenRouter; RecursiveCharacterTextSplitter (chunk 1000 / overlap 200 as baseline) |
+| Standard retrieval w/ embeddings | ChromaDB + `text-embedding-3-small` via OpenRouter; RecursiveCharacterTextSplitter (chunk size = `config.CHUNK_SIZE_CHARS`, 1000, the single source of truth; overlap 200 belongs to the chunker). Raising it invalidates the index and is re-checked against the 8191-token embedding window by `tests/test_chunk_token_limit.py` |
 | Chunking & similarity search | Section-aware chunking for filings (Item 1, 1A, 7…) with metadata (ticker, filing type, section, fiscal year); cosine similarity top-k |
 | Advanced RAG: query translation | Query rewriting + decomposition step: vague queries ("is Tesla in trouble?") → sub-queries ("risk factors", "debt levels", "recent negative news"); shown in UI |
-| ≥3 tool calls | `get_stock_data(ticker)` (yfinance, TTL-cached), `calculate_ratios(ticker)` (P/E, D/E, margins vs. mean of same-sector **in-Universe** peers via the same cached path — zero new API surface; reports peer set + n), `get_recent_news(ticker, days)` (RSS/free news API) — ADR-0009 |
+| ≥3 tool calls | `get_stock_data(ticker)` (yfinance, TTL-cached), `calculate_ratios(ticker)` (P/E, D/E, margins vs. mean of same-cluster **in-Universe** peers via the same cached path — zero new API surface; reports peer set + n), `get_recent_news(ticker, days)` (RSS/free news API) — ADR-0009 |
 | Domain specialisation | System prompt with analyst persona, financial vocabulary, refusal policy for personalised investment advice, mandatory disclaimer |
 | Security measures | Advice refusal; input gate (normalize → bounded regex → one LLM classifier, cheap-first); Guardrails AI output validator (no-advice); indirect-injection defense (quarantine framing + *tested* payloads + HTML stripping); input validation (ticker whitelist, length caps); disclaimer; gate-trigger logging (ADR-0006) |
 | LangChain + OpenRouter | `create_agent` pattern (Part 4) with checkpointer memory; tools bound via `@tool` |
@@ -185,9 +185,17 @@ finbrief/
 │   └── pages/Dashboard.py # analytics (P2)
 ├── scripts/               # ingest_all.py, update_kb.py (scheduled)
 ├── tests/                 # unit: chunking, tools, guardrails, validation
-│   └── test_app_state.py  # AppTest (ADR-0008) — thread_id stability across reruns,
-│                          # distinctness across sessions, fresh-uuid+surviving-agent on
-│                          # start-over, reset flows, model-picker & strategy toggles
+│   ├── conftest.py        # hermetic env: no .env, no key, no network (Phase 0)
+│   ├── test_config.py     # Universe/Peers invariants + env resolution (Phase 0)
+│   ├── test_logging_setup.py       # the JSON-lines contract (Phase 0)
+│   ├── test_agent.py               # answer() + the OpenRouter binding (Phase 0)
+│   ├── test_embeddings.py          # the one shared embedding model (Phase 0)
+│   ├── test_chunk_token_limit.py   # CHUNK_SIZE_CHARS vs. the embedding window (Phase 0)
+│   ├── test_app_smoke.py  # AppTest — page renders, a message reaches the agent seam
+│   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
+│                          # reruns, distinctness across sessions,
+│                          # fresh-uuid+surviving-agent on start-over, reset flows,
+│                          # model-picker & strategy toggles
 └── .github/workflows/     # ci.yml (lint+tests), kb_update.yml (scheduled, P2)
 ```
 
@@ -205,7 +213,7 @@ Each step ends with something runnable/testable.
 - The `P1`/`P2` letter tags in §2 predate this split; where they disagree, the tier
   definition here wins.
 
-**Phase 0 — Scaffolding (P0, ~1.5 h)**
+**Phase 0 — Scaffolding (P0, ~1.5 h)** — ✅ **done** (`t1-walking-skeleton`)
 - uv project, config, .env handling, logging setup, CI lint+test workflow
 - Streamlit hello-chat with OpenRouter round-trip
 
@@ -350,7 +358,10 @@ Each item built only when fully understood; anything not defensible is cut befor
 
 Known limitations to discuss: KB grounded only in Items 1/1A/7/7A (declared in the UI) —
 questions outside these sections are out of scope; table/figure fidelity limited (hard
-figures come from tools); single-language KB vs. multilingual queries; faithfulness vs.
+figures come from tools); Universe restricted to 10-K filers — foreign private issuers
+(20-F) are out of scope, since a 20-F has no Item 1A/7/7A to ingest and supporting one
+needs its own section mapping (ADR-0007); single-language KB vs. multilingual queries;
+faithfulness vs.
 useful-but-uncontexted knowledge trade-off (Part 3's Einstein example); yfinance as an
 unofficial API in a "production" story; universe fixed at ingest time; no re-ranking stage
 in Tier-1 (promoted to Tier-2 #2 per ADR-0010 — if built, evaluated as a third A/B axis).

@@ -70,6 +70,31 @@ def test_sending_a_message_renders_the_reply(app, monkeypatch):
     ]
 
 
+def test_a_second_turn_replays_the_transcript_once(app, monkeypatch):
+    # One turn never exercises the history-replay loop, so a double-render or a dropped
+    # earlier turn would be invisible.
+    monkeypatch.setattr(agent, "answer", lambda question: f"Reply to {question}")
+    app.run()
+
+    app.chat_input[0].set_value("First question").run()
+    app.chat_input[0].set_value("Second question").run()
+
+    assert not app.exception
+    assert [message.name for message in app.chat_message] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    rendered = [message.markdown[0].value for message in app.chat_message]
+    assert rendered == [
+        "First question",
+        "Reply to First question",
+        "Second question",
+        "Reply to Second question",
+    ]
+
+
 def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     def boom(question):
         raise RuntimeError("upstream refused")
