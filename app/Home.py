@@ -14,14 +14,6 @@ from finbrief.observability.logging_setup import configure_logging
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
-
-@st.cache_resource
-def _setup_logging() -> None:
-    configure_logging()
-
-
-_setup_logging()
-
 st.title("FinBrief")
 st.caption(
     "Walking skeleton — a plain LLM round-trip via OpenRouter. Filing-grounded answers, "
@@ -29,8 +21,16 @@ st.caption(
 )
 
 # Fail here rather than on the first message: a missing key should be obvious before the
-# user has typed anything.
+# user has typed anything. Logging setup shares the guard because `LOG_LEVEL` is itself
+# configuration — `resolve_log_level` raises `ConfigError` on a bad value, and that belongs
+# in this banner like any other config problem, not in a raw traceback.
+#
+# Called per rerun rather than under `@st.cache_resource`: `configure_logging` is
+# idempotent by design (it swaps its own tagged handler), so the cache saved a handler
+# swap while making the failure invisible — a cached success means a later bad `LOG_LEVEL`
+# never raises again in that process.
 try:
+    configure_logging()
     settings = get_settings()
 except ConfigError as exc:
     st.error(f"Configuration problem: {exc}", icon=":material/error:")

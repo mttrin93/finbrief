@@ -203,8 +203,11 @@ class Settings:
                 env, "FINBRIEF_QUERY_TRANSLATION", DEFAULT_TRANSLATION_ENABLED
             ),
             retrieval_k=_integer(env, "FINBRIEF_RETRIEVAL_K", 5, minimum=1),
-            # ADR-0004 caps translation at 3 sub-queries for latency.
-            max_sub_queries=_integer(env, "FINBRIEF_MAX_SUB_QUERIES", 3, minimum=0),
+            # ADR-0004 caps translation at 3 sub-queries for latency. The cap is enforced,
+            # not merely defaulted: the latency budget ADR-0005 judges dominance within
+            # (<=1.5s p50 added by translation) assumes it, so an env override must not be
+            # able to quietly invalidate the A/B result.
+            max_sub_queries=_integer(env, "FINBRIEF_MAX_SUB_QUERIES", 3, minimum=0, maximum=3),
             eval_mode=_boolean(env, "FINBRIEF_EVAL_MODE", False),
             alphavantage_enabled=_boolean(env, "FINBRIEF_ALPHAVANTAGE_ENABLED", False),
             sec_edgar_user_agent=_string(env, "SEC_EDGAR_USER_AGENT", ""),
@@ -237,7 +240,14 @@ def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
     )
 
 
-def _integer(env: Mapping[str, str], name: str, default: int, *, minimum: int) -> int:
+def _integer(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
     raw = env.get(name, "").strip()
     if not raw:
         return default
@@ -247,6 +257,8 @@ def _integer(env: Mapping[str, str], name: str, default: int, *, minimum: int) -
         raise ConfigError(f"{name}={raw!r} is not an integer.") from exc
     if value < minimum:
         raise ConfigError(f"{name}={value} is below the minimum of {minimum}.")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name}={value} is above the maximum of {maximum}.")
     return value
 
 

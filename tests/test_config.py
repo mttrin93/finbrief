@@ -128,6 +128,8 @@ def test_the_api_key_never_appears_in_a_repr():
         ({"FINBRIEF_EVAL_MODE": "maybe"}, "boolean"),
         ({"FINBRIEF_RETRIEVAL_K": "many"}, "integer"),
         ({"FINBRIEF_RETRIEVAL_K": "0"}, "minimum"),
+        # ADR-0004's 3-sub-query latency cap is a ceiling, not just a default.
+        ({"FINBRIEF_MAX_SUB_QUERIES": "99"}, "maximum"),
         ({"FINBRIEF_RETRIEVAL_STRATEGY": "graph"}, "strategy"),
     ],
 )

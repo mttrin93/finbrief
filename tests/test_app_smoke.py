@@ -42,6 +42,18 @@ def test_a_missing_key_reports_a_clear_error_and_stops(app, monkeypatch):
     assert not app.chat_input, "the app should stop before offering a chat input"
 
 
+def test_a_bad_log_level_reports_a_clear_error_and_stops(app, monkeypatch):
+    # LOG_LEVEL is configuration too: `resolve_log_level` raises ConfigError, so it must
+    # reach the same banner as a missing key rather than a raw traceback.
+    monkeypatch.setenv("LOG_LEVEL", "chatty")
+
+    app.run()
+
+    assert not app.exception
+    assert "LOG_LEVEL" in app.error[0].value
+    assert not app.chat_input, "the app should stop before offering a chat input"
+
+
 def test_sending_a_message_renders_the_reply(app, monkeypatch):
     monkeypatch.setattr(agent, "answer", lambda question: f"Reply to {question}")
     app.run()
