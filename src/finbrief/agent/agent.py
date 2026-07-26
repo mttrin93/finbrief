@@ -18,7 +18,7 @@ import time
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from finbrief.agent.llm import build_chat_model
+from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
 
 logger = logging.getLogger(__name__)

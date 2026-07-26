@@ -3,8 +3,8 @@
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 from finbrief.agent.agent import SKELETON_SYSTEM_PROMPT, answer
-from finbrief.agent.llm import build_chat_model
 from finbrief.config import Settings
+from finbrief.llm import build_chat_model
 
 SETTINGS = Settings.from_env(
     {

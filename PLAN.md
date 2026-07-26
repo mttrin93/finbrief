@@ -171,8 +171,9 @@ finbrief/
 ├── .env.example
 ├── src/finbrief/
 │   ├── config.py          # models, universe (peer clusters), PEERS map, flags, strategy switches
+│   ├── llm.py             # shared OpenRouter chat-model client (agent, translation, classifier)
 │   ├── ingestion/         # edgar.py, pdf_docs.py, news.py, chunking.py
-│   ├── retrieval/         # vectorstore.py, hybrid.py, query_translation.py
+│   ├── retrieval/         # embeddings.py (shared by ingest+query), vectorstore.py, hybrid.py, query_translation.py
 │   ├── tools/             # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
 │   ├── agent/             # agent.py (create_agent), prompts.py, guardrails.py
 │   ├── evaluation/        # golden_set.json, ragas_eval.py, ab_test.py, tool_eval.py
