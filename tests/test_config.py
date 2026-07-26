@@ -79,6 +79,8 @@ def test_defaults_match_the_pre_registered_shipping_strategy():
     assert settings.query_translation_enabled is True
     assert settings.max_sub_queries == 3  # ADR-0004 latency cap
     assert settings.openrouter_base_url == "https://openrouter.ai/api/v1"
+    # Served through the same OpenRouter base URL — no second provider (CONTEXT.md).
+    assert settings.embedding_model == "openai/text-embedding-3-small"
 
 
 def test_environment_overrides_every_switch():

@@ -163,7 +163,11 @@ class Settings:
                 env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
             ),
             chat_model=_string(env, "FINBRIEF_CHAT_MODEL", "openai/gpt-4o-mini"),
-            embedding_model=_string(env, "FINBRIEF_EMBEDDING_MODEL", "text-embedding-3-small"),
+            # Served by OpenRouter's /v1/embeddings, so it needs no key or base URL of
+            # its own. One model for ingest and query — see retrieval/embeddings.py.
+            embedding_model=_string(
+                env, "FINBRIEF_EMBEDDING_MODEL", "openai/text-embedding-3-small"
+            ),
             retrieval_strategy=_strategy(env, "FINBRIEF_RETRIEVAL_STRATEGY", DEFAULT_STRATEGY),
             query_translation_enabled=_boolean(
                 env, "FINBRIEF_QUERY_TRANSLATION", DEFAULT_TRANSLATION_ENABLED

@@ -35,3 +35,8 @@ or `multi-hop` — chosen so A/B results are reported per query type.
 **Golden set**:
 The hand-authored, source-separated reference Q/A used to evaluate retrieval and answers.
 Authored against ingested sections only.
+
+## Settled facts
+
+- Embeddings served via OpenRouter `/v1/embeddings` (verified July 2026) — do not
+  re-litigate without re-checking the docs.

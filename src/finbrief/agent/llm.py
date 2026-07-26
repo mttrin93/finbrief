@@ -4,6 +4,9 @@ OpenRouter is OpenAI-compatible, so `ChatOpenAI` pointed at its base URL is the 
 integration. Kept as its own seam because more than one caller needs a model: the agent
 (Phase 3), the query-translation step (Phase 4), and the injection classifier (Phase 5,
 its own prompt and potentially its own cheap model).
+
+Chat models only. The embedding model lives in `retrieval/embeddings.py`, which ingest
+and query must share.
 """
 
 from __future__ import annotations
