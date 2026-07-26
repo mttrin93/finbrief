@@ -158,7 +158,7 @@ The following risk factors should be considered in addition to the other informa
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 34,094 characters extracted **CHANGED** — was 34,113
+- [x] Verified — 34,094 characters extracted **CHANGED** — was 34,113
 
 ```text
 Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
@@ -205,7 +205,7 @@ Please carefully consider the following discussion of significant factors, event
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 46,206 characters extracted **CHANGED** — was 46,225
+- [x] Verified — 46,206 characters extracted **CHANGED** — was 46,225
 
 ```text
 Item 7.Management’s Discussion and Analysis of Financial Condition and Results of Operations
@@ -217,7 +217,7 @@ This Annual Report on Form 10-K includes forward-looking statements within the m
 
 ### Item 7A. Quantitative and Qualitative Disclosures About Market Risk
 
-- [ ] Verified — 6,099 characters extracted **CHANGED** — was 6,118
+- [x] Verified — 6,099 characters extracted **CHANGED** — was 6,118
 
 ```text
 Item 7A.Quantitative and Qualitative Disclosures About Market Risk
@@ -244,7 +244,7 @@ As our founders Larry and Sergey wrote in the original founders' letter, "Google
 
 ### Item 1A. Risk Factors
 
-- [ ] Verified — 85,135 characters extracted **CHANGED** — was 85,169
+- [x] Verified — 85,135 characters extracted **CHANGED** — was 85,169
 
 ```text
 ITEM 1A.RISK FACTORS
@@ -254,7 +254,7 @@ Our operations and financial results are subject to various risks and uncertaint
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 52,417 characters extracted **CHANGED** — was 52,451
+- [x] Verified — 52,417 characters extracted **CHANGED** — was 52,451
 
 ```text
 ITEM 7.MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS
@@ -297,7 +297,7 @@ Our products enable people to connect and share through mobile devices, personal
 
 ### Item 1A. Risk Factors
 
-- [ ] Verified — 195,448 characters extracted **CHANGED** — was 195,467
+- [x] Verified — 195,448 characters extracted **CHANGED** — was 195,467
 
 ```text
 Item 1A. Risk Factors
@@ -307,7 +307,7 @@ Certain factors may have a material adverse effect on our business, financial co
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 60,251 characters extracted **CHANGED** — was 60,270
+- [x] Verified — 60,251 characters extracted **CHANGED** — was 60,270
 
 ```text
 Item 7.Management's Discussion and Analysis of Financial Condition and Results of Operations
@@ -444,7 +444,7 @@ General Motors Company (sometimes referred to as we, our, us, ourselves, the Com
 
 ### Item 1A. Risk Factors
 
-- [ ] Verified — 67,101 characters extracted **CHANGED** — was 67,161
+- [x] Verified — 67,101 characters extracted **CHANGED** — was 67,161
 
 ```text
 Item 1A. Risk Factors
@@ -505,7 +505,7 @@ The following discussion sets forth the material risk factors that could affect 
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 394,858 characters extracted **CHANGED** — was 400,310
+- [x] Verified — 394,858 characters extracted **CHANGED** — was 400,310
 
 **Finding (hand-verification):** The filing cross-references Item 7 to "pages 46–160."
 The extraction begins at p. 43 ("Financial" / Three-Year Summary of Consolidated
@@ -637,7 +637,7 @@ Market
 
 ### Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
 
-- [ ] Verified — 309,071 characters extracted **CHANGED** — was 309,157
+- [x] Verified — 309,071 characters extracted **CHANGED** — was 309,157
 
 ```text
 Item 7. Management’s Discussion and Analysis of Financial Condition and Results of Operations
@@ -649,7 +649,7 @@ The Goldman Sachs Group, Inc. (Group Inc. or parent company), a Delaware corpora
 
 ### Item 7A. Quantitative and Qualitative Disclosures About Market Risk
 
-- [ ] Verified **incorporated by reference — not ingested** **CHANGED**. Confirm the filing really does hand this Item off to Item 7 (which *is* ingested), rather than the extractor having found a stub.
+- [x] Verified **incorporated by reference — not ingested** **CHANGED**. Confirm the filing really does hand this Item off to Item 7 (which *is* ingested), rather than the extractor having found a stub.
 
 ```text
 Item 7A. Quantitative and Qualitative Disclosures About Market Risk
