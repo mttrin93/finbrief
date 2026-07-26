@@ -8,6 +8,10 @@ the remote is added, pass `--repo TuringCollegeSubmissions/mrinal-AE.AFA.3.5` ex
 
 ## Conventions
 
+- **Ticket IDs are `T<n>`**, the issue-title prefix (`T2 — Ingest the Universe KB…` is issue
+  #3). `T1`/`T2` in code and docstrings are therefore **ticket** references, not the
+  `Tier-1`/`Tier-2` scope tiers of ADR-0001 — the two are independent, and most tickets
+  (T1–T11) are Tier-1. Never rewrite one into the other; cite a ticket as `T<n> (#<issue>)`.
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.

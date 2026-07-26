@@ -5,8 +5,9 @@ nothing splits an over-long text before it is sent: a chunk above the model's in
 window would fail the request outright. The justification is that the chunk size keeps
 every text far below that window — so it is asserted here rather than left as prose.
 
-The chunk size comes from `config.CHUNK_SIZE_CHARS`, not a copy — so when Tier-2 tunes it
-there, this guarantee is re-checked against the real value rather than a stale duplicate.
+The chunk size comes from `config.CHUNK_SIZE_CHARS`, not a copy — so when ticket T2 (KB
+ingest, #3) tunes it there, this guarantee is re-checked against the real value rather than
+a stale duplicate.
 
 The bound is deliberately tokeniser-free. Counting real tokens would mean downloading
 cl100k_base's BPE table at import time, and the suite is hermetic by contract (no network
@@ -15,9 +16,9 @@ cl100k_base is byte-level BPE, so tokens can exceed characters — `ﬁ` and `�
 character and two tokens each, `≥≤±` is three characters and five tokens. What holds
 unconditionally is the byte bound below.
 
-**Tier-2**, when `ingestion/chunking.py` lands: add a test that counts real tokens over
-the chunker's actual output. That measures how much of the margin is really used, which
-this cannot; this stays as the guard on the constant itself.
+**Ticket T2 (KB ingest, #3)**, when `ingestion/chunking.py` lands: add a test that counts
+real tokens over the chunker's actual output. That measures how much of the margin is
+really used, which this cannot; this stays as the guard on the constant itself.
 """
 
 from finbrief.config import CHUNK_SIZE_CHARS

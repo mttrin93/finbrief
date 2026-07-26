@@ -1,4 +1,4 @@
-"""FinBrief chat UI — walking skeleton (Tier-1).
+"""FinBrief chat UI — walking skeleton (ticket T1, #2).
 
 UI only: every non-Streamlit concern lives in `finbrief.*` so it can be tested without
 driving the app. Per ADR-0008 `st.session_state` holds only UI state — here, the display

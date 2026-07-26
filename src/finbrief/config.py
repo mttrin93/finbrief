@@ -174,8 +174,9 @@ DEFAULT_TRANSLATION_ENABLED = True
 #: (RecursiveCharacterTextSplitter, 1000 chars with a 200-char overlap; the overlap
 #: belongs to the chunker itself and lands with it in Phase 1).
 #:
-#: **Tier-2 owns tuning this value**, and it is the single source of truth for it: two things
-#: depend on it. `retrieval/embeddings.py` sends raw strings with no length-safe
+#: **Ticket T2 (KB ingest, #3) owns tuning this value**, since it lands with the chunker in
+#: Phase 1 — Tier-1 work, not post-gate Tier-2 — and it is the single source of truth for
+#: it: two things depend on it. `retrieval/embeddings.py` sends raw strings with no length-safe
 #: splitting, so a chunk over the embedding model's 8191-token window would fail the
 #: request outright — `tests/test_chunk_token_limit.py` imports this constant and asserts
 #: the worst-case token count it implies stays under that window, so raising it here

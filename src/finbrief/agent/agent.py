@@ -1,6 +1,6 @@
 """The agent entrypoint the UI calls.
 
-**Walking skeleton (Tier-1).** `answer()` is one stateless OpenRouter round-trip: no
+**Walking skeleton (ticket T1, #2).** `answer()` is one stateless OpenRouter round-trip: no
 retrieval, no tools, no memory. Phase 3 replaces the body with `create_agent` plus a
 `SqliteSaver` checkpointer and grows the signature by `thread_id`, keeping this module as
 the single seam the UI depends on.
