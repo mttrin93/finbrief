@@ -9,6 +9,7 @@ import logging
 import pytest
 
 from finbrief.config import (
+    _TWENTY_F_FILERS,
     COMPANIES,
     PEERS,
     TICKERS,
@@ -55,6 +56,17 @@ def test_peer_relation_is_symmetric():
 def test_every_sector_is_populated():
     populated = {company.sector for company in UNIVERSE}
     assert populated == set(Sector)
+
+
+def test_the_universe_holds_only_10k_filers():
+    # ADR-0007 scopes the KB to Items 1/1A/7/7A of the annual 10-K. A foreign private
+    # issuer files a 20-F, which has no such items, so it would contribute zero Sections
+    # at ingest — and the failure would surface in Phase 1, long after the Universe was
+    # settled. The `eu_tech` cluster this replaced (SAP/ASML/STM) was all three.
+    offenders = TICKERS & _TWENTY_F_FILERS
+    assert not offenders, (
+        f"{sorted(offenders)} file a 20-F, not a 10-K — no Item 1A/7/7A to ingest (ADR-0007)"
+    )
 
 
 # --- Settings -------------------------------------------------------------------------

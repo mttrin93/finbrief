@@ -12,8 +12,9 @@ _Avoid_: report, summary
 
 **Universe**:
 The fixed set of ~10–15 large-cap companies FinBrief covers, curated as same-sector peer
-clusters (big tech, autos, banks, EU ADRs). Decided at ingest time; serves triple duty —
-KB scope, demo cast, and peer pool.
+clusters (big tech, autos, banks, healthcare). Decided at ingest time; serves triple duty —
+KB scope, demo cast, and peer pool. Every member files a 10-K — foreign private issuers
+(20-F) are out of scope, since a **Filing** is a 10-K (ADR-0007).
 _Avoid_: watchlist (a Tier-2 per-user concept), portfolio
 
 **Peer**:

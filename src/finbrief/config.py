@@ -41,7 +41,7 @@ class Sector(StrEnum):
     BIG_TECH = "big_tech"
     AUTOS = "autos"
     BANKS = "banks"
-    EU_TECH = "eu_tech"
+    HEALTHCARE = "healthcare"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +55,11 @@ class Company:
 
 #: The Universe: fixed at ingest time, curated as same-sector peer clusters so it can
 #: serve triple duty — KB scope, demo cast, and peer pool (CONTEXT.md, ADR-0009).
+#:
+#: **Every member must file a 10-K.** ADR-0007 scopes the KB to Items 1/1A/7/7A of the
+#: annual 10-K, and foreign private issuers file a 20-F, which has no such items — so an
+#: ADR filer here would silently produce zero sections at ingest. `test_config.py` guards
+#: this; ADR-0007 records it as a stated limitation.
 UNIVERSE: tuple[Company, ...] = (
     Company("AAPL", "Apple Inc.", Sector.BIG_TECH),
     Company("MSFT", "Microsoft Corporation", Sector.BIG_TECH),
@@ -68,10 +73,15 @@ UNIVERSE: tuple[Company, ...] = (
     Company("JPM", "JPMorgan Chase & Co.", Sector.BANKS),
     Company("BAC", "Bank of America Corporation", Sector.BANKS),
     Company("GS", "The Goldman Sachs Group, Inc.", Sector.BANKS),
-    Company("SAP", "SAP SE", Sector.EU_TECH),
-    Company("ASML", "ASML Holding N.V.", Sector.EU_TECH),
-    Company("STM", "STMicroelectronics N.V.", Sector.EU_TECH),
+    Company("JNJ", "Johnson & Johnson", Sector.HEALTHCARE),
+    Company("LLY", "Eli Lilly and Company", Sector.HEALTHCARE),
+    Company("PFE", "Pfizer Inc.", Sector.HEALTHCARE),
 )
+
+#: Foreign private issuers file a 20-F, not a 10-K, so they cannot supply the Sections
+#: ADR-0007 scopes the KB to. Kept as a denylist rather than a comment because the
+#: `eu_tech` cluster this replaced (SAP/ASML/STM) was all three — see `test_config.py`.
+_TWENTY_F_FILERS: frozenset[str] = frozenset({"SAP", "ASML", "STM", "TSM", "SHEL", "TM"})
 
 
 def _index_by_ticker(universe: tuple[Company, ...]) -> Mapping[str, Company]:

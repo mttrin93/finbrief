@@ -14,9 +14,11 @@ business overview, risk factors, current valuation, and recent news — in minut
 > "Pre-earnings company brief for an equity analyst."
 
 Fixed company universe of **10–15 large caps, curated as same-sector peer clusters**
-(big tech: AAPL/MSFT/NVDA/AMZN/GOOGL/META; autos: TSLA/F/GM; banks: JPM + peers;
-EU ADRs: SAP/ASML). The Universe serves triple duty — KB scope, demo cast, and peer pool
-for ratio comparison (ADR-0009). Small universe = controllable chunking, evaluation, demo.
+(big tech: AAPL/MSFT/NVDA/AMZN/GOOGL/META; autos: TSLA/F/GM; banks: JPM/BAC/GS;
+healthcare: JNJ/LLY/PFE). All are 10-K filers — foreign private issuers file a 20-F and
+are out of scope (ADR-0007). The Universe serves triple duty — KB scope, demo cast, and
+peer pool for ratio comparison (ADR-0009). Small universe = controllable chunking,
+evaluation, demo.
 
 ### Demo script (2–3 min, each step fires a requirement)
 1. **"What are the main risk factors for Tesla?"** → pure RAG from 10-K risk section,

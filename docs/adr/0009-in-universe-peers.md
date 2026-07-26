@@ -9,7 +9,7 @@ would need a separate cached snapshot table.
 no snapshot table.
 
 - The **Universe is curated as same-sector peer clusters** (big tech / autos / banks /
-  EU ADRs), so it serves triple duty: KB scope, demo cast, and peer pool.
+  healthcare), so it serves triple duty: KB scope, demo cast, and peer pool.
 - Every `calculate_ratios` call resolves peers via the **same TTL-cached `get_stock_data`
   path**, so peer averaging adds **zero new API surface**.
 - `PEERS` is a **static map in `config.py`**. Selection rule: *same GICS sector within the
