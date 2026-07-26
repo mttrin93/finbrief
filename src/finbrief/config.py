@@ -122,6 +122,20 @@ class RetrievalStrategy(StrEnum):
 DEFAULT_STRATEGY = RetrievalStrategy.HYBRID
 DEFAULT_TRANSLATION_ENABLED = True
 
+#: Maximum characters per chunk — the PLAN.md baseline for section-aware chunking
+#: (RecursiveCharacterTextSplitter, 1000 chars with a 200-char overlap; the overlap
+#: belongs to the chunker itself and lands with it in Phase 1).
+#:
+#: **T2 owns tuning this value**, and it is the single source of truth for it: two things
+#: depend on it. `retrieval/embeddings.py` sends raw strings with no length-safe
+#: splitting, so a chunk over the embedding model's 8191-token window would fail the
+#: request outright — `tests/test_chunk_token_limit.py` imports this constant and guards
+#: that ceiling, so raising it here re-checks the guarantee instead of silently voiding
+#: it. Changing it also invalidates an existing index, which must be re-ingested.
+#: A deliberately plain constant, not a `Settings` field: chunk size is not a Tier-1 A/B
+#: axis, and an env override would let a running app disagree with the index on disk.
+CHUNK_SIZE_CHARS = 1000
+
 
 # --------------------------------------------------------------------------------------
 # Settings

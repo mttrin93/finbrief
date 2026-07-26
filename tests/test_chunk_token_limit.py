@@ -5,6 +5,9 @@ nothing splits an over-long text before it is sent: a chunk above the model's in
 window would fail the request outright. The justification is that chunking keeps every
 text far below that window — so it is asserted here rather than left as prose.
 
+The chunk size comes from `config.CHUNK_SIZE_CHARS`, not a copy — so when T2 tunes it
+there, this guarantee is re-checked against the real value rather than a stale duplicate.
+
 **T2: repoint `chunks_under_test()` at the real chunker's output** over ingested
 Sections (`ingestion/chunking.py`). The placeholder below stands in only while no
 chunker exists; `assert_embeddable()` is the assertion that carries over unchanged, so
@@ -14,13 +17,11 @@ the switch is a one-function edit.
 import pytest
 import tiktoken
 
+from finbrief.config import CHUNK_SIZE_CHARS
+
 #: `openai/text-embedding-3-small` accepts 8191 tokens per input and tokenises with
 #: cl100k_base.
 EMBEDDING_CONTEXT_LIMIT = 8191
-
-#: PLAN.md baseline: RecursiveCharacterTextSplitter, chunk 1000 chars / overlap 200.
-#: Overlap is included in the chunk size, so 1000 is the per-chunk ceiling.
-CHUNK_SIZE_CHARS = 1000
 
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 
@@ -39,14 +40,21 @@ def assert_embeddable(chunks: list[str]) -> None:
     assert not oversized, (
         f"chunks {sorted(oversized)} exceed the {EMBEDDING_CONTEXT_LIMIT}-token embedding "
         f"window (tokens: {oversized}). Either re-enable check_embedding_ctx_length or "
-        f"lower the chunk size."
+        f"lower config.CHUNK_SIZE_CHARS."
     )
 
 
-def chunks_under_test() -> list[str]:
-    """PLACEHOLDER (T1) — filing-shaped text at the configured chunk size.
+def _filled_to_chunk_size(text: str) -> str:
+    """Repeat `text` to exactly `CHUNK_SIZE_CHARS`, whatever that value becomes."""
+    return (text * (CHUNK_SIZE_CHARS // len(text) + 1))[:CHUNK_SIZE_CHARS]
 
-    TODO(T2): return the real chunker's output over ingested Sections instead.
+
+def chunks_under_test() -> list[str]:
+    """PLACEHOLDER (T1) — filing-shaped text at exactly the configured chunk size.
+
+    TODO(T2): return the real chunker's output over ingested Sections instead
+    (`ingestion/chunking.py`). Sized off `config.CHUNK_SIZE_CHARS` so that until then a
+    change to that constant still produces worst-case-sized inputs here.
     """
     prose = (
         "Item 1A. Risk Factors. Our business is subject to numerous risks, including "
@@ -59,22 +67,25 @@ def chunks_under_test() -> list[str]:
         "TSLA F GM AAPL 10-K Item 7A P/E 42.7x D/E 1.83 FY2025 §13(a) ISIN US88160R1014 "
     )
     return [
-        (prose * 10)[:CHUNK_SIZE_CHARS],
-        (identifiers * 20)[:CHUNK_SIZE_CHARS],
+        _filled_to_chunk_size(prose),
+        _filled_to_chunk_size(identifiers),
         prose[:200],  # a short tail chunk, as a real section boundary would produce
     ]
 
 
 def test_chunks_fit_the_embedding_context():
     assert_embeddable(chunks_under_test())
+    # Every placeholder is at the cap, so the check above is not passing on short text.
+    assert max(len(chunk) for chunk in chunks_under_test()) == CHUNK_SIZE_CHARS
 
 
 def test_a_chunk_can_never_exceed_the_window_at_this_chunk_size():
     """The structural argument, not just the sample: tokens <= characters, always.
 
     cl100k_base never emits more tokens than there are characters, so a chunk capped at
-    1000 characters cannot reach 8191 tokens whatever it contains. This is why the
-    placeholder above is adequate for T1 — only a chunk-size change can break it.
+    `CHUNK_SIZE_CHARS` characters cannot reach the token window while that cap stays
+    below it. This is what makes the placeholder above adequate for T1 — and the final
+    assertion is what fires if T2 ever tunes the chunk size past the ceiling.
     """
     for chunk in chunks_under_test():
         assert count_tokens(chunk) <= len(chunk)
