@@ -24,6 +24,7 @@ from finbrief.ingestion.model import (
     ExtractedFiling,
     FilingRef,
     Section,
+    section_start,
 )
 from finbrief.observability.logging_setup import log_event
 
@@ -194,22 +195,50 @@ def _extract_sections(filing) -> dict[Section, str]:
                     chars=len(text),
                 )
         if text:
-            trimmed = trim_at_next_item(text, section)
-            if len(trimmed) != len(text):
-                log_event(
-                    logger,
-                    "section_trimmed",
-                    level=logging.WARNING,
-                    ticker=str(filing.company),
-                    accession=str(filing.accession_no),
-                    section=section.value,
-                    chars_before=len(text),
-                    chars_after=len(trimmed),
-                    reason="ran into the next Item",
-                )
-            sections[section] = trimmed
+            # Both ends, front first: the start trim can only remove a prefix and the end
+            # trim only a suffix, so neither can undo the other.
+            for trim, reason in (
+                (trim_to_section_start, "began before its own heading"),
+                (trim_at_next_item, "ran into the next Item"),
+            ):
+                trimmed = trim(text, section)
+                if len(trimmed) != len(text):
+                    log_event(
+                        logger,
+                        "section_trimmed",
+                        level=logging.WARNING,
+                        ticker=str(filing.company),
+                        accession=str(filing.accession_no),
+                        section=section.value,
+                        chars_before=len(text),
+                        chars_after=len(trimmed),
+                        reason=reason,
+                    )
+                text = trimmed
+            sections[section] = text
 
     return sections
+
+
+def trim_to_section_start(text: str, section: Section) -> str:
+    """Drop anything before the Section's own heading. The partner to `trim_at_next_item`.
+
+    Hand-verification of the fifteen filings found what no automated check was looking
+    for: JPM's Item 7 began three pages early, at the annual report's Three-Year Summary
+    of Consolidated Financial Highlights on p.43, where the filing's own cross-reference
+    puts Item 7 at pp.46-160. The section was long, wordy, bounded and free of Item 8
+    content — every rule the gate had — and still started in the wrong place.
+
+    Ten other Sections began a line or two early, on a "Table of Contents" or company-name
+    running header. Same defect, three orders of magnitude smaller, and the same fix.
+
+    A prefix cut, like every repair here: the filer's own words, never rewritten. And like
+    every repair here it is re-judged afterwards — `gate` asserts
+    `section_starts_at_its_heading` on the result, so a trim that lands nowhere useful
+    fails rather than passing quietly (ADR-0007 amendment, issue #3).
+    """
+    start = section_start(text, section)
+    return text[start:] if start > 0 else text
 
 
 def trim_at_next_item(text: str, section: Section) -> str:

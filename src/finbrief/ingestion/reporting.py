@@ -12,7 +12,9 @@ purpose.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from finbrief.ingestion.gate import GateFinding, form_family, incorporated_sections
 from finbrief.ingestion.model import ExtractedFiling, Section
@@ -73,21 +75,75 @@ def render_gate_table(
     return "\n".join(lines)
 
 
-def render_section_starts(filings: Sequence[ExtractedFiling]) -> str:
+@dataclass(frozen=True, slots=True)
+class _PriorRow:
+    """One Section's state in an earlier version of the checklist."""
+
+    ticked: bool
+    chars: int | None
+    excerpt: str
+    notes: tuple[str, ...]
+
+
+def _parse_prior(markdown: str) -> dict[tuple[str, str], _PriorRow]:
+    """Read an existing checklist back into `(ticker, section) -> state`.
+
+    Parsing our own output rather than keeping a sidecar file: the artifact is the record,
+    it is what gets reviewed in a diff, and a second file holding the ticks could drift
+    from the boxes a reader is actually looking at.
+    """
+    prior: dict[tuple[str, str], _PriorRow] = {}
+    ticker = ""
+    for block in re.split(r"^(?=## )", markdown, flags=re.MULTILINE):
+        header = re.match(r"## (\S+) — ", block)
+        if header:
+            ticker = header.group(1)
+        for chunk in re.split(r"^(?=### )", block, flags=re.MULTILINE)[1:]:
+            section = re.match(r"### (Item [\w]+)\.", chunk)
+            status = re.search(r"^- \[( |x)\] *(.*)$", chunk, re.MULTILINE | re.I)
+            if not (section and status):
+                continue
+            excerpt = re.search(r"```text\n(.*?)\n```", chunk, re.DOTALL)
+            chars = re.search(r"([\d,]+) characters extracted", status.group(2))
+            body = chunk[status.end() :]
+            notes = tuple(
+                line.strip() for line in body.split("```text")[0].splitlines() if line.strip()
+            )
+            prior[(ticker, section.group(1))] = _PriorRow(
+                ticked=status.group(1).lower() == "x",
+                chars=int(chars.group(1).replace(",", "")) if chars else None,
+                excerpt=excerpt.group(1) if excerpt else "",
+                notes=notes,
+            )
+    return prior
+
+
+def render_section_starts(
+    filings: Sequence[ExtractedFiling], previous: str | None = None
+) -> str:
     """The hand-verification checklist of extracted Section starts (ADR-0007).
 
-    Emitted with every box unticked. Ticking them is a human reading each excerpt against
-    the filing on EDGAR — the whole value of the artifact is that a person, not the
-    extractor, confirmed the extractor.
+    Emitted with every box unticked on a first run. Ticking them is a human reading each
+    excerpt against the filing on EDGAR — the whole value of the artifact is that a
+    person, not the extractor, confirmed the extractor.
+
+    Pass `previous` — the current contents of the file — and a re-render **carries ticks
+    forward** for every Section whose length and excerpt are byte-identical, and unticks
+    only what actually changed, flagged `CHANGED`. Without that, fixing one company's
+    boundary would silently blank sixty hand-checked boxes and the reviewer would have to
+    redo all of it to find the one row that moved. Notes a verifier wrote by hand are
+    carried through untouched either way; this function must never be the reason someone's
+    findings disappear.
     """
+    prior = _parse_prior(previous) if previous else {}
     lines = [
         "# Hand-verification: extracted Section starts",
         "",
         "One-time verification artifact required by ADR-0007. The section-detection gate",
-        "proves each Section is present, non-empty, length-bounded, body-heavy, and free",
-        "of the next Item's content — none of which distinguishes the real Item 1A from a",
-        "plausible mis-extraction that is also all five. Only reading the text does, which",
-        "is why these boxes ship unticked.",
+        "proves each Section is present, non-empty, length-bounded, body-heavy, starts at",
+        "its own heading and is free of the next Item's content — none of which",
+        "distinguishes the real Item 1A from a plausible mis-extraction that is also all",
+        "six. Only reading the text does.",
         "",
         "**How to verify.** For each row, open the filing at the linked EDGAR URL, find",
         "the Item, and confirm the excerpt below is where that Item actually begins — not",
@@ -99,6 +155,10 @@ def render_section_starts(filings: Sequence[ExtractedFiling]) -> str:
         "pointer grounds nothing — and the content they point at is in the knowledge base",
         "under `Item 7`. Verify that the filing really does hand the Item off, rather than",
         "the extractor having landed on a stub.",
+        "",
+        "A re-render keeps every tick whose Section is byte-identical to the version that",
+        "was verified, and unticks the rest. The rows flagged as changed, in bold on their",
+        "status line, are the only ones needing another look.",
         "",
         f"Generated by `scripts/ingest_filings.py --section-starts`. {len(filings)} "
         f"filing(s), {len(filings) * len(Section)} Sections to verify.",
@@ -117,34 +177,56 @@ def render_section_starts(filings: Sequence[ExtractedFiling]) -> str:
         referenced = incorporated_sections(filing)
         for section in Section:
             text = filing.sections.get(section)
+            was = prior.get((ref.ticker, section.value))
             lines.append(f"### {section.value}. {section.heading}")
             lines.append("")
+
             if not text:
                 lines.append(
                     "- [ ] **NOT EXTRACTED** — nothing to verify; the gate failed this."
                 )
+                lines += _carried_notes(was)
                 lines.append("")
                 continue
+
+            excerpt = _excerpt(text)
+            unchanged = bool(was and was.excerpt == excerpt and was.chars in (None, len(text)))
+            box = "x" if (unchanged and was and was.ticked) else " "
+            changed = " **CHANGED**" if was and not unchanged else ""
+
             if section in referenced:
                 lines.append(
-                    "- [ ] Verified **incorporated by reference — not ingested**. Confirm "
-                    "the filing really does hand this Item off to Item 7 (which *is* "
-                    "ingested), rather than the extractor having found a stub."
+                    f"- [{box}] Verified **incorporated by reference — not ingested**"
+                    f"{changed}. Confirm the filing really does hand this Item off to "
+                    f"Item 7 (which *is* ingested), rather than the extractor having "
+                    f"found a stub."
                 )
-                lines.append("")
-                lines.append("```text")
-                lines.append(_excerpt(text))
-                lines.append("```")
-                lines.append("")
-                continue
-            lines.append(f"- [ ] Verified — {len(text):,} characters extracted")
+            else:
+                was_chars = (
+                    f" — was {was.chars:,}" if changed and was and was.chars is not None else ""
+                )
+                lines.append(
+                    f"- [{box}] Verified — {len(text):,} characters extracted"
+                    f"{changed}{was_chars}"
+                )
+            lines += _carried_notes(was)
             lines.append("")
             lines.append("```text")
-            lines.append(_excerpt(text))
+            lines.append(excerpt)
             lines.append("```")
             lines.append("")
 
     return "\n".join(lines)
+
+
+def _carried_notes(was: _PriorRow | None) -> list[str]:
+    """Re-emit whatever a verifier wrote under this row, verbatim.
+
+    Their findings are the output of the work this artifact exists to collect. Losing them
+    to a regeneration would be worse than losing the ticks, because a tick can be redone
+    from the filing and a note cannot.
+    """
+    return ["", *was.notes] if was and was.notes else []
 
 
 def _excerpt(text: str) -> str:

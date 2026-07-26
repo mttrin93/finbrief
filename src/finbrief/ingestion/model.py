@@ -54,6 +54,28 @@ _HEADINGS: Mapping[Section, str] = {
 }
 
 
+#: How a Section's own title reads when a filer writes it as a heading, for the rare
+#: filing that has no `Item N.` label to anchor on.
+#:
+#: Deliberately looser than `_HEADINGS`, which is the full formal title. JPM's MD&A heading
+#: line is "Management's discussion and analysis" — the formal title continues "of
+#: Financial Condition and Results of Operations" and JPM simply does not print it, so an
+#: exact-title match finds nothing. These patterns match the part filers agree on.
+#:
+#: Only consulted when the Item label is absent entirely, which across the whole Universe
+#: is JPM's Item 7 and nothing else. That ordering matters for `Business`, a word common
+#: enough that matching it first would be reckless.
+SECTION_TITLE_PATTERNS: Mapping[Section, str] = {
+    Section.BUSINESS: r"Business",
+    Section.RISK_FACTORS: r"Risk Factors",
+    Section.MDA: r"Management[’']s Discussion and Analysis",
+    Section.MARKET_RISK: r"Quantitative and Qualitative Disclosures About Market Risk",
+}
+
+#: Longest line that can still be a heading rather than a sentence mentioning one. Guards
+#: the title fallback: "Risk Factors" inside a paragraph must not start a Section.
+HEADING_LINE_MAX_CHARS = 120
+
 #: Text that belongs to the *next* Item and can never belong to this one. Finding any of
 #: it means extraction crossed a boundary, whatever the character count says.
 #:
@@ -181,3 +203,29 @@ class ExtractedFiling:
     ref: FilingRef
     latest_annual_form: str
     sections: Mapping[Section, str]
+
+
+def section_start(text: str, section: Section) -> int:
+    """Offset of the Section's own heading in `text`, or -1 if it has none.
+
+    Shared, and it has to be: `edgar.trim_to_section_start` moves the text to this offset
+    and `gate` fails a Section whose offset is not zero. Two copies of "where does this
+    Section begin?" would let the repair and its judge disagree about the answer — the
+    same reason `NEXT_ITEM_MARKERS` and `WORD` live here.
+
+    The Item label first, because it is unambiguous. The title only when there is no label
+    at all: `Business` is too common a word to trust ahead of `Item 1.`, and across the
+    whole Universe the fallback is reached exactly once, for JPM's Item 7.
+    """
+    item = re.escape(section.value.removeprefix("Item ").strip())
+    label = re.search(
+        rf"^[ \t]*Item[ \t\u00a0]+{item}(?![A-Za-z0-9])", text, re.MULTILINE | re.I
+    )
+    if label:
+        return label.start()
+
+    pattern = rf"^[ \t\u00a0]*{SECTION_TITLE_PATTERNS[section]}[^\n]*$"
+    for match in re.finditer(pattern, text, re.MULTILINE | re.I):
+        if len(match.group()) <= HEADING_LINE_MAX_CHARS:
+            return match.start()
+    return -1

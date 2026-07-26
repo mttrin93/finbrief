@@ -48,37 +48,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="Write the hand-verification checklist of extracted Section starts here.",
     )
-    parser.add_argument(
-        "--overwrite-checklist",
-        action="store_true",
-        help="Regenerate --section-starts even if it already holds ticked verifications.",
-    )
     return parser.parse_args(argv)
 
 
-def _write_section_starts(path: Path, filings, *, overwrite: bool) -> bool:
-    """Write the checklist, refusing to overwrite a human's completed ticks.
+def _write_section_starts(path: Path, filings) -> None:
+    """Write the checklist, carrying forward every tick and note that still applies.
 
-    ADR-0007 calls this a *one-time* artifact, and its whole value is that a person read
-    every excerpt against EDGAR. Regenerating it emits sixty fresh unticked boxes — so a
-    routine `--section-starts` on a later run would silently erase that work and leave
-    something that still looks like a verification artifact. Refuse instead, loudly.
+    Not an overwrite. `render_section_starts` re-reads what is already there and keeps a
+    tick whenever the Section is byte-identical to the one that was verified, so fixing a
+    boundary on one company costs the reviewer exactly the rows that moved rather than all
+    sixty. Hand-written notes are carried through unconditionally.
     """
-    if path.exists() and "- [x]" in path.read_text(encoding="utf-8").lower():
-        if not overwrite:
-            print(
-                f"{path} already holds ticked verifications. Refusing to overwrite them "
-                f"— they are hand-done work this script cannot reproduce. Pass "
-                f"--overwrite-checklist if the filings really have changed.",
-                file=sys.stderr,
-            )
-            return False
-        print(f"Overwriting ticked verifications in {path}, as asked.", file=sys.stderr)
-
+    previous = path.read_text(encoding="utf-8") if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_section_starts(filings), encoding="utf-8")
+    rendered = render_section_starts(filings, previous)
+    path.write_text(rendered, encoding="utf-8")
+
+    kept = rendered.count("- [x]")
+    changed = rendered.count("**CHANGED**")
     print(f"\nHand-verification checklist written to {path}")
-    return True
+    print(f"  {kept} tick(s) carried forward · {changed} row(s) changed and need re-checking")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,10 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     findings = [finding for filing in filings for finding in check_filing(filing)]
     print(render_gate_table(filings, findings))
 
-    if args.section_starts and not _write_section_starts(
-        args.section_starts, filings, overwrite=args.overwrite_checklist
-    ):
-        return 2
+    if args.section_starts:
+        _write_section_starts(args.section_starts, filings)
 
     if findings:
         print(

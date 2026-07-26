@@ -30,6 +30,7 @@ from finbrief.ingestion.model import (
     ExtractedFiling,
     Section,
     is_incorporated_by_reference,
+    section_start,
 )
 
 #: Shortest text that can be a Section rather than a pointer to one. "Not applicable." and
@@ -201,6 +202,19 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
             f"{body_words} words of body under a {heading_words}-word heading — "
             f"expected at least {heading_words * BODY_TO_HEADING_WORD_RATIO}. "
             f"This is what a table-of-contents hit looks like.",
+        )
+
+    # The rule hand-verification taught us. JPM's Item 7 began three pages early, on the
+    # annual report's financial-highlights front matter, and satisfied every rule above:
+    # it was found, non-empty, bounded, wordy, and free of Item 8. Only a person reading
+    # it against the filing caught that it started in the wrong place — so that judgement
+    # is now a check, and the next one of these fails here instead of in an artifact
+    # review (ADR-0007 amendment, issue #3).
+    if section_start(text, section) != 0:
+        return finding(
+            "section_starts_at_its_heading",
+            f"the text does not begin at {section.value} or its title — extraction "
+            f"started somewhere else. Opens with: {text[:90]!r}",
         )
 
     lowered = text.lower()

@@ -240,3 +240,56 @@ def test_the_gate_raises_and_names_every_company_and_section_that_failed():
 
 def test_the_gate_is_silent_when_every_company_passes():
     run_gate([a_filing(ticker="AAPL"), a_filing(ticker="MSFT")])
+
+
+# --- The start boundary (ADR-0007 amendment; found by hand-verification, not by code) ---
+
+
+def test_a_section_that_starts_before_its_own_heading_fails():
+    # JPM FY2025 Item 7 opened on the annual report's Three-Year Summary of Consolidated
+    # Financial Highlights — three pages before the pp.46-160 the filing's own
+    # cross-reference gives for Item 7. It passed every other rule: found, non-empty,
+    # bounded, wordy, free of Item 8 content. A human reading the artifact caught it.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MDA] = (
+        f"Financial\n\nTHREE-YEAR SUMMARY OF CONSOLIDATED FINANCIAL HIGHLIGHTS\n\n"
+        f"Total net revenue $182,447\n\n{BODY}"
+    )
+
+    findings = check_filing(a_filing(sections=sections))
+
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MDA, "section_starts_at_its_heading")
+    ]
+
+
+def test_a_leading_running_header_fails_too():
+    # The same defect at the small end: ten Sections opened on a stray "Table of Contents"
+    # or company-name line. One rule, no size threshold — a Section either begins at its
+    # heading or it does not.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.RISK_FACTORS] = f"Table of Contents\n\nItem 1A. Risk Factors\n\n{BODY}"
+
+    assert "section_starts_at_its_heading" in checks_that_failed(a_filing(sections=sections))
+
+
+def test_a_section_titled_without_an_item_label_is_accepted():
+    # JPM prints no "Item 7" label anywhere in its MD&A — the heading is the bare title.
+    # The title fallback is what lets a legitimate filing like that pass at all.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MDA] = f"Management's discussion and analysis\n\n{BODY}"
+
+    assert check_filing(a_filing(sections=sections)) == ()
+
+
+def test_the_title_fallback_does_not_fire_on_a_sentence_that_merely_mentions_it():
+    # "Business" is a common word; a paragraph is not a heading. Without the line-length
+    # guard the fallback would happily start Item 1 in the middle of a sentence.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.BUSINESS] = (
+        "Some preamble that is not a heading at all.\n\n"
+        "Business conditions in the markets we serve deteriorated over the period under "
+        "review, and the following discussion sets out why that happened in detail.\n\n" + BODY
+    )
+
+    assert "section_starts_at_its_heading" in checks_that_failed(a_filing(sections=sections))
