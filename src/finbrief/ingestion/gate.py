@@ -9,16 +9,24 @@ nothing — and the first place it would surface is a RAGAs number nobody can ex
 So the gate runs *before* any retrieval exists, asserts the four properties per
 company x Section, and fails loudly with every finding at once. It is a pure function of
 already-extracted filings: no EDGAR, no network, no vector store.
+
+The thresholds below live here rather than in `config.py`, which owns "every knob". They
+are not knobs: they are assertions about what a 10-K Section looks like, tuned against
+fifteen real filings and recorded in ADR-0007's amendment with the evidence for each. A
+knob invites an operator to widen one until the gate stops complaining, which is the exact
+failure this module exists to prevent — the same reasoning that keeps `CHUNK_OVERLAP_CHARS`
+in the chunker (PLAN.md). `CHUNK_SIZE_CHARS` is a knob and stays in `config.py`, because
+the index on disk and the embedding window both depend on it.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from finbrief.ingestion.model import (
     NEXT_ITEM_MARKERS,
+    WORD,
     ExtractedFiling,
     Section,
     is_incorporated_by_reference,
@@ -47,10 +55,6 @@ MAX_SECTION_CHARS = 500_000
 #: purpose: a table-of-contents hit is a heading, a run of dot leaders, and a page number,
 #: so it is *long* but nearly wordless. Characters would call it a section; words do not.
 BODY_TO_HEADING_WORD_RATIO = 20
-
-#: A word for the ratio above: two or more letters, so dot leaders, page numbers and
-#: stray punctuation count for nothing.
-_WORD = re.compile(r"[^\W\d_]{2,}")
 
 #: The annual-report form families EDGAR filers use. Only the 10-K family has the Items
 #: ADR-0007 scopes the KB to.
@@ -139,7 +143,7 @@ def incorporated_sections(filing: ExtractedFiling) -> frozenset[Section]:
     return frozenset(
         section
         for section, text in filing.sections.items()
-        if is_incorporated_by_reference(text)
+        if is_incorporated_by_reference(section, text)
     )
 
 
@@ -178,7 +182,7 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
     # Before the size and shape rules, because a pointer is short and heading-heavy and
     # would otherwise fail one of them for the wrong reason. It is not a defect and not
     # ingested either — see `incorporated_sections`.
-    if is_incorporated_by_reference(text):
+    if is_incorporated_by_reference(section, text):
         return None
 
     if not MIN_SECTION_CHARS <= len(text) <= MAX_SECTION_CHARS:
@@ -189,8 +193,8 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
         )
 
     heading, _, body = text.partition("\n")
-    heading_words = len(_WORD.findall(heading))
-    body_words = len(_WORD.findall(body))
+    heading_words = len(WORD.findall(heading))
+    body_words = len(WORD.findall(body))
     if body_words < heading_words * BODY_TO_HEADING_WORD_RATIO:
         return finding(
             "section_body_exceeds_heading",

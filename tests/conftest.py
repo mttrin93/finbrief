@@ -24,6 +24,18 @@ from finbrief.observability.logging_setup import PACKAGE_LOGGER
 #: would think to invent.
 FIXTURES = Path(__file__).parent / "fixtures" / "edgar"
 
+#: cl100k_base's BPE table, vendored.
+#:
+#: `tiktoken.get_encoding` does **not** resolve the table from its wheel — the wheel ships
+#: no data. It downloads from openaipublic.blob.core.windows.net and caches the result
+#: under `TIKTOKEN_CACHE_DIR`, so a machine with a warm cache passes and clean CI silently
+#: egresses. That is exactly the hermetic breach CLAUDE.md forbids, and it is invisible
+#: locally, which is what makes it worth 1.6 MB in the repo.
+#:
+#: The filename is `sha1(url)`, which is how tiktoken looks it up.
+TIKTOKEN_CACHE = Path(__file__).parent / "fixtures" / "tiktoken"
+TIKTOKEN_CL100K = TIKTOKEN_CACHE / "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+
 #: `LANGCHAIN_`/`LANGSMITH_` are here for the "no network" half of the contract, not the
 #: config half: with tracing exported, every LangChain invoke in the suite — the fake chat
 #: models included — POSTs its run to LangSmith.
@@ -48,6 +60,22 @@ def hermetic_env(monkeypatch):
     yield
     config.load_env.cache_clear()
     config.get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def offline_tiktoken(monkeypatch):
+    """Point tiktoken at the vendored table, and fail loudly if it is missing.
+
+    The assertion matters as much as the redirect. Without it a missing fixture just
+    reinstates the silent download — the test would still pass, and the suite would still
+    be making a network call nobody can see.
+    """
+    assert TIKTOKEN_CL100K.exists(), (
+        f"the vendored cl100k_base table is missing from {TIKTOKEN_CACHE}. Without it "
+        f"tiktoken downloads it, which breaks the hermetic contract (CLAUDE.md). Restore "
+        f"the file rather than letting the suite reach the network."
+    )
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(TIKTOKEN_CACHE))
 
 
 @pytest.fixture(scope="session")

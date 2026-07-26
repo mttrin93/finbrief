@@ -69,6 +69,17 @@ def write_chunks(store: Chroma, chunks: Sequence[Chunk]) -> int:
     return len(chunks)
 
 
+def delete_accession(store: Chroma, accession: str) -> None:
+    """Remove every chunk of one filing.
+
+    Needed before a re-embed, because ids carry a chunk *index*: a chunker that produces
+    fewer chunks than last time upserts over `…:Item 1:0-19` and leaves `…:Item 1:20-24`
+    behind, orphaned and still retrievable. Deleting first makes `--force` mean what it
+    says.
+    """
+    store.delete(where={"accession": accession})
+
+
 def ingested_accessions(store: Chroma) -> set[str]:
     """Every accession number already in the collection.
 

@@ -17,8 +17,10 @@ import re
 from collections.abc import Mapping
 
 from finbrief.config import ConfigError, Settings, get_settings
+from finbrief.ingestion.gate import MAX_SECTION_CHARS
 from finbrief.ingestion.model import (
     NEXT_ITEM_MARKERS,
+    WORD,
     ExtractedFiling,
     FilingRef,
     Section,
@@ -42,9 +44,18 @@ _NEXT_ITEM: Mapping[Section, str] = {
     Section.MARKET_RISK: r"8",
 }
 
-#: Two or more letters — a word for "which candidate span is the real section", scoring
-#: dot leaders and page numbers at zero. Same rule the gate applies, for the same reason.
-_WORD = re.compile(r"[^\W\d_]{2,}")
+#: Hard cap on a fallback span whose closing Item heading was never found. An
+#: unterminated span is a boundary miss by definition, so the only question is how much
+#: of the document it drags in — and running to EOF hands the gate a whole 10-K to
+#: reject, which says nothing about where the parse went wrong. Set at `gate`'s ceiling:
+#: anything this long fails there anyway, so the cap changes the diagnosis, not the
+#: verdict.
+MAX_FALLBACK_CHARS = MAX_SECTION_CHARS
+
+#: How a table-of-contents row ends: dot leaders, a page number, or a page range
+#: ("Risk Factors. 9-31" is JPM's). A real heading is followed by a line break and prose,
+#: never by its own page number.
+_TOC_TAIL = re.compile(r"(\.{2,}|\s)\s*\d{1,4}(\s*[-–]\s*\d{1,4})?\s*$")
 
 
 def configure_edgar(settings: Settings | None = None) -> None:
@@ -101,9 +112,29 @@ def fetch_filing(ticker: str) -> ExtractedFiling:
     tenk_filings = [f for f in company.get_filings(form="10-K") if str(f.form) == "10-K"]
     filing = max(tenk_filings, key=lambda f: f.filing_date, default=None)
     if filing is None:
-        raise LookupError(
-            f"{ticker} has never filed a 10-K (its latest annual filing is a "
-            f"{annual.form}). It cannot be in the Universe — see ADR-0007."
+        # A foreign private issuer has no 10-K to return, and raising here would be the
+        # wrong shape of loud: the issue-#3 comment asks the *gate* to catch this, and a
+        # `LookupError` from the fetch loop aborts the run at the first bad ticker,
+        # reporting one company where `run_gate` deliberately reports all of them. So the
+        # fetch returns the evidence and lets the judge speak.
+        log_event(
+            logger,
+            "no_10k_on_file",
+            level=logging.ERROR,
+            ticker=ticker,
+            latest_annual_form=str(annual.form),
+        )
+        return ExtractedFiling(
+            ref=FilingRef(
+                ticker=ticker,
+                form=str(annual.form),
+                accession=str(annual.accession_no),
+                fiscal_year=_fiscal_year(annual),
+                filing_date=str(annual.filing_date),
+                url=str(annual.homepage_url),
+            ),
+            latest_annual_form=str(annual.form),
+            sections={},
         )
 
     ref = FilingRef(
@@ -237,20 +268,60 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
     — the TOC row is dot leaders and a page number, so it scores near zero. Returning the
     *last* match instead is the usual shortcut and it is wrong for filers who repeat the
     heading in a part-summary or an index at the back.
+
+    "Bounded" means bounded on *both* ends, and both ends needed defending:
+
+    - The heading pattern ends in a negative lookahead, because `Item 1` otherwise
+      prefix-matches `Item 1A.` and `Item 1B.`, and `Item 7` matches `Item 7A.`. Combined
+      with wordiest-wins, an Item 1 fallback would have cheerfully returned the Risk
+      Factors span — a mislabelled chunk, which is the single failure this module exists
+      to prevent.
+    - A candidate with no following Item heading is capped at `MAX_FALLBACK_CHARS` instead
+      of running to the end of the document. An unterminated span is a boundary miss by
+      definition; letting it reach EOF hands the gate an entire 10-K to reject, where a
+      capped span at least shows where the parse went wrong.
     """
     item = re.escape(section.value.removeprefix("Item ").strip())
-    start = re.compile(rf"^[ \t]*Item[ \t ]+{item}\.?[ \t ]*", re.MULTILINE | re.I)
-    end = re.compile(rf"^[ \t]*Item[ \t ]+{_NEXT_ITEM[section]}\.?[ \t ]*", re.MULTILINE | re.I)
+    # `(?![A-Za-z0-9])`: "Item 1" must not match "Item 1A" or "Item 1B".
+    start = re.compile(
+        rf"^[ \t]*Item[ \t\u00a0]+{item}(?![A-Za-z0-9])\.?[ \t\u00a0]*",
+        re.MULTILINE | re.I,
+    )
+    end = re.compile(
+        rf"^[ \t]*Item[ \t\u00a0]+{_NEXT_ITEM[section]}(?![A-Za-z0-9])\.?[ \t\u00a0]*",
+        re.MULTILINE | re.I,
+    )
 
     best = ""
     best_words = 0
     for match in start.finditer(full_text):
+        if _is_toc_line(full_text, match.start()):
+            continue
         stop = end.search(full_text, match.start() + 1)
-        candidate = full_text[match.start() : stop.start() if stop else len(full_text)]
-        words = len(_WORD.findall(candidate))
+        cut = stop.start() if stop else match.start() + MAX_FALLBACK_CHARS
+        candidate = full_text[match.start() : cut]
+        words = len(WORD.findall(candidate))
         if words > best_words:
             best, best_words = candidate, words
     return best
+
+
+def _is_toc_line(full_text: str, position: int) -> bool:
+    """Does the heading at `position` sit on a table-of-contents row?
+
+    Wordiest-candidate-wins cannot settle this on its own, and the reason is worth stating
+    because it is not obvious: the candidates *nest*. A span anchored at the TOC row runs
+    to the next Item heading, which is past the real section — so it contains the real
+    section plus the table of contents, and is therefore always the wordier of the two.
+    Left to the word count alone, the fallback reliably picked the polluted span.
+
+    A TOC row is recognised by what follows the heading on its own line: dot leaders, a
+    page number, or both. A real section heading is followed by a line break and prose.
+    """
+    line_start = full_text.rfind("\n", 0, position) + 1
+    line_end = full_text.find("\n", position)
+    line = full_text[line_start : line_end if line_end != -1 else len(full_text)]
+    return bool(_TOC_TAIL.search(line))
 
 
 def _clean(text: str) -> str:

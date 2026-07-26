@@ -7,9 +7,19 @@ without EDGAR and the chunker without either (spec §Testing Decisions, seam 6).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+
+#: A word, for every rule in ingestion that counts them: two or more letters, so dot
+#: leaders, page numbers and stray punctuation score zero.
+#:
+#: One definition because two readers depend on it agreeing. `gate` uses it for "body >>
+#: heading" and `edgar` uses it to pick the wordiest fallback candidate — both to tell
+#: real prose from a table-of-contents row. Were they to drift, the extractor could choose
+#: a span by one measure that the gate then judges by another.
+WORD = re.compile(r"[^\W\d_]{2,}")
 
 
 class Section(StrEnum):
@@ -98,7 +108,16 @@ _REFERENCE_PHRASES = (
 _REFERENCE_TARGETS = ("item 7", "md&a", "management's discussion", "management’s discussion")
 
 
-def is_incorporated_by_reference(text: str) -> bool:
+#: The only Section a filer may answer by reference. Scoped rather than applied to all
+#: four, because `_REFERENCE_TARGETS` contains Item 7's own name: a truncated Item 7 whose
+#: surviving fragment says "Management's discussion" could otherwise excuse itself as a
+#: pointer and be dropped without a finding — a silent hole where the gate should have
+#: raised. Item 7A is the case ADR-0007's amendment actually documents, and the six
+#: Universe filers that do this all do it there.
+_MAY_BE_INCORPORATED = frozenset({"Item 7A"})
+
+
+def is_incorporated_by_reference(section: Section, text: str) -> bool:
     """Is this text only a pointer to another Item, rather than a Section itself?
 
     Six of the fifteen Universe companies — every bank and every healthcare name — answer
@@ -112,7 +131,7 @@ def is_incorporated_by_reference(text: str) -> bool:
     extraction miss that happens to be brief has to keep failing loudly, or the gate stops
     being a gate. "Item 7A. Not applicable." matches nothing here and still fails.
     """
-    if len(text) > POINTER_MAX_CHARS:
+    if section.value not in _MAY_BE_INCORPORATED or len(text) > POINTER_MAX_CHARS:
         return False
     lowered = text.lower()
     return any(phrase in lowered for phrase in _REFERENCE_PHRASES) and any(

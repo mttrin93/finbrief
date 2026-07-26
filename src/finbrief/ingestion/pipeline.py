@@ -17,7 +17,11 @@ from finbrief.ingestion.edgar import fetch_filing
 from finbrief.ingestion.gate import run_gate
 from finbrief.ingestion.model import ExtractedFiling
 from finbrief.observability.logging_setup import log_event
-from finbrief.retrieval.vectorstore import ingested_accessions, write_chunks
+from finbrief.retrieval.vectorstore import (
+    delete_accession,
+    ingested_accessions,
+    write_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,6 @@ logger = logging.getLogger(__name__)
 class IngestReport:
     """What one ingestion run fetched, wrote, and skipped."""
 
-    filings: tuple[ExtractedFiling, ...]
     chunks_written: Mapping[str, int]
     skipped: tuple[str, ...]
 
@@ -70,6 +73,10 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
                 reason="already_ingested",
             )
             continue
+        if force:
+            # Ids embed a chunk index, so re-embedding with a changed chunker would
+            # upsert over the low indices and orphan the high ones. Clear first.
+            delete_accession(store, filing.ref.accession)
         count = write_chunks(store, chunk_filing(filing))
         written[filing.ref.ticker] = count
         log_event(
@@ -81,4 +88,4 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
             chunks=count,
         )
 
-    return IngestReport(filings=filings, chunks_written=written, skipped=tuple(skipped))
+    return IngestReport(chunks_written=written, skipped=tuple(skipped))

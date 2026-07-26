@@ -97,7 +97,7 @@ def chunk_filing(filing: ExtractedFiling) -> tuple[Chunk, ...]:
     chunks: list[Chunk] = []
     for section in Section:
         text = filing.sections.get(section)
-        if not text or is_incorporated_by_reference(text):
+        if not text or is_incorporated_by_reference(section, text):
             continue
         for index, body in enumerate(splitter.split_text(text)):
             chunks.append(

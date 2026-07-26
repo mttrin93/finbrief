@@ -15,18 +15,13 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from finbrief.config import TICKERS, UNIVERSE, get_settings  # noqa: E402
-from finbrief.ingestion.edgar import configure_edgar  # noqa: E402
-from finbrief.ingestion.gate import check_filing  # noqa: E402
-from finbrief.ingestion.pipeline import fetch_filings, ingest  # noqa: E402
-from finbrief.ingestion.reporting import (  # noqa: E402
-    render_gate_table,
-    render_section_starts,
-)
-from finbrief.observability.logging_setup import configure_logging  # noqa: E402
-from finbrief.retrieval.vectorstore import build_filings_store  # noqa: E402
+from finbrief.config import TICKERS, UNIVERSE, get_settings
+from finbrief.ingestion.edgar import configure_edgar
+from finbrief.ingestion.gate import check_filing
+from finbrief.ingestion.pipeline import fetch_filings, ingest
+from finbrief.ingestion.reporting import render_gate_table, render_section_starts
+from finbrief.observability.logging_setup import configure_logging
+from finbrief.retrieval.vectorstore import build_filings_store
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,7 +48,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="Write the hand-verification checklist of extracted Section starts here.",
     )
+    parser.add_argument(
+        "--overwrite-checklist",
+        action="store_true",
+        help="Regenerate --section-starts even if it already holds ticked verifications.",
+    )
     return parser.parse_args(argv)
+
+
+def _write_section_starts(path: Path, filings, *, overwrite: bool) -> bool:
+    """Write the checklist, refusing to overwrite a human's completed ticks.
+
+    ADR-0007 calls this a *one-time* artifact, and its whole value is that a person read
+    every excerpt against EDGAR. Regenerating it emits sixty fresh unticked boxes — so a
+    routine `--section-starts` on a later run would silently erase that work and leave
+    something that still looks like a verification artifact. Refuse instead, loudly.
+    """
+    if path.exists() and "- [x]" in path.read_text(encoding="utf-8").lower():
+        if not overwrite:
+            print(
+                f"{path} already holds ticked verifications. Refusing to overwrite them "
+                f"— they are hand-done work this script cannot reproduce. Pass "
+                f"--overwrite-checklist if the filings really have changed.",
+                file=sys.stderr,
+            )
+            return False
+        print(f"Overwriting ticked verifications in {path}, as asked.", file=sys.stderr)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_section_starts(filings), encoding="utf-8")
+    print(f"\nHand-verification checklist written to {path}")
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,10 +101,10 @@ def main(argv: list[str] | None = None) -> int:
     findings = [finding for filing in filings for finding in check_filing(filing)]
     print(render_gate_table(filings, findings))
 
-    if args.section_starts:
-        args.section_starts.parent.mkdir(parents=True, exist_ok=True)
-        args.section_starts.write_text(render_section_starts(filings), encoding="utf-8")
-        print(f"\nHand-verification checklist written to {args.section_starts}")
+    if args.section_starts and not _write_section_starts(
+        args.section_starts, filings, overwrite=args.overwrite_checklist
+    ):
+        return 2
 
     if findings:
         print(

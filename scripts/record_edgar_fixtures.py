@@ -1,20 +1,24 @@
 """Record real EDGAR extractions as fixtures, so the suite tests reality without a network.
 
-Run by hand when a fixture needs refreshing; never by the test suite.
+    uv run python scripts/record_edgar_fixtures.py
+
+Run by hand when a fixture needs refreshing; never by the test suite — the suite is
+hermetic by contract (CLAUDE.md) and reads what this leaves behind.
+
+The recorded cases are the ones nobody would think to invent: a whole clean filing, six
+different wordings of "incorporated by reference", and a real Item 7/Item 8 boundary miss.
 """
 
 import gzip
 import json
-import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, "src")
+from finbrief.ingestion.edgar import configure_edgar, fetch_filing
+from finbrief.ingestion.model import Section
 
-from finbrief.ingestion.edgar import configure_edgar, fetch_filing  # noqa: E402
-from finbrief.ingestion.model import Section  # noqa: E402
-
-os.environ.setdefault("SEC_EDGAR_USER_AGENT", "FinBrief rinaldim1993@gmail.com")
+# Reads SEC_EDGAR_USER_AGENT from the environment and fails loudly without it, rather than
+# defaulting to a contact address — a committed default would put one person's email in
+# every request anyone ever makes with this script.
 configure_edgar()
 
 OUT = Path("tests/fixtures/edgar")
@@ -49,8 +53,9 @@ sample = {
 }
 # 3. The six real incorporation-by-reference pointers.
 for ticker in ["JPM", "BAC", "GS", "JNJ", "LLY", "PFE"]:
-    filing = gm if ticker == "GM" else fetch_filing(ticker)
-    sample[f"{ticker.lower()}_item_7a_pointer"] = filing.sections[Section.MARKET_RISK]
+    sample[f"{ticker.lower()}_item_7a_pointer"] = fetch_filing(ticker).sections[
+        Section.MARKET_RISK
+    ]
 
 path = OUT / "section-samples.json"
 path.write_text(json.dumps(sample, indent=1, ensure_ascii=False), encoding="utf-8")

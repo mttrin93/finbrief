@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from finbrief.ingestion.gate import GateFinding, incorporated_sections
+from finbrief.ingestion.gate import GateFinding, form_family, incorporated_sections
 from finbrief.ingestion.model import ExtractedFiling, Section
 
 #: How much of each Section's opening to show. Enough to recognise the heading and the
@@ -49,7 +49,10 @@ def render_gate_table(
             else:
                 cell = "-" + ("FAIL" if (ticker, section) in failed else "")
             cells.append(f"{cell:>12}")
-        annual = "" if filing.latest_annual_form.startswith("10-K") else " !ANNUAL"
+        # `form_family`, not a second startswith: this column has to agree with the
+        # finding list below it, and two implementations of "is this a 10-K" is how
+        # a table ends up contradicting the gate that produced it.
+        annual = "" if form_family(filing.latest_annual_form) == "10-K" else " !ANNUAL"
         lines.append(
             f"{ticker:<7}{'FY' + str(filing.ref.fiscal_year):<9}" + "".join(cells) + annual
         )

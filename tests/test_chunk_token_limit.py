@@ -22,9 +22,12 @@ how much of the margin is actually used — something the bound above cannot do.
 answer different questions and both stay: the bound holds for *any* text including the
 adversarial, the measurement shows what filing prose really costs.
 
-Counting real tokens stayed compatible with the hermetic contract because `tiktoken`
-resolves cl100k_base from its installed wheel, and the chunks come from a recorded
-fixture (`tests/fixtures/edgar/`) rather than from EDGAR.
+Counting real tokens is compatible with the hermetic contract only because both halves are
+vendored: the chunks come from a recorded filing in `tests/fixtures/edgar/`, and
+cl100k_base's BPE table from `tests/fixtures/tiktoken/`. `tiktoken.get_encoding` does
+*not* read the table from its wheel — it downloads it and caches it — so without the
+vendored copy this file would quietly make a network call on any machine with a cold
+cache. `conftest.offline_tiktoken` redirects the cache and asserts the table is there.
 """
 
 import tiktoken
