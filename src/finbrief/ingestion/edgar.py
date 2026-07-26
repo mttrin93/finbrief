@@ -24,6 +24,7 @@ from finbrief.ingestion.model import (
     ExtractedFiling,
     FilingRef,
     Section,
+    item_heading,
     section_start,
 )
 from finbrief.observability.logging_setup import log_event
@@ -300,7 +301,8 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
 
     "Bounded" means bounded on *both* ends, and both ends needed defending:
 
-    - The heading pattern ends in a negative lookahead, because `Item 1` otherwise
+    - The heading pattern — `model.item_heading`, one definition shared with the gate's
+      start check — ends in a negative lookahead, because `Item 1` otherwise
       prefix-matches `Item 1A.` and `Item 1B.`, and `Item 7` matches `Item 7A.`. Combined
       with wordiest-wins, an Item 1 fallback would have cheerfully returned the Risk
       Factors span — a mislabelled chunk, which is the single failure this module exists
@@ -310,16 +312,8 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
       definition; letting it reach EOF hands the gate an entire 10-K to reject, where a
       capped span at least shows where the parse went wrong.
     """
-    item = re.escape(section.value.removeprefix("Item ").strip())
-    # `(?![A-Za-z0-9])`: "Item 1" must not match "Item 1A" or "Item 1B".
-    start = re.compile(
-        rf"^[ \t]*Item[ \t\u00a0]+{item}(?![A-Za-z0-9])\.?[ \t\u00a0]*",
-        re.MULTILINE | re.I,
-    )
-    end = re.compile(
-        rf"^[ \t]*Item[ \t\u00a0]+{_NEXT_ITEM[section]}(?![A-Za-z0-9])\.?[ \t\u00a0]*",
-        re.MULTILINE | re.I,
-    )
+    start = item_heading(section.item)
+    end = item_heading(_NEXT_ITEM[section])
 
     best = ""
     best_words = 0

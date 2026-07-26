@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from finbrief.config import ITEM_7A_POINTER_FILERS
 from finbrief.ingestion.model import (
     NEXT_ITEM_MARKERS,
     WORD,
@@ -57,9 +58,10 @@ MAX_SECTION_CHARS = 500_000
 #: so it is *long* but nearly wordless. Characters would call it a section; words do not.
 BODY_TO_HEADING_WORD_RATIO = 20
 
-#: The annual-report form families EDGAR filers use. Only the 10-K family has the Items
-#: ADR-0007 scopes the KB to.
-_TEN_K_FAMILY = "10-K"
+#: The annual-report form family whose Items ADR-0007 scopes the KB to. Public because
+#: `reporting` flags non-10-K rows in the gate table, and a second spelling of "10-K"
+#: there is how a table ends up contradicting the gate that produced it.
+TEN_K_FAMILY = "10-K"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +111,7 @@ def check_filing(filing: ExtractedFiling) -> tuple[GateFinding, ...]:
     """Every gate finding for one filing, in reporting order. Empty means it passed."""
     findings: list[GateFinding] = []
 
-    if form_family(filing.latest_annual_form) != _TEN_K_FAMILY:
+    if form_family(filing.latest_annual_form) != TEN_K_FAMILY:
         findings.append(
             GateFinding(
                 ticker=filing.ref.ticker,
@@ -182,8 +184,20 @@ def _check_section(filing: ExtractedFiling, section: Section) -> GateFinding | N
 
     # Before the size and shape rules, because a pointer is short and heading-heavy and
     # would otherwise fail one of them for the wrong reason. It is not a defect and not
-    # ingested either — see `incorporated_sections`.
+    # ingested either — see `incorporated_sections`. The excusal is itself checked: it
+    # may only fire for a filer hand-verified to answer this Item by reference, so a
+    # detection that widens — or a filer that changes its answer — is a finding, not a
+    # silently dropped Section.
     if is_incorporated_by_reference(section, text):
+        if filing.ref.ticker not in ITEM_7A_POINTER_FILERS:
+            return finding(
+                "pointer_filer_is_recorded",
+                f"the incorporation-by-reference excusal fired for {filing.ref.ticker}, "
+                f"which is not in config.ITEM_7A_POINTER_FILERS. Either the filer newly "
+                f"hands this Item off — verify against the filing on EDGAR, then record "
+                f"it there — or the pointer detection misfired on a broken parse. "
+                f"Opens with: {text[:90]!r}",
+            )
         return None
 
     if not MIN_SECTION_CHARS <= len(text) <= MAX_SECTION_CHARS:

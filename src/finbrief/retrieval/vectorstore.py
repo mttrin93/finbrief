@@ -80,6 +80,22 @@ def delete_accession(store: Chroma, accession: str) -> None:
     store.delete(where={"accession": accession})
 
 
+def chunk_counts_by_ticker(store: Chroma) -> dict[str, int]:
+    """How many chunks each company holds in the collection, read from the store itself.
+
+    The ingest report cites these as evidence of what the knowledge base contains, so
+    they cannot come from what one run wrote — after an idempotent skip the write count
+    is zero and the holding is not.
+    """
+    stored = store.get(include=["metadatas"])
+    counts: dict[str, int] = {}
+    for metadata in stored["metadatas"] or ():
+        ticker = metadata.get("ticker")
+        if ticker:
+            counts[ticker] = counts.get(ticker, 0) + 1
+    return counts
+
+
 def ingested_accessions(store: Chroma) -> set[str]:
     """Every accession number already in the collection.
 

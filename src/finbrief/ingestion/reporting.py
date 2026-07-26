@@ -1,6 +1,8 @@
 """Rendering the gate's verdict for a human, and the checklist only a human can finish.
 
-Two audiences. `render_gate_table` is read once, on a terminal, by whoever ran ingestion.
+Three audiences. `render_gate_table` is read once, on a terminal, by whoever ran
+ingestion. `render_ingest_report` is the committed machine evidence of the most recent
+run — the same table plus what the collection holds, rewritten every run.
 `render_section_starts` is ADR-0007's committed one-time hand-verification artifact: it
 prints the first lines of every extracted Section so a person can confirm the extractor
 landed on the real section rather than a table-of-contents row.
@@ -13,10 +15,15 @@ purpose.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from finbrief.ingestion.gate import GateFinding, form_family, incorporated_sections
+from finbrief.ingestion.gate import (
+    TEN_K_FAMILY,
+    GateFinding,
+    form_family,
+    incorporated_sections,
+)
 from finbrief.ingestion.model import ExtractedFiling, Section
 
 #: How much of each Section's opening to show. Enough to recognise the heading and the
@@ -44,17 +51,18 @@ def render_gate_table(
         cells = []
         for section in Section:
             text = filing.sections.get(section)
+            marker = " FAIL" if (ticker, section) in failed else ""
             if section in referenced:
                 cell = "->Item 7"
             elif text:
-                cell = f"{len(text):,}" + ("FAIL" if (ticker, section) in failed else "")
+                cell = f"{len(text):,}{marker}"
             else:
-                cell = "-" + ("FAIL" if (ticker, section) in failed else "")
+                cell = f"-{marker}"
             cells.append(f"{cell:>12}")
-        # `form_family`, not a second startswith: this column has to agree with the
-        # finding list below it, and two implementations of "is this a 10-K" is how
-        # a table ends up contradicting the gate that produced it.
-        annual = "" if form_family(filing.latest_annual_form) == "10-K" else " !ANNUAL"
+        # `form_family` against `TEN_K_FAMILY`, not a second startswith: this column has
+        # to agree with the finding list below it, and two implementations of "is this a
+        # 10-K" is how a table ends up contradicting the gate that produced it.
+        annual = "" if form_family(filing.latest_annual_form) == TEN_K_FAMILY else " !ANNUAL"
         lines.append(
             f"{ticker:<7}{'FY' + str(filing.ref.fiscal_year):<9}" + "".join(cells) + annual
         )
@@ -73,6 +81,82 @@ def render_gate_table(
         lines.append(f"All {len(filings) * len(Section)} company x Section checks passed.")
 
     return "\n".join(lines)
+
+
+def render_ingest_report(
+    filings: Sequence[ExtractedFiling],
+    findings: Sequence[GateFinding],
+    *,
+    generated: str,
+    store_counts: Mapping[str, int] | None,
+    written: Mapping[str, int] | None = None,
+    skipped: Sequence[str] = (),
+) -> str:
+    """Machine evidence of one ingestion run: the gate's verdict and what the store holds.
+
+    The committed counterpart to `render_gate_table`'s terminal print (issue #3 review):
+    "all Universe companies ingest" should be checkable from the repo, so
+    `scripts/ingest_filings.py` rewrites `docs/verification/ingest-report.md` with this
+    on every run. `store_counts` is read back from the collection after the run rather
+    than taken from the run's own writes — an idempotent re-run writes nothing and still
+    has to prove what the knowledge base holds. `None` means no store was consulted: a
+    dry run, or a failed gate that wrote nothing.
+    """
+    written = written or {}
+    if findings:
+        outcome = (
+            f"**GATE FAILED** — {len(findings)} finding(s); nothing was written (ADR-0007)."
+        )
+    elif store_counts is None:
+        outcome = "**GATE PASSED** — dry run; nothing was written, no store consulted."
+    else:
+        outcome = "**GATE PASSED**"
+
+    lines = [
+        "# Ingest report",
+        "",
+        "Machine evidence of the most recent ingestion run — rewritten by every",
+        "`scripts/ingest_filings.py` run (issue #3). Chunk counts are read back from the",
+        "persisted collection after the run, not taken from the run's own writes, so an",
+        "idempotent re-run that writes nothing still shows what the knowledge base holds.",
+        "",
+        f"- Generated: {generated}",
+        f"- Outcome: {outcome}",
+        "",
+        "## Section-detection gate",
+        "",
+        "```text",
+        render_gate_table(filings, findings),
+        "```",
+    ]
+
+    if store_counts is not None:
+        refs = {filing.ref.ticker: filing.ref for filing in filings}
+        rows = [t for t in refs if t in store_counts]
+        rows += sorted(set(store_counts) - set(rows))
+        lines += [
+            "",
+            "## Chunks in the collection",
+            "",
+            "| Ticker | FY | Accession | Chunks | This run |",
+            "|---|---|---|---:|---|",
+        ]
+        for ticker in rows:
+            ref = refs.get(ticker)
+            if ticker in written:
+                action = f"wrote {written[ticker]}"
+            elif ticker in skipped:
+                action = "skipped (already ingested)"
+            else:
+                action = "—"
+            fiscal = f"FY{ref.fiscal_year}" if ref else "—"
+            accession = f"`{ref.accession}`" if ref else "—"
+            lines.append(
+                f"| {ticker} | {fiscal} | {accession} | {store_counts[ticker]:,} | {action} |"
+            )
+        lines.append(f"| **Total** | | | **{sum(store_counts.values()):,}** | |")
+
+    return "\n".join(lines) + "\n"
 
 
 @dataclass(frozen=True, slots=True)

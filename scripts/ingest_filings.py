@@ -13,15 +13,24 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from finbrief.config import TICKERS, UNIVERSE, get_settings
 from finbrief.ingestion.edgar import configure_edgar
 from finbrief.ingestion.gate import check_filing
 from finbrief.ingestion.pipeline import fetch_filings, ingest
-from finbrief.ingestion.reporting import render_gate_table, render_section_starts
+from finbrief.ingestion.reporting import (
+    render_gate_table,
+    render_ingest_report,
+    render_section_starts,
+)
 from finbrief.observability.logging_setup import configure_logging
-from finbrief.retrieval.vectorstore import build_filings_store
+from finbrief.retrieval.vectorstore import build_filings_store, chunk_counts_by_ticker
+
+#: The committed machine evidence of the most recent run — gate table plus what the
+#: collection holds — rewritten on every run, whatever the outcome (issue #3 review).
+INGEST_REPORT = Path("docs/verification/ingest-report.md")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,6 +79,22 @@ def _write_section_starts(path: Path, filings) -> None:
     print(f"  {kept} tick(s) carried forward · {changed} row(s) changed and need re-checking")
 
 
+def _write_ingest_report(filings, findings, *, generated, store_counts, **run) -> None:
+    """Rewrite the committed machine evidence of this run, whatever its outcome.
+
+    Every run overwrites it — the file is a record of the most recent run, not a log —
+    so the version in git is whatever the last committed run proved.
+    """
+    INGEST_REPORT.parent.mkdir(parents=True, exist_ok=True)
+    INGEST_REPORT.write_text(
+        render_ingest_report(
+            filings, findings, generated=generated, store_counts=store_counts, **run
+        ),
+        encoding="utf-8",
+    )
+    print(f"\nIngest report written to {INGEST_REPORT}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging()
@@ -93,7 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.section_starts:
         _write_section_starts(args.section_starts, filings)
 
+    generated = (
+        f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')} · `scripts/ingest_filings.py`"
+    )
+
     if findings:
+        _write_ingest_report(filings, findings, generated=generated, store_counts=None)
         print(
             f"\nGATE FAILED — {len(findings)} finding(s). Nothing was written (ADR-0007).",
             file=sys.stderr,
@@ -101,11 +131,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.dry_run:
+        _write_ingest_report(filings, findings, generated=generated, store_counts=None)
         print("\nGATE PASSED. --dry-run: nothing written.")
         return 0
 
     store = build_filings_store(settings)
     report = ingest(filings, store=store, force=args.force)
+    _write_ingest_report(
+        filings,
+        findings,
+        generated=generated,
+        store_counts=chunk_counts_by_ticker(store),
+        written=report.chunks_written,
+        skipped=report.skipped,
+    )
 
     print(f"\nGATE PASSED. Wrote {report.total_chunks} chunks to '{settings.chroma_dir}'.")
     for ticker, count in report.chunks_written.items():

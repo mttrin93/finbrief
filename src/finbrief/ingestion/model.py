@@ -44,6 +44,11 @@ class Section(StrEnum):
         """The section's title as it reads in a 10-K, for headings and UI labels."""
         return _HEADINGS[self]
 
+    @property
+    def item(self) -> str:
+        """The bare item label a heading pattern anchors on: `Item 1A` -> `1A`."""
+        return self.value.removeprefix("Item ")
+
 
 _HEADINGS: Mapping[Section, str] = {
     Section.BUSINESS: "Business",
@@ -129,6 +134,23 @@ _REFERENCE_PHRASES = (
 #: makes skipping the pointer acceptable rather than a silent hole.
 _REFERENCE_TARGETS = ("item 7", "md&a", "management's discussion", "management’s discussion")
 
+#: Most words a pointer text may carry in sentences that do no handing-off. This is what
+#: "*nothing but* a pointer" means, measured: of the six real pointers, the largest
+#: leftover is GS's five-word running header ("THE GOLDMAN SACHS GROUP, INC. AND
+#: SUBSIDIARIES"), and JNJ and PFE leave a two-to-three-word page footer. A single
+#: sentence of genuine market-risk prose already runs past fifteen words, so a truncated
+#: real Section cannot fit under this while a real pointer never comes near it.
+POINTER_RESIDUE_MAX_WORDS = 15
+
+#: `Item 7.` mid-sentence is a cross-reference, not a full stop — JNJ's pointer reads
+#: "…incorporated herein by reference to Item 7. Management's discussion and analysis…"
+#: and splitting there would cut the hand-off from the target it names. Masked out before
+#: sentence-splitting.
+_ITEM_LABEL_DOT = re.compile(r"(Item[ \t\u00a0]+\d{1,2}[AB]?)\.", re.I)
+
+#: A sentence boundary: terminal punctuation, then whitespace.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
 
 #: The only Section a filer may answer by reference. Scoped rather than applied to all
 #: four, because `_REFERENCE_TARGETS` contains Item 7's own name: a truncated Item 7 whose
@@ -140,7 +162,7 @@ _MAY_BE_INCORPORATED = frozenset({"Item 7A"})
 
 
 def is_incorporated_by_reference(section: Section, text: str) -> bool:
-    """Is this text only a pointer to another Item, rather than a Section itself?
+    """Is this text *nothing but* a pointer to another Item, rather than a Section itself?
 
     Six of the fifteen Universe companies — every bank and every healthcare name — answer
     Item 7A with a sentence directing the reader to Item 7 (ADR-0007 amendment). That is a
@@ -148,17 +170,44 @@ def is_incorporated_by_reference(section: Section, text: str) -> bool:
     Risk Management section on pages 133-142" would embed cleanly, retrieve for every
     market-risk question, and ground nothing.
 
-    The test is a *positive* identification — short, plus hand-off language, plus a target
-    that is itself ingested — and not merely "short texts are forgiven". A genuine
-    extraction miss that happens to be brief has to keep failing loudly, or the gate stops
-    being a gate. "Item 7A. Not applicable." matches nothing here and still fails.
+    The identification is positive and whole-section, in three cuts (issue #3 review):
+
+    1. Only Item 7A, and only under `POINTER_MAX_CHARS` — as before.
+    2. Some single sentence must both hand off (a `_REFERENCE_PHRASES` wording) and name
+       an ingested target (`_REFERENCE_TARGETS`). Co-occurrence anywhere in the text was
+       the old rule, and a truncated genuine Section could satisfy it by accident — a
+       "See below" three sentences away from a mention of MD&A is not a hand-off.
+    3. The hand-off must be essentially the whole text: sentences carrying no hand-off
+       wording — real prose, if any survives — may total `POINTER_RESIDUE_MAX_WORDS`
+       words, enough for a running header or page footer and too little for content.
+
+    "Item 7A. Not applicable." matches nothing here and still fails; so does a genuine
+    Section truncated down to something pointer-sized. And the excusal never acts alone:
+    `gate` cross-checks every firing against `config.ITEM_7A_POINTER_FILERS`, so a filer
+    this function newly excuses is a finding for a human, not a silent drop.
     """
     if section.value not in _MAY_BE_INCORPORATED or len(text) > POINTER_MAX_CHARS:
         return False
-    lowered = text.lower()
-    return any(phrase in lowered for phrase in _REFERENCE_PHRASES) and any(
-        target in lowered for target in _REFERENCE_TARGETS
-    )
+    body = _without_own_heading(text, section)
+    sentences = _SENTENCE_END.split(_ITEM_LABEL_DOT.sub(r"\1", body))
+    handoff = [s for s in sentences if any(p in s.lower() for p in _REFERENCE_PHRASES)]
+    if not any(t in s.lower() for s in handoff for t in _REFERENCE_TARGETS):
+        return False
+    residue = sum(len(WORD.findall(s)) for s in sentences if s not in handoff)
+    return residue <= POINTER_RESIDUE_MAX_WORDS
+
+
+def _without_own_heading(text: str, section: Section) -> str:
+    """`text` minus the line holding the Section's own heading, if one is present.
+
+    The heading line is furniture a pointer and a real Section share, so it must not
+    count toward the residue that separates them.
+    """
+    start = section_start(text, section)
+    if start == -1:
+        return text
+    end = text.find("\n", start)
+    return text[:start] + (text[end + 1 :] if end != -1 else "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +254,25 @@ class ExtractedFiling:
     sections: Mapping[Section, str]
 
 
+def item_heading(item: str) -> re.Pattern[str]:
+    """The pattern for an `Item N` heading at the start of a line.
+
+    One definition, three readers, like `WORD` and `NEXT_ITEM_MARKERS` above:
+    `section_start` anchors the gate's start check with it, and `edgar._extract_by_regex`
+    opens *and closes* every fallback span with it. A second copy would let the fallback
+    pick a span by one idea of "a heading" that the gate then judges by another.
+
+    The negative lookahead is the load-bearing part: `Item 1` must not match `Item 1A.`
+    or `Item 1B.`, and `Item 7` must not match `Item 7A.` — prefix-matching there is how
+    an Item 1 lookup once returned the Risk Factors span, a mislabelled chunk no
+    downstream check could catch.
+    """
+    return re.compile(
+        rf"^[ \t]*Item[ \t\u00a0]+{re.escape(item.strip())}(?![A-Za-z0-9])\.?[ \t\u00a0]*",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+
 def section_start(text: str, section: Section) -> int:
     """Offset of the Section's own heading in `text`, or -1 if it has none.
 
@@ -217,10 +285,7 @@ def section_start(text: str, section: Section) -> int:
     at all: `Business` is too common a word to trust ahead of `Item 1.`, and across the
     whole Universe the fallback is reached exactly once, for JPM's Item 7.
     """
-    item = re.escape(section.value.removeprefix("Item ").strip())
-    label = re.search(
-        rf"^[ \t]*Item[ \t\u00a0]+{item}(?![A-Za-z0-9])", text, re.MULTILINE | re.I
-    )
+    label = item_heading(section.item).search(text)
     if label:
         return label.start()
 

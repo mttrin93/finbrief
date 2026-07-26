@@ -119,6 +119,18 @@ _TWENTY_F_FILERS: frozenset[str] = frozenset(
 )  # fmt: skip
 
 
+#: The Universe filers hand-verified to answer Item 7A with a pointer into Item 7 — every
+#: bank and every healthcare name, 6 of 15, and nobody else (ADR-0007 amendment; the rows
+#: marked "incorporated by reference" in docs/verification/section-starts.md).
+#:
+#: A tripwire, not documentation: `ingestion/gate.py` fails any filing where the
+#: incorporation-by-reference excusal fires for a ticker outside this set
+#: (`pointer_filer_is_recorded`). Either the filer newly hands the Item off — verify
+#: against the filing on EDGAR, then record it here — or the pointer detection misfired
+#: on a broken parse. Both deserve a human; neither may be a silent drop.
+ITEM_7A_POINTER_FILERS: frozenset[str] = frozenset({"BAC", "GS", "JNJ", "JPM", "LLY", "PFE"})
+
+
 def _build_clusters(
     universe: tuple[Company, ...],
 ) -> Mapping[PeerCluster, tuple[str, ...]]:

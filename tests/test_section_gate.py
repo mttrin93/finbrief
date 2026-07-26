@@ -15,7 +15,12 @@ from finbrief.ingestion.gate import (
     incorporated_sections,
     run_gate,
 )
-from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
+from finbrief.ingestion.model import (
+    ExtractedFiling,
+    FilingRef,
+    Section,
+    is_incorporated_by_reference,
+)
 
 BODY = "The Company designs and sells devices. " * 200
 
@@ -178,10 +183,74 @@ def test_an_item_7a_incorporated_by_reference_is_not_a_failure():
         "disclosures about market risk."
     )
 
-    assert check_filing(a_filing(sections=sections)) == ()
-    assert incorporated_sections(a_filing(sections=sections)) == frozenset(
+    assert check_filing(a_filing(ticker="JPM", sections=sections)) == ()
+    assert incorporated_sections(a_filing(ticker="JPM", sections=sections)) == frozenset(
         {Section.MARKET_RISK}
     )
+
+
+def test_a_pointer_from_a_filer_not_on_the_recorded_list_fails_loudly():
+    # The excusal is guarded by a tripwire: `config.ITEM_7A_POINTER_FILERS` records the
+    # six Universe filers hand-verified to answer Item 7A by reference. Firing for anyone
+    # else means either the filer newly hands the Item off (verify against the filing,
+    # then record it) or the detection misfired on a broken parse — both are findings a
+    # human must see, never silent drops.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk Management section of Management's discussion and "
+        "analysis on pages 133-142 for a discussion of quantitative and qualitative "
+        "disclosures about market risk."
+    )
+
+    findings = check_filing(a_filing(ticker="AAPL", sections=sections))
+
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MARKET_RISK, "pointer_filer_is_recorded")
+    ]
+    assert "ITEM_7A_POINTER_FILERS" in findings[0].detail
+
+
+def test_a_truncated_section_that_hands_off_mid_prose_is_not_excused():
+    # The adversarial near-miss: a genuine Item 7A, truncated, whose surviving fragment
+    # happens to contain "see ... Management's Discussion" — every token the excusal
+    # looks for. A pointer is *nothing but* the hand-off; this text carries real content
+    # sentences around it, so it must keep failing loudly as the extraction miss it is.
+    # Ticker JPM — a recorded pointer filer — so the refusal below is the trigger's work,
+    # not the tripwire's.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "We are exposed to market risk from changes in interest rates, foreign currency "
+        "exchange rates and commodity prices. For a fuller discussion of these exposures, "
+        "see the Market Risk section of Management's Discussion and Analysis. Our hedging "
+        "program uses derivative instruments, including forwards, swaps and options."
+    )
+
+    assert not is_incorporated_by_reference(Section.MARKET_RISK, sections[Section.MARKET_RISK])
+    findings = check_filing(a_filing(ticker="JPM", sections=sections))
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MARKET_RISK, "section_length_bounded")
+    ]
+
+
+def test_a_handoff_phrase_and_target_in_different_sentences_is_no_pointer():
+    # Co-occurrence anywhere within 1,500 characters was the old rule, and it was too
+    # loose: here "see" and "Management's Discussion" both appear, but no sentence hands
+    # the Item off to an ingested target. A real pointer says where it points in the same
+    # breath.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Market risk is discussed in Management's Discussion and Analysis. See below for "
+        "the sensitivity tables."
+    )
+
+    assert not is_incorporated_by_reference(Section.MARKET_RISK, sections[Section.MARKET_RISK])
+    findings = check_filing(a_filing(ticker="JPM", sections=sections))
+    assert [(f.section, f.check) for f in findings] == [
+        (Section.MARKET_RISK, "section_length_bounded")
+    ]
 
 
 def test_a_short_section_with_no_reference_language_still_fails():

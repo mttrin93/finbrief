@@ -16,6 +16,12 @@ exact-identifier bucket hybrid exists to serve.
 **Invariant.** BM25 always sees the raw identifiers in the retained original, and
 additionally covers identifiers that appear only in decomposed sub-queries.
 
+**Chunk-side counterpart.** Each chunk's indexed text opens with a provenance header
+(`AAPL | FY2025 10-K | Item 1A. Risk Factors`) so BM25 can match section and ticker
+literals on every chunk of a Section rather than only the one the splitter left the
+heading in — an effect on index content that is not assumed but measured in the T10
+per-bucket A/B (#11).
+
 **Refined pre-registered hypotheses (supersede ADR-0002's):**
 - hybrid > vector-only on `exact-identifier`
 - `±translation` ≈ neutral on `exact-identifier` (BM25 on the retained original already

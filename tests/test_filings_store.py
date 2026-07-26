@@ -13,6 +13,7 @@ from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.retrieval.vectorstore import (
     FILINGS_COLLECTION,
     build_filings_store,
+    chunk_counts_by_ticker,
     ingested_accessions,
     write_chunks,
 )
@@ -82,6 +83,22 @@ def test_a_second_company_adds_to_the_collection_rather_than_replacing_it(store)
 
 def test_an_empty_collection_reports_no_ingested_accessions(store):
     assert ingested_accessions(store) == set()
+
+
+def test_chunk_counts_by_ticker_reads_back_what_each_company_holds(store):
+    # The ingest report cites these counts as evidence of what the knowledge base holds,
+    # so they come from the collection itself — not from what one run happened to write.
+    write_chunks(store, chunk_filing(a_filing(ticker="AAPL")))
+    write_chunks(store, chunk_filing(a_filing(ticker="MSFT", accession="0000789019-25-000118")))
+
+    counts = chunk_counts_by_ticker(store)
+
+    assert set(counts) == {"AAPL", "MSFT"}
+    assert sum(counts.values()) == count(store)
+
+
+def test_an_empty_collection_reports_no_chunk_counts(store):
+    assert chunk_counts_by_ticker(store) == {}
 
 
 def test_the_collection_is_named_so_news_and_glossary_can_live_beside_it(store):
