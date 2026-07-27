@@ -1,11 +1,13 @@
 # Ingest report
 
 Machine evidence of the most recent ingestion run — rewritten by every
-`scripts/ingest_filings.py` run (issue #3). Chunk counts are read back from the
+full-Universe `scripts/ingest_filings.py` run, and by those only, since a
+`--tickers` subset or a `--dry-run` cannot speak to what the collection holds.
+Chunk counts are read back from the
 persisted collection after the run, not taken from the run's own writes, so an
 idempotent re-run that writes nothing still shows what the knowledge base holds.
 
-- Generated: 2026-07-26 18:18 UTC · `scripts/ingest_filings.py`
+- Generated: 2026-07-27 08:51 UTC · `scripts/ingest_filings.py`
 - Outcome: **GATE PASSED**
 
 ## Section-detection gate
@@ -38,19 +40,19 @@ All 60 company x Section checks passed.
 
 | Ticker | FY | Accession | Chunks | This run |
 |---|---|---|---:|---|
-| AAPL | FY2025 | `0000320193-25-000079` | 152 | skipped (already ingested) |
-| MSFT | FY2025 | `0000950170-25-100235` | 237 | skipped (already ingested) |
-| NVDA | FY2026 | `0001045810-26-000021` | 298 | skipped (already ingested) |
-| AMZN | FY2025 | `0001018724-26-000004` | 192 | skipped (already ingested) |
-| GOOGL | FY2025 | `0001652044-26-000018` | 239 | skipped (already ingested) |
-| META | FY2025 | `0001628280-26-003942` | 422 | skipped (already ingested) |
-| TSLA | FY2025 | `0001628280-26-003952` | 280 | skipped (already ingested) |
-| F | FY2025 | `0000037996-26-000015` | 499 | skipped (already ingested) |
-| GM | FY2025 | `0001467858-26-000013` | 311 | skipped (already ingested) |
-| JPM | FY2025 | `0001628280-26-008131` | 735 | skipped (already ingested) |
-| BAC | FY2025 | `0000070858-26-000157` | 643 | skipped (already ingested) |
-| GS | FY2025 | `0000886982-26-000091` | 875 | skipped (already ingested) |
-| JNJ | FY2025 | `0000200406-26-000016` | 215 | skipped (already ingested) |
-| LLY | FY2025 | `0000059478-26-000013` | 315 | skipped (already ingested) |
-| PFE | FY2025 | `0000078003-26-000026` | 429 | skipped (already ingested) |
+| AAPL | FY2025 | `0000320193-25-000079` | 152 | wrote 152 |
+| MSFT | FY2025 | `0000950170-25-100235` | 237 | wrote 237 |
+| NVDA | FY2026 | `0001045810-26-000021` | 298 | wrote 298 |
+| AMZN | FY2025 | `0001018724-26-000004` | 192 | wrote 192 |
+| GOOGL | FY2025 | `0001652044-26-000018` | 239 | wrote 239 |
+| META | FY2025 | `0001628280-26-003942` | 422 | wrote 422 |
+| TSLA | FY2025 | `0001628280-26-003952` | 280 | wrote 280 |
+| F | FY2025 | `0000037996-26-000015` | 499 | wrote 499 |
+| GM | FY2025 | `0001467858-26-000013` | 311 | wrote 311 |
+| JPM | FY2025 | `0001628280-26-008131` | 735 | wrote 735 |
+| BAC | FY2025 | `0000070858-26-000157` | 643 | wrote 643 |
+| GS | FY2025 | `0000886982-26-000091` | 875 | wrote 875 |
+| JNJ | FY2025 | `0000200406-26-000016` | 215 | wrote 215 |
+| LLY | FY2025 | `0000059478-26-000013` | 315 | wrote 315 |
+| PFE | FY2025 | `0000078003-26-000026` | 429 | wrote 429 |
 | **Total** | | | **5,842** | |
