@@ -405,3 +405,17 @@ faithfulness vs.
 useful-but-uncontexted knowledge trade-off (Part 3's Einstein example); yfinance as an
 unofficial API in a "production" story; universe fixed at ingest time; no re-ranking stage
 in Tier-1 (promoted to Tier-2 #2 per ADR-0010 — if built, evaluated as a third A/B axis).
+
+**Citation validity is persona-dependent** (T3, #5). The grounding half of the contract is
+structural: `Context.rank` is assigned once in `retrieve()` and read only by
+`prompts.format_contexts` and the app's sources panel, and the contexts travel with the
+answer in `GroundedAnswer`, so every panel entry `[n]` resolves to exactly one retrieved
+chunk and keeps resolving to it across reruns. The *citing* half is not enforced: nothing
+parses the `[n]` markers out of the answer, so a model that emits `[6]` against five
+contexts produces a marker pointing at no entry — silently, with no error and no log line.
+Until an output-side marker validator lands (offered to T7 as an output-validation
+candidate, #8) or ADR-0002's faithfulness scoring measures it statistically (T9, #4),
+citation *correctness* rests on the system prompt's instruction rather than on code. The
+inverse gap is deliberate: a retrieved-but-uncited context still appears in the panel,
+because the panel's contract is "what grounded this turn", which is also why the log field
+is `retrieved_sections` and not `cited_sections`.

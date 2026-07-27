@@ -125,27 +125,44 @@ def test_a_half_filled_expectation_is_a_control_everywhere_or_nowhere():
     assert half_filled.expectation == "—"
 
 
-def test_the_expectation_labels_match_the_committed_artifact():
-    # `docs/verification/retrieval-smoke.md` is the output of a paid run that CI cannot
-    # reproduce, so a change to how a row renders silently invalidates committed evidence.
-    # Extracting `expectation` had to leave every Expects cell byte-identical; this is what
-    # says so.
-    # Scoped to the Checks table: the distance-ranges table below it has the same column
-    # count and the same question in column 1, so an unscoped parse reads "yes" as an
-    # expectation and passes for the wrong reason.
+def committed_check_rows() -> dict[str, dict[str, str]]:
+    """The committed artifact's Checks table, by question.
+
+    Scoped to that table: the distance-ranges table below it has the same column count and
+    the same question in column 1, so an unscoped parse reads "yes" as an expectation and
+    passes for the wrong reason.
+    """
     _, _, rest = REPORT.read_text(encoding="utf-8").partition("## Checks")
     checks_table, _, _ = rest.partition("## Observed distance ranges")
-    rows = {
-        cells[1]: cells[2]
-        for line in checks_table.splitlines()
-        if line.startswith("| ")
-        and len(cells := [c.strip() for c in line.split(" | ")]) == 5
-        and cells[0] != "| #"  # the header row, same shape as the data
-    }
+    rows = {}
+    for line in checks_table.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        # Numbered rows only: the header (`#`) and its separator (`---`) have the same
+        # column count as the data.
+        if len(cells) != 5 or not cells[0].isdigit():
+            continue
+        rows[cells[1]] = {"expects": cells[2], "verdict": cells[3], "why": cells[4]}
+    return rows
+
+
+def test_the_rendered_columns_match_the_committed_artifact():
+    # `docs/verification/retrieval-smoke.md` is the output of a paid run that CI cannot
+    # reproduce, so a change to how a row renders silently invalidates committed evidence.
+    #
+    # `why` is pinned as well as `expects` because it is no longer a literal: query 3's reads
+    # its filer count from `config.ITEM_7A_SECTION_FILERS`, and that string lands verbatim in
+    # the artifact. Before the regeneration this could not be asserted — the committed file
+    # still said "the nine filers" while the code had moved to "the 9 filers", which is
+    # exactly the drift this now catches (issue #5 review).
+    rows = committed_check_rows()
     assert len(rows) == len(SMOKE_QUERIES), f"parsed {len(rows)} rows from the Checks table"
 
     for query in SMOKE_QUERIES:
-        assert rows[query.question] == query.expectation, query.question
+        row = rows[query.question]
+        assert row["expects"] == query.expectation, query.question
+        assert row["why"] == query.why, query.question
 
 
 def test_a_check_reports_the_distance_band_it_observed():
