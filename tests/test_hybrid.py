@@ -116,9 +116,27 @@ def test_a_chunk_is_deduplicated_but_every_list_that_surfaced_it_is_recorded():
 
     (item,) = fused
     assert item.provenance == (
-        Surfaced(variant=ORIGINAL, retriever=Retriever.VECTOR, rank=1, contribution=1 / 61),
-        Surfaced(variant=ORIGINAL, retriever=Retriever.BM25, rank=1, contribution=1 / 61),
-        Surfaced(variant=SUB_QUERY, retriever=Retriever.VECTOR, rank=1, contribution=1 / 61),
+        Surfaced(
+            variant=ORIGINAL,
+            retriever=Retriever.VECTOR,
+            rank=1,
+            contribution=1 / 61,
+            distance=0.4,
+        ),
+        Surfaced(
+            variant=ORIGINAL,
+            retriever=Retriever.BM25,
+            rank=1,
+            contribution=1 / 61,
+            distance=None,
+        ),
+        Surfaced(
+            variant=SUB_QUERY,
+            retriever=Retriever.VECTOR,
+            rank=1,
+            contribution=1 / 61,
+            distance=0.2,
+        ),
     )
     assert item.score == 3 / 61
 
@@ -165,6 +183,54 @@ def test_a_chunk_several_variants_reached_keeps_the_nearest_distance():
     )
 
     assert fused[0].distance == 0.3
+
+
+def test_each_provenance_row_keeps_its_own_variants_distance_not_the_chunks_nearest():
+    # ADR-0004 §7's pre-registration is a *per-variant* distance comparison — "the ticker form
+    # ranks the chunk 5th under vector search too, at distance 0.6778 against the original's
+    # 1.0406" — and that is the number the prediction has to be refuted with. Folding the rows
+    # to `Fused.distance`'s minimum destroys it, which is why §6's own table had to come from a
+    # scratchpad script re-running each variant separately (issue #6 review).
+    fused = fuse(
+        [
+            a_vector_list(("c-1", 1.0406)),
+            a_vector_list(("c-1", 0.6778), variant=SUB_QUERY),
+            a_bm25_list("c-1", variant=SUB_QUERY),
+        ],
+        limit=1,
+    )
+
+    (item,) = fused
+    assert [(row.variant, row.distance) for row in item.provenance] == [
+        (ORIGINAL, 1.0406),
+        (SUB_QUERY, 0.6778),
+        (SUB_QUERY, None),
+    ]
+    # And the chunk-level fold is unchanged, so both readings are available at once.
+    assert item.distance == 0.6778
+
+
+def test_a_provenance_row_survives_a_payload_round_trip_with_its_distance():
+    row = Surfaced(
+        variant=SUB_QUERY,
+        retriever=Retriever.VECTOR,
+        rank=4,
+        contribution=1 / 64,
+        distance=0.6778,
+    )
+
+    assert Surfaced.from_payload(row.as_payload()) == row
+
+
+def test_a_provenance_row_written_before_distances_were_recorded_still_reads_back():
+    # A live conversation's checkpoint outlives a deploy, so a thread can hold rows of both
+    # shapes. `None` is the honest reading of the absent key — no distance was recorded, and a
+    # BM25 row carries `None` anyway, so there is nothing to invent.
+    older = {"variant": ORIGINAL, "retriever": "vector", "rank": 2, "contribution": 1 / 62}
+
+    assert Surfaced.from_payload(older) == Surfaced(
+        variant=ORIGINAL, retriever=Retriever.VECTOR, rank=2, contribution=1 / 62, distance=None
+    )
 
 
 def test_fusing_nothing_returns_nothing():

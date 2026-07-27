@@ -428,3 +428,43 @@ def test_the_log_line_carries_provenance_by_variant_index_never_by_query_text(
     assert all(row["retriever"] in ("vector", "bm25") for row in surfaced)
     assert "supply chain" not in str(record.fields)
     assert "supplier concentration" not in str(record.fields)
+
+
+def test_the_log_line_carries_each_rows_own_distance_so_the_mechanism_is_refutable(
+    filings_store, caplog
+):
+    # ADR-0004 §7 pre-registers that hybrid's marginal contribution on `exact-identifier` is
+    # small *because the recovery is embedding-side* — evidenced by the same chunk's distance
+    # under two surface forms. Refuting that needs the per-variant distance, so the log row
+    # carries its own rather than the chunk's nearest (issue #6 review). A number, so the rule
+    # above is untouched.
+    with caplog.at_level("INFO", logger="finbrief.retrieval.retrieve"):
+        retrieve(
+            QUESTION,
+            strategy=HYBRID,
+            translate=True,
+            k=2,
+            store=filings_store,
+            settings=SETTINGS,
+            model=a_translator("Apple supplier concentration"),
+        )
+
+    (record,) = [r for r in caplog.records if getattr(r, "event", None) == "retrieval"]
+    rows = [row for chunk in record.fields["provenance"] for row in chunk["surfaced"]]
+    assert all("distance" in row for row in rows)
+    assert all(row["distance"] is None for row in rows if row["retriever"] == "bm25"), (
+        "BM25 has no distance of its own to report"
+    )
+    assert any(row["distance"] is not None for row in rows if row["retriever"] == "vector")
+
+
+def test_the_log_line_says_how_many_hits_each_candidate_list_returned(filings_store, caplog):
+    # `candidate_lists` counts lists *built*, so a list that matched nothing is otherwise
+    # indistinguishable from one never run — and "sub-query 3 × BM25 matched nothing" is the
+    # negative datum ADR-0004 §1 makes the panel's justification.
+    with caplog.at_level("INFO", logger="finbrief.retrieval.retrieve"):
+        retrieve(QUESTION, strategy=HYBRID, k=2, store=filings_store)
+
+    (record,) = [r for r in caplog.records if getattr(r, "event", None) == "retrieval"]
+    assert len(record.fields["per_list_hits"]) == record.fields["candidate_lists"]
+    assert all(hits <= 2 for hits in record.fields["per_list_hits"])

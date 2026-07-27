@@ -96,23 +96,45 @@ class Surfaced:
     #: `1 / (RRF_K + rank)`. Kept rather than recomputed so the panel and the A/B analysis read
     #: the number that was actually summed, even if `RRF_K` were ever restated.
     contribution: float
+    #: The vector distance **this** candidate list gave this chunk, or `None` for a BM25 row.
+    #:
+    #: Per row, not per chunk, and that is the point: `Fused.distance` keeps only the nearest
+    #: any variant produced, but ADR-0004 §6/§7's mechanism argument is a *per-variant*
+    #: comparison — "the ticker form ranks the chunk 5th under vector search too, at distance
+    #: 0.6778 against the original's 1.0406". That is the number §7's pre-registration — that
+    #: hybrid's marginal contribution here is small *because the recovery is
+    #: embedding-side* — has to be refuted with, and folding the rows to a minimum threw it
+    #: away, which is why §6's own table came from a scratchpad script re-running each variant
+    #: separately rather than from anything the engine emitted. Kept here, it is falsifiable
+    #: from the artifact and from one `retrieval` log line (issue #6 review).
+    distance: float | None = None
 
-    def as_payload(self) -> dict[str, str | int | float]:
+    def as_payload(self) -> dict[str, str | int | float | None]:
         """JSON-safe primitives — this row crosses the agent's checkpoint (see `Context`)."""
         return {
             "variant": self.variant,
             "retriever": self.retriever.value,
             "rank": self.rank,
             "contribution": self.contribution,
+            "distance": self.distance,
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> Surfaced:
+        """Rebuild a row from `as_payload`, tolerating one written before it carried a distance.
+
+        A live conversation's checkpoint outlives a deploy, so a thread can hold rows of both
+        shapes. `None` is the honest reading of an absent key here — it is what a BM25 row
+        carries anyway, and no distance was recorded for a vector row written by the older
+        shape, so there is nothing to invent.
+        """
+        distance = payload.get("distance")
         return cls(
             variant=str(payload["variant"]),
             retriever=Retriever(payload["retriever"]),
             rank=int(payload["rank"]),
             contribution=float(payload["contribution"]),
+            distance=None if distance is None else float(distance),
         )
 
 
@@ -166,6 +188,8 @@ def fuse(candidate_lists: Sequence[CandidateList], *, limit: int) -> tuple[Fused
       and silently so.
 
     A chunk's `distance` is the **nearest** any vector list gave it, and `None` if none did.
+    Each `Surfaced` row keeps the distance *its own* list gave it, because the fold to a minimum
+    is what destroyed ADR-0004 §7's per-variant comparison — see `Surfaced.distance`.
     """
     documents: dict[str, Document] = {}
     provenance: dict[str, list[Surfaced]] = {}
@@ -180,6 +204,10 @@ def fuse(candidate_lists: Sequence[CandidateList], *, limit: int) -> tuple[Fused
                     retriever=candidate_list.retriever,
                     rank=rank,
                     contribution=rrf_contribution(rank),
+                    # Per row, so a per-variant distance comparison survives fusion — see
+                    # `Surfaced.distance`. `distances` below still folds these to the nearest,
+                    # which is what one chunk can honestly report.
+                    distance=distance,
                 )
             )
             if distance is not None:

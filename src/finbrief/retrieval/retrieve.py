@@ -310,6 +310,12 @@ def retrieve(
         # typed it.
         variants=len(variants),
         candidate_lists=len(candidate_lists),
+        # Hits per candidate list, in `_candidate_lists`' order (variant-major, then retriever).
+        # `candidate_lists` above counts lists *built*, so without this a list that matched
+        # nothing is indistinguishable from one that was never run — and "sub-query 3 × BM25
+        # matched nothing" is exactly the negative datum the RAG-viz panel invites a reader to
+        # ask about (ADR-0004 §1). Counts only, so it says nothing about what was asked.
+        per_list_hits=[len(candidate_list.hits) for candidate_list in candidate_lists],
         # The deduplicated pool fusion chose from, before truncation — the number that says
         # whether a wider `k` would have had anything to offer.
         fused_candidates=len(
@@ -338,6 +344,11 @@ def retrieve(
                         "retriever": row.retriever.value,
                         "rank": row.rank,
                         "contribution": round(row.contribution, 6),
+                        # The distance *this* row's list gave the chunk, not the chunk's nearest
+                        # — which is what makes ADR-0004 §7's pre-registration refutable from a
+                        # log line rather than only from a scratchpad re-run (see
+                        # `Surfaced.distance`). A number, so it carries no user content.
+                        "distance": (None if row.distance is None else round(row.distance, 4)),
                     }
                     for row in context.provenance
                 ],
