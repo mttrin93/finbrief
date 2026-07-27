@@ -41,7 +41,6 @@ def stubbed_agent(monkeypatch, agent_builds):
     def fake_answer(question, *, thread_id, agent):
         asked.append({"question": question, "thread_id": thread_id, "agent": agent})
         return AgentTurn(
-            question=question,
             text="Tesla identifies supply-chain concentration [1].",
             searches=(Search(query=question, contexts=(a_context(1),)),),
         )

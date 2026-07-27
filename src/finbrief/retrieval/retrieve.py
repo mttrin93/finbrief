@@ -57,7 +57,17 @@ class Context:
     #: similarity, and calling it a score would invite a reader to expect 0…1 and
     #: higher-is-better. Phase 4's RRF consumes `rank`, which is what fusion needs anyway.
     distance: float
-    #: 1-based position in this retrieval, so a citation index and the panel agree.
+    #: 1-based position in this retrieval, nearest first — and the number an inline `[n]`
+    #: uses, so a citation and the panel agree.
+    #:
+    #: **`retrieve()` sets it per retrieval; the shipped path renumbers it per conversation.**
+    #: A citation has to name one chunk for a whole conversation, and a second search would
+    #: otherwise reuse `[1]`, so `agent/citations.py` reassigns these into the thread's running
+    #: sequence before the model sees them (ADR-0003 amendment §3). What arrives *here* is
+    #: always 1…k, which is what the evaluation harness measures and what Phase 4's RRF
+    #: consumes; a `Context` read back out of a checkpoint carries the conversation's number
+    #: instead. Anything that treats a `rank` as an index into its own retrieval is reading the
+    #: field on the wrong side of that boundary.
     rank: int
 
     @property

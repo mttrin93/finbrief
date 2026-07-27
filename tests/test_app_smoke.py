@@ -45,7 +45,6 @@ def a_turn(
 ):
     """A turn that searched once and got `contexts` chunks back."""
     return AgentTurn(
-        question=query or "What are Tesla's risk factors?",
         text=text,
         searches=(
             Search(
@@ -58,7 +57,7 @@ def a_turn(
 
 def a_turn_without_searching(text="Two risks, briefly: […]"):
     """A turn answered from the conversation — no search, so nothing to cite and no banner."""
-    return AgentTurn(question="Summarise that.", text=text, searches=())
+    return AgentTurn(text=text, searches=())
 
 
 def stub_answer(monkeypatch, answer=None):
@@ -212,7 +211,6 @@ def test_a_source_body_renders_the_filers_words_character_identical(
     stub_answer(
         monkeypatch,
         AgentTurn(
-            question="How did Apple's segments perform?",
             text="Apple reports net sales by segment [1].",
             searches=(
                 Search(

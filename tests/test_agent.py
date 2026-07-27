@@ -50,6 +50,22 @@ def a_search(query: str, call_id: str = "call-1") -> AIMessage:
     )
 
 
+def a_fan_out(*queries: str) -> AIMessage:
+    """The model's turn when it asks for several searches in *one* step.
+
+    A real provider is told not to (`parallel_tool_calls=False`, plus the tool description),
+    but "told not to" is the class of guarantee this ticket stopped relying on: the register
+    has to survive a step that arrives with two searches in it.
+    """
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {"name": TOOL_NAME, "args": {"query": query}, "id": f"call-{index}"}
+            for index, query in enumerate(queries, start=1)
+        ],
+    )
+
+
 def an_agent(tmp_path, store, script, *, name="checkpoints.sqlite"):
     """The real agent, with a scripted model and a real checkpoint file."""
     model = ScriptedChatModel(messages=iter(script))
@@ -153,6 +169,67 @@ def test_citation_numbers_keep_climbing_across_a_conversation(tmp_path, filings_
     assert "[4] " in latest_sources.content
     first_of_second = second.contexts[0]
     assert f"[{first_of_second.rank}] {first_of_second.citation}" in latest_sources.content
+
+
+def test_two_searches_in_one_step_do_not_reuse_citation_numbers(tmp_path, filings_store):
+    # The collision the register is assigned at the agent seam to prevent (ADR-0003 §3, as
+    # amended). LangGraph's tool node builds every `ToolRuntime` from the *same* node input
+    # and then runs the calls concurrently, so two searches in one step would each read an
+    # identical "sources issued so far" and both emit `[1][2][3]` — after which `[1]` names
+    # two different chunks and the reader cannot check either.
+    agent, model = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out("Tesla supply chain risk", "Ford supply chain risk"),
+            AIMessage("Both flag concentration [1][4]."),
+        ],
+    )
+
+    turn = answer("Compare Tesla and Ford on supply chain.", thread_id="t-1", agent=agent)
+
+    ranks = [context.rank for context in turn.contexts]
+    assert len(ranks) == 6, "two searches, k=3 each"
+    assert ranks == [1, 2, 3, 4, 5, 6], "one number per source, and none of them twice"
+    # And the numbers the *model* was shown are those numbers: renumbering only the artifact
+    # would fix the panel and leave the model citing an ambiguous `[1]`.
+    blocks = [m.content for m in model.prompts[-1] if isinstance(m, ToolMessage)]
+    assert len(blocks) == 2
+    assert "[1] " in blocks[0] and "[4] " in blocks[1]
+    assert "[1] " not in blocks[1]
+
+
+def test_a_fan_out_then_a_follow_up_keeps_the_register_climbing(tmp_path, filings_store):
+    # The other half: a step's numbering has to leave the *thread's* register where the next
+    # turn expects it. A per-step counter would restart the follow-up at `[1]`.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out("Tesla supply chain risk", "Ford supply chain risk"),
+            AIMessage("Both flag concentration [1][4]."),
+            a_search("Tesla debt", "call-3"),
+            AIMessage("Its debt is described in the MD&A [7]."),
+        ],
+    )
+
+    answer("Compare Tesla and Ford on supply chain.", thread_id="t-1", agent=agent)
+    second = answer(FOLLOW_UP, thread_id="t-1", agent=agent)
+
+    assert [context.rank for context in second.contexts] == [7, 8, 9]
+
+
+def test_the_model_is_bound_against_parallel_tool_calls(tmp_path, filings_store):
+    # The primary, provider-side half of the same fix: one tool call per step, so the
+    # collision above does not arise with a real model. Asserted at the binding because that
+    # is the whole of our side of it — whether a given OpenRouter upstream honours the flag is
+    # not ours to assert, which is why the register above does not depend on it.
+    agent, model = an_agent(tmp_path, filings_store, [AIMessage("…")])
+
+    answer("What does Apple say about supply chains?", thread_id="t-1", agent=agent)
+
+    assert model.bind_kwargs, "the agent binds its tools through `bind_tools`"
+    assert all(kwargs.get("parallel_tool_calls") is False for kwargs in model.bind_kwargs)
 
 
 def test_numbering_restarts_for_a_different_conversation(tmp_path, filings_store):

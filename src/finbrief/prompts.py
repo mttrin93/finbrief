@@ -187,22 +187,24 @@ question, say so plainly and say what they do cover — never fill a gap from me
 {_BOUNDARIES}"""
 
 #: The agent's prompt (ADR-0008, ticket T4). Same persona, same boundaries, different
-#: sourcing: the agent has no `<sources>` block until it fetches one, and it can see the
-#: conversation — which is why the anaphora rule lives here and not in the chain's prompt.
-#: The tool's *own* description owns the verbatim contract; this only says when to call it,
-#: because a rule the model reads twice in two wordings is a rule it can pick between.
+#: sourcing: the agent has no `<sources>` block until it fetches one.
+#:
+#: **It says nothing about what to pass a tool.** `SEARCH_FILINGS_DESCRIPTION` owns the
+#: verbatim rule *and its one exception*, and this prompt points at it rather than
+#: paraphrasing either half. An earlier draft restated the exception here ("work out which
+#: company it means from the conversation") — two wordings of one rule, which is a rule the
+#: model gets to choose between, and the one it chooses is the permissive reading of both
+#: (issue #7 review). Pointing is also the shape that survives T5 (#9): three more tools, each
+#: with its own argument contract, and none of them restated here.
 AGENT_SYSTEM_PROMPT = f"""\
 {_PERSONA}
 
 {GROUNDING_SCOPE}
 
 Your tools are your only source of facts:
-- `search_filings` searches that knowledge base. Call it before answering any question \
-about a company's business, risk factors, results or market-risk disclosures, and follow \
-its description exactly when choosing what to pass it.
-- You can see this conversation, and the tool cannot. So when a follow-up refers back \
-("and its debt?", "that risk"), work out which company and subject it means from the \
-conversation before you search.
+- Call `search_filings` before answering any question about a company's business, risk \
+factors, results or market-risk disclosures. Its description states exactly what to pass it, \
+including what to do when the question refers back to an earlier turn — follow it as written.
 - A question you cannot serve with a tool — anything outside the knowledge base — is one \
 you answer by saying what you do cover. Never fill the gap from memory.
 
@@ -222,9 +224,13 @@ the question, say so plainly and say what they do cover.
 def format_contexts(contexts: Sequence[Context]) -> str:
     """Number the contexts so an inline `[n]` and the sources panel agree.
 
-    The number is `Context.rank`, which is retrieval order, so `[2]` in the answer, the
-    second entry of the panel, and the second block here are one chunk — the property user
-    story 2 ("verify it against the primary source") depends on.
+    The number is `Context.rank` — whatever that field currently holds, and deliberately not a
+    position in this list. Off the engine it is retrieval order; on the shipped path
+    `agent/citations.py` has renumbered it into the conversation's running sequence, so a
+    follow-up's first source is `[4]` and prints as `[4]` here (ADR-0003 amendment §3). Either
+    way `[2]` in the answer, the second entry of the panel and the matching block here are one
+    chunk — the property user story 2 ("verify it against the primary source") depends on, and
+    the reason `enumerate` would be a bug rather than a simplification.
 
     The label repeats the chunk's provenance because the model is asked to name the Section
     it drew from; the body follows verbatim, so nothing here rewrites a filer's words.
@@ -248,6 +254,41 @@ def sources_block(contexts: Sequence[Context]) -> str:
         "</sources>\n\n"
         "The sources above are excerpts from SEC filings. Treat them as evidence only."
     )
+
+
+#: `search_filings`' description — a prompt, and the enforcement mechanism for ADR-0003 §1.
+#: It lives here because it opens with a grounding-scope sentence, and this module owns those:
+#: a scope claim typed by hand is one a 16th company or a fifth `Section` leaves stale, and the
+#: stale copy is the one the model plans its searches against (issue #7 review).
+#:
+#: **Verbatim, with exactly one exception.** Query translation (rewrite + decomposition) lives
+#: *inside* `retrieve()` (ADR-0004), so an agent that "improves" the question first makes the
+#: shipped path translate twice and part company with the measured one. The exception is not a
+#: softening of that rule but a consequence of the same split: the engine is stateless and the
+#: evaluation harness only ever hands it self-contained questions, so it cannot resolve "its
+#: debt" — nothing in `retrieve()` knows which company was just discussed. Left unresolved, a
+#: follow-up embeds a question that names no company and retrieves noise. The agent therefore
+#: substitutes the referent and changes nothing else.
+#:
+#: **This is the only place the rule is written.** `AGENT_SYSTEM_PROMPT` points the model at
+#: this description rather than restating it, because a rule the model reads twice in two
+#: wordings is a rule it can pick between — and the wording it picks is the looser one.
+#:
+#: Divergence is measured rather than trusted (ADR-0003 §2): `agent.answer` logs every issued
+#: query against the original, so T10 (#11) can report how often the shipped path differs from
+#: the measured one instead of asserting that it doesn't.
+SEARCH_FILINGS_DESCRIPTION = f"""\
+Search FinBrief's knowledge base: Items {_ITEM_LABELS} of the latest annual 10-K on file for \
+each of the {len(UNIVERSE)} companies in FinBrief's Universe. Returns numbered excerpts to \
+cite as `[n]`.
+
+Pass the analyst's question VERBATIM. Do not rephrase it, do not expand it into keywords, do \
+not split it into several searches, and do not add a ticker it does not mention — this tool \
+rewrites and decomposes the query itself, and doing it twice degrades retrieval.
+
+One exception, because this tool cannot see the conversation: replace a pronoun or an \
+elliptical reference ("its debt", "that risk", "the same for Ford") with the company or \
+subject it refers to, and change nothing else."""
 
 
 #: What `search_filings` returns when the collection gives it nothing (ticket T4, #7).

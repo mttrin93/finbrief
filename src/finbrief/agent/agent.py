@@ -27,22 +27,25 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
 from langchain_chroma import Chroma
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
+from finbrief.agent.citations import citation_register
 from finbrief.config import RetrievalStrategy, Settings, get_settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
 from finbrief.retrieval.retrieve import Context
-from finbrief.tools.search_filings import TOOL_NAME, build_search_filings
+from finbrief.tools.search_filings import TOOL_NAME, build_search_filings, search_results
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,33 @@ BASELINE_STRATEGY = RetrievalStrategy.VECTOR
 #: synthesis) and still turns a model that has decided to search forever into one clear
 #: error instead of an unbounded bill.
 MAX_AGENT_STEPS = 12
+
+
+@wrap_model_call
+def _one_tool_call_at_a_time(
+    request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
+) -> ModelResponse:
+    """Ask the provider for at most one tool call per step (ADR-0003 amendment §5).
+
+    Two reasons, one of which is measurement. A step that fans out into several searches makes
+    the `verbatim` verdict ambiguous — several queries against one question, none of them the
+    question — and the tool's description already forbids splitting a question up, because
+    decomposition is an optimization `retrieve()` owns (ADR-0004). This asks for the same thing
+    where a prompt cannot be declined.
+
+    It is a *request*, though: `parallel_tool_calls` reaches OpenRouter, which fronts many
+    upstreams, and whether a given one honours it is not ours to know. So it is the second line
+    and not the first — `agent/citations.py` makes a collided citation number unrepresentable
+    regardless of what the provider does with this.
+
+    Set through `model_settings`, which `create_agent` spreads into `bind_tools`, and only when
+    there are tools to bind: with none, that call becomes a bare `bind()` and the flag would
+    reach the API as a parameter about tools that were never sent.
+    """
+    if not request.tools:
+        return handler(request)
+    settings = {**request.model_settings, "parallel_tool_calls": False}
+    return handler(request.override(model_settings=settings))
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,13 +120,17 @@ class AgentTurn:
     base because a follow-up was answered from the conversation.
     """
 
-    question: str
     text: str
     searches: tuple[Search, ...]
 
     @property
     def contexts(self) -> tuple[Context, ...]:
-        """Every chunk this turn retrieved, in the order it was numbered."""
+        """Every chunk this turn retrieved, in the order the register numbered it.
+
+        Search order, then rank within each search — which is the order the numbers run in,
+        because `agent/citations.py` assigns them by one pass over the same replies. So the
+        panel's nth entry is `[first_rank + n]`, and stays so when a step ran two searches.
+        """
         return tuple(context for search in self.searches for context in search.contexts)
 
     @property
@@ -162,6 +196,11 @@ def build_agent(
             build_search_filings(strategy=BASELINE_STRATEGY, store=store, settings=settings)
         ],
         system_prompt=AGENT_SYSTEM_PROMPT,
+        # Two lines under the same invariant — an `[n]` names one chunk for a whole
+        # conversation. The register assigns the numbers where nothing else can collide with
+        # it; the binding asks the provider not to create the collision in the first place.
+        # Neither is sufficient: see each one's own docstring for which half it cannot cover.
+        middleware=[_one_tool_call_at_a_time, citation_register],
         checkpointer=(
             checkpointer if checkpointer is not None else build_checkpointer(settings)
         ),
@@ -190,7 +229,7 @@ def answer(question: str, *, thread_id: str, agent: CompiledStateGraph) -> Agent
     )
     messages = result["messages"]
     searches = _searches_in(_this_turn(messages))
-    turn = AgentTurn(question=question, text=messages[-1].text, searches=searches)
+    turn = AgentTurn(text=messages[-1].text, searches=searches)
 
     # ADR-0003 §2: the divergence between what the agent asked and what the user asked is
     # *measured*, not assumed away — one line per search, so T10 (#11) can report how often
@@ -257,6 +296,10 @@ def _searches_in(messages: list[AnyMessage]) -> tuple[Search, ...]:
     matched by `tool_call_id` rather than by position: with several tool calls in one step,
     the results can come back in any order, and a mispaired query would make the divergence
     log describe the wrong search.
+
+    Which replies are the tool's, and where on them the chunks live, is `search_results`' to
+    know — the citation register reads the same protocol, and two independent readers of it
+    would be two things to keep in step.
     """
     queries = {
         call["id"]: str(call["args"].get("query", ""))
@@ -268,12 +311,7 @@ def _searches_in(messages: list[AnyMessage]) -> tuple[Search, ...]:
     return tuple(
         Search(
             query=queries.get(message.tool_call_id, ""),
-            # A failed call has no artifact (the tool node turns a raised exception into an
-            # error message). It stays a `Search` with nothing behind it: the knowledge base
-            # *was* consulted, and the answer above it is not grounded — both true, and both
-            # things the UI has to be able to say.
-            contexts=tuple(Context.from_payload(payload) for payload in message.artifact or ()),
+            contexts=tuple(Context.from_payload(payload) for payload in payloads),
         )
-        for message in messages
-        if isinstance(message, ToolMessage) and message.name == TOOL_NAME
+        for message, payloads in search_results(messages)
     )

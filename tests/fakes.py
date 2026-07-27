@@ -7,9 +7,7 @@ Not a fixture module — these are the doubles a fixture is built from, kept out
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 
-from langchain.tools import ToolRuntime
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AnyMessage
@@ -48,23 +46,6 @@ def a_context(
     )
 
 
-def a_tool_runtime(messages: Sequence[AnyMessage] = ()) -> ToolRuntime:
-    """The runtime a tool node injects, for a test that calls a tool without an agent.
-
-    Only `state["messages"]` is load-bearing for FinBrief's tools — `search_filings` reads
-    the conversation to continue its citation numbering — so the rest is blank rather than
-    faked into something a test might start relying on.
-    """
-    return ToolRuntime(
-        state={"messages": list(messages)},
-        context=None,
-        config={},
-        stream_writer=lambda _: None,
-        tool_call_id="call-1",
-        store=None,
-    )
-
-
 class ScriptedChatModel(GenericFakeChatModel):
     """A chat model that returns pre-written replies and keeps the prompts it was handed.
 
@@ -84,7 +65,13 @@ class ScriptedChatModel(GenericFakeChatModel):
     #: Every message list this model has been called with, oldest call first.
     prompts: list[list[AnyMessage]] = Field(default_factory=list)
 
-    def bind_tools(self, tools, **kwargs):  # noqa: ARG002 — the script decides, not the model
+    #: The keyword arguments of every `bind_tools` call, oldest first. Recorded because some
+    #: of what the agent asks of a provider is expressed only there — `parallel_tool_calls`
+    #: is a request the binding makes, invisible in the messages and in the reply.
+    bind_kwargs: list[dict] = Field(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs):  # the script decides the calls, not the model
+        self.bind_kwargs.append(dict(kwargs))
         return self
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):

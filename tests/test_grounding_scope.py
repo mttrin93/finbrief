@@ -20,7 +20,13 @@ from pathlib import Path
 
 from finbrief.config import UNIVERSE
 from finbrief.ingestion.model import Section
-from finbrief.prompts import GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.prompts import (
+    AGENT_SYSTEM_PROMPT,
+    GROUNDING_SCOPE,
+    GROUNDING_SCOPE_DETAILS,
+    SEARCH_FILINGS_DESCRIPTION,
+    SYSTEM_PROMPT,
+)
 
 REPORT = Path(__file__).parents[1] / "docs" / "verification" / "ingest-report.md"
 README = Path(__file__).parents[1] / "README.md"
@@ -33,6 +39,15 @@ _GATE_ROW = re.compile(r"^([A-Z]+)\s+FY\d{4}\s+\S.*$", re.MULTILINE)
 #: `->Item 7` in the Item 7A column: the run's own record that this filer incorporated its
 #: market-risk disclosure by reference, so the pair was lawfully not chunked (ADR-0007 §4).
 _POINTER_MARKER = "->Item 7"
+
+#: `1, 1A, 7 and 7A` — how a prose scope sentence reads the Items out. Rebuilt from the enum
+#: here rather than imported from `prompts._ITEM_LABELS`, so this file checks the derivation
+#: instead of restating it: importing the private constant would make both sides of the
+#: assertion the same expression and it would pass however wrong that expression was.
+_SECTIONS = tuple(Section)
+_ITEM_LABELS_IN_PROSE = (
+    ", ".join(section.item for section in _SECTIONS[:-1]) + f" and {_SECTIONS[-1].item}"
+)
 
 
 def report_text() -> str:
@@ -76,6 +91,39 @@ def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():
     named = {ticker for ticker in rows if f"{ticker}," in panel or f"{ticker} answer" in panel}
     assert named == found, "the disclosure names exactly the filers the run found"
     assert f"{len(UNIVERSE) - len(found)} have an `Item 7A` Section." in panel
+
+
+def test_every_scope_claim_in_a_prompt_is_derived_and_not_typed():
+    # The surface the T4 review found unbound: `search_filings`' description opens with a
+    # scope sentence, and it had been typed by hand — "Items 1, 1A, 7, 7A" and "the fifteen
+    # Universe companies" as literals in a prompt the *model* reads and plans its searches
+    # against. A 16th company or a fifth Section leaves that sentence quietly wrong, which is
+    # the exact failure `prompts.py` exists to prevent for the sentence under the app's title.
+    #
+    # Asserted structurally rather than by string: every prompt that makes a scope claim must
+    # spell the Items and the Universe size the way the enum and `config` currently do.
+    items = ", ".join(section.item for section in tuple(Section)[:-1])
+    for name, prompt in (
+        ("SEARCH_FILINGS_DESCRIPTION", SEARCH_FILINGS_DESCRIPTION),
+        ("SYSTEM_PROMPT", SYSTEM_PROMPT),
+        ("AGENT_SYSTEM_PROMPT", AGENT_SYSTEM_PROMPT),
+    ):
+        assert f"Items {items}" in prompt, f"{name} lists the Items from the enum"
+        assert str(len(UNIVERSE)) in prompt, f"{name} counts the Universe from config"
+        assert "fifteen" not in prompt.lower(), (
+            f"{name} spells a derived count as a word, which no longer tracks `config`"
+        )
+
+
+def test_the_tool_description_states_the_scope_the_app_does():
+    # Same words, one source. The model is choosing whether a question is answerable from the
+    # knowledge base, so a description that overstated the scope would have it search for
+    # filings that were never ingested and report the empty result as the company's silence.
+    assert f"Items {_ITEM_LABELS_IN_PROSE} of the latest annual 10-K" in GROUNDING_SCOPE
+    assert f"Items {_ITEM_LABELS_IN_PROSE} of the latest annual 10-K" in (
+        SEARCH_FILINGS_DESCRIPTION
+    )
+    assert f"{len(UNIVERSE)} companies in FinBrief's Universe" in SEARCH_FILINGS_DESCRIPTION
 
 
 def test_the_readme_states_the_same_scope_the_app_does():

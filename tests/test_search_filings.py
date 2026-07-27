@@ -7,8 +7,10 @@ under the strategy the shipped path names), that its description tells the agent
 verbatim contract is, and that what it hands back can be both read by the model and
 rendered by the UI.
 
-Numbering *across* calls is asserted in `test_agent.py`: the offset comes from the agent's
-own message history, which only exists inside a real agent run.
+Numbering *across* calls is asserted in `test_agent.py` and `test_citations.py`: the register
+is assigned at the agent seam, not here, because a tool cannot see the other calls in its own
+step. What this file pins is that the tool emits `retrieve()`'s own 1…k and reads no
+conversation state at all — the property that makes it safe to renumber later.
 """
 
 from __future__ import annotations
@@ -16,17 +18,12 @@ from __future__ import annotations
 import json
 
 import pytest
-from fakes import a_tool_runtime
 
 from finbrief.config import RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
-from finbrief.prompts import EMPTY_SEARCH_RESULT
+from finbrief.prompts import EMPTY_SEARCH_RESULT, SEARCH_FILINGS_DESCRIPTION
 from finbrief.retrieval.retrieve import Context
-from finbrief.tools.search_filings import (
-    SEARCH_FILINGS_DESCRIPTION,
-    TOOL_NAME,
-    build_search_filings,
-)
+from finbrief.tools.search_filings import TOOL_NAME, build_search_filings
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"})
 
@@ -36,19 +33,14 @@ def a_search_tool(store, **kwargs):
     return build_search_filings(store=store, settings=SETTINGS, **kwargs)
 
 
-def search(tool, query: str, *, history=()):
+def search(tool, query: str):
     """Invoke the tool the way the agent's tool node does, and return the ToolMessage.
 
-    The node injects the runtime as an ordinary argument the model never sees, so a direct
-    caller supplies it the same way — carrying whatever history it wants numbered against.
+    Invoked as a tool *call* rather than plain arguments because what the callers below assert
+    lives on the message — the artifact the panel renders and the content the model reads.
     """
     return tool.invoke(
-        {
-            "name": TOOL_NAME,
-            "args": {"query": query, "runtime": a_tool_runtime(history)},
-            "id": "call-1",
-            "type": "tool_call",
-        }
+        {"name": TOOL_NAME, "args": {"query": query}, "id": "call-1", "type": "tool_call"}
     )
 
 
@@ -138,6 +130,23 @@ def test_the_tool_never_asks_the_model_for_anything_but_the_query(filings_store)
     tool = a_search_tool(filings_store)
 
     assert list(tool.args) == ["query"]
+
+
+def test_the_tool_reads_no_conversation_state_so_its_numbering_cannot_collide(filings_store):
+    # The property the citation register is built on. The tool used to take a `ToolRuntime` and
+    # offset its ranks by the sources already issued in the thread — which cannot work, because
+    # LangGraph hands every call in a step the *same* state and then runs them concurrently, so
+    # two searches in one step both offset by the same number. It now emits `retrieve()`'s own
+    # 1…k, identically every time, and `agent/citations.py` assigns the thread's numbers where
+    # all of a step's replies are visible at once.
+    tool = a_search_tool(filings_store)
+
+    first = search(tool, "supply chain risk")
+    second = search(tool, "supply chain risk")
+
+    assert [c.rank for c in retrieved(first)] == [1, 2, 3, 4, 5]
+    assert first.artifact == second.artifact, "no hidden state to number against"
+    assert "runtime" not in tool.args
 
 
 def test_an_empty_collection_is_reported_as_a_setup_problem_not_as_out_of_scope(
