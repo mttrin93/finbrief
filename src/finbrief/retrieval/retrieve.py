@@ -9,9 +9,14 @@ it may open the `filings` collection itself.
 independently — `strategy` (`vector` / `hybrid`) and `translate` (±) — and they are the four
 configurations ADR-0002's A/B compares. They are not four code paths:
 
-    variants   = (question,)  +  up to `max_sub_queries` sub-queries, if translating
+    variants   = (question,)  +  its ticker form, if a Universe company is named
+                              +  up to `max_sub_queries` sub-queries, if translating
     retrievers = (vector,)    +  bm25, if hybrid
     every variant × every retriever → a candidate list → RRF → dedup by chunk id → top-k
+
+So the budget is **1 original + at most 1 normalised + at most `max_sub_queries`** = 5 variants,
+ten candidate lists under hybrid, five of them paid embeddings (ADR-0004 amendment, "Variant
+budget, restated"). The normalised form costs a retrieval round and never a chat round.
 
 `vector` without translation is that pipeline with one candidate list in it, and RRF over a
 single list is strictly decreasing in rank — so it returns exactly what T3 returned, which is
@@ -382,9 +387,11 @@ def _candidate_lists(
     **Each list is `k` deep, not deeper.** ADR-0004 fixes the *output* at top-k and says nothing
     about candidate depth, and `k` is the choice that keeps `vector` without translation
     byte-identical to the T3 baseline the A/B compares against — a wider fetch would quietly
-    move it. It also bounds the cost: hybrid + translation is already up to eight candidate
-    lists, four of them paid embeddings. Widening it is a legitimate Tier-2 experiment and would
-    be a change to the thing being measured, not a fix.
+    move it. It also bounds the cost: hybrid + translation is already up to **ten** candidate
+    lists, **five** of them paid embeddings — 1 original + at most 1 normalised + at most
+    `max_sub_queries`, the count ADR-0005's ≤1.5s p50 budget is judged against (ADR-0004
+    amendment, "Variant budget, restated"). Widening it is a legitimate Tier-2 experiment and
+    would be a change to the thing being measured, not a fix.
 
     Vector runs under every strategy; `hybrid` adds BM25 beside it. Nothing here is asymmetric:
     the original question is a variant like any other, which is the invariant that guarantees
