@@ -55,11 +55,10 @@ from finbrief.retrieval.retrieve import retrieve
 #: search would be numbered from `[1]` again.
 TOOL_NAME = "search_filings"
 
-#: One retrieved chunk as it crosses the tool boundary — `Context.as_payload()`'s shape.
-type Payload = dict[str, Any]
-
 #: One whole retrieval as it crosses the tool boundary — `Retrieval.as_payload()`'s shape:
-#: `{"chunks": [...], "variants": [...], "translated": bool}`.
+#: `{"chunks": [...], "variants": [...], "translated": bool}`. The per-chunk `Payload` alias
+#: this replaced is gone rather than kept beside it: the artifact is one object now, and a
+#: second public name for a shape nothing reads is a shape a reader thinks is still a boundary.
 type Artifact = dict[str, Any]
 
 
