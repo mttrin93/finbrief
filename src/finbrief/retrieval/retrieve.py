@@ -261,6 +261,13 @@ def retrieve(
     on it). Under `translate=True` the variants come from a chat model, so determinism is that
     model's at temperature 0; `llm.py` builds every chat model there.
 
+    **Which means the four A/B configurations are not equally reproducible**, and ADR-0004 §9 is
+    where that is written down: the two `−translation` arms are exact, the two `+translation`
+    arms are exact only up to the planner's sampling. §9 also carries the T10 harness design
+    that closes the gap — resolve each question's variants once, replay them through an injected
+    `model`, and report planner variance separately. `max_sub_queries=0` removes the chat call
+    outright rather than truncating it, so §6's falsification channel is entirely deterministic.
+
     `strategy` and `translate` are both required to be *named by the caller* rather than read
     from configuration here, and both default to the conservative value. That is what stops a
     number being reported against a configuration nobody selected: the shipped path names them

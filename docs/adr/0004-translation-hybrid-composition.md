@@ -246,3 +246,78 @@ member had a short ticker *and* a poorly-covered name, the proxy would be wrong 
 right fix would be to state the rule as name-coverage rather than length. Recorded so the next
 reader knows which of the two the constant is really standing in for. The per-filer coverage table
 is on #4, where it constrains golden-set sampling.
+
+---
+
+### 9. Where `retrieve()` is deterministic, and where it is not
+
+ADR-0003 calls `retrieve()` "a standalone **deterministic** component with query translation +
+hybrid search *inside it*" and says "**this is what the headline numbers measure**". After T6 that
+sentence is true of three of ADR-0002's four configurations and not of the other two, and the
+difference has never been written down. Recorded here because T9 (#4) and T10 (#11) will report
+against it (review question, T6).
+
+**The pipeline has a deterministic half and a sampled half.**
+
+| step | where | deterministic? |
+|---|---|:--:|
+| entity normalisation | `query_translation.normalised` | ✅ a lookup in `config.TICKER_BY_COMPANY_NAME` — §6's whole reason for choosing it |
+| **sub-query planning** | `query_translation.translate` → `model.invoke` | ❌ **a chat completion** |
+| parsing the planner's reply | `query_translation.sub_queries` | ✅ pure |
+| vector search | `vectorstore.nearest_chunks` | ✅ |
+| lexical search | `hybrid.BM25Index.nearest` | ✅ ties broken on chunk id |
+| fusion, dedup, truncation | `hybrid.fuse` | ✅ ties broken on chunk id |
+
+So exactly one step samples, it is reached only when `max_sub_queries > 0`, and everything
+downstream of it is a pure function of what it returned.
+
+**Temperature 0 is greedy decoding, not a determinism guarantee.** `retrieve()` names
+`temperature=0.0` explicitly at the call site, and that is the strongest instrument available — but
+this project already makes the argument against relying on it, in ADR-0003's T4 amendment §5:
+OpenRouter fronts many upstreams and "whether a given one honours it is not something we can
+assert". No `seed` is sent. Batching and expert routing can move an argmax between otherwise
+identical requests. A `seed` was considered and is **not** treated as a fix: the OpenAI-compatible
+parameter is documented as best-effort even at its origin, and a request routed to a different
+upstream ignores it entirely — adding it would buy a little stability and a false claim.
+
+**So, plainly:**
+
+- **`vector − translation` and `hybrid − translation` are exactly reproducible.** No model runs.
+  Same question, same collection, same `k` → the same contexts in the same order, byte for byte.
+- **`vector + translation` and `hybrid + translation` are reproducible only up to the planner's
+  temperature-0 sampling.** One changed sub-query changes 2 of the 10 candidate lists, which moves
+  fused ranks, which moves context precision and recall. **A re-run of T10 can report a different
+  per-bucket number on these two arms with no code change.**
+
+**A second consequence, and the sharper one: a scored run's variants are not recoverable
+afterwards.** The `retrieval` log line carries variant *counts and indices* and never the text —
+deliberately, because a variant is derived from a user question and these lines are kept — and
+`rag.answer_question` narrows `Retrieval` to `.contexts`, so the measured chain does not return
+them either. Nothing is wrong with either decision on its own; together they mean that if a bucket
+number looks surprising, the sub-queries that produced it cannot be inspected after the fact.
+
+**What this does *not* weaken: §6's falsification channel.** `FINBRIEF_MAX_SUB_QUERIES=0` removes
+the `model.invoke` call rather than truncating its output (`query_translation.translate` guards the
+call on the cap; two tests assert the model is never invoked). So "does the `exact-identifier` win
+survive with the planner off?" is a question asked entirely within the deterministic half, and
+§6's channel and ADR-0005 §2's refutation test both stand on exact ground. The same is true of §7's
+`vector + normalisation` ablation.
+
+**The harness design that makes the A/B exact, pre-registered for T10 (#11).** `retrieve()` already
+takes an injectable `model=`, which is the whole mechanism:
+
+1. Resolve each golden-set question's variants **once**, and persist them beside the question as
+   part of the golden set's fixed inputs.
+2. Run every A/B arm with those variants replayed through a stub model. All four arms then differ
+   only by `strategy` and `translate`, which is what the matrix claims to compare, and a re-run
+   reproduces the numbers.
+3. Report the planner's own variance **separately**, as an n-repeat of the resolve step on a
+   sample of questions — it is a real property of the shipped path and belongs in the report, but
+   it is not a property of the fusion strategy and must not be folded into that strategy's error
+   bars.
+
+Written before any A/B data exists, like §7 and ADR-0005's amendment, so the harness cannot be
+designed around numbers already seen. **Falsifiable as written:** if the n-repeat finds the planner
+returns identical sub-queries across runs on this Universe and this model, step 2 was unnecessary
+caution and the flat claim ADR-0003 started with was fine. That would be a good outcome; it is not
+one to assume.

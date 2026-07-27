@@ -50,7 +50,7 @@ evaluated (RAGAs + per-bucket A/B), so the quality claims are measured, not asse
 20. As an analyst, I want a fresh browser session to start a clean conversation, so that a new analysis isn't polluted by an old one.
 21. As an analyst, I want invalid inputs (unknown tickers, over-long queries) handled gracefully with a clear message, so that mistakes don't crash the app.
 22. As an analyst, I want transient data-source failures (a flaky price API) handled with a cached fallback and a banner, so that the app degrades gracefully rather than erroring.
-23. As the developer, I want retrieval exposed as a deterministic `retrieve(question, strategy, k)` function, so that I can evaluate it independently of the agent's nondeterministic tool loop.
+23. As the developer, I want retrieval exposed as a `retrieve(question, strategy, k)` function — deterministic apart from the sub-query planner's one chat completion (ADR-0004 §9) — so that I can evaluate it independently of the agent's nondeterministic tool loop.
 24. As the developer, I want a stratified golden set (semantic, exact-identifier, tool-augmented, multi-hop) with source-separated ground truth, so that my evaluation numbers are defensible and not circular.
 25. As the developer, I want RAGAs metrics reported per bucket, so that I can see where retrieval is strong or weak by query type.
 26. As the developer, I want an A/B comparison of vector vs. hybrid × ±translation reported per bucket, so that I can show *which* strategy wins *where* and why.
