@@ -230,6 +230,39 @@ def test_a_subset_run_refuses_to_delete_the_other_companies_verified_rows(
     assert "did not fetch" in capsys.readouterr().err
 
 
+def test_a_checklist_that_cannot_be_parsed_is_refused_rather_than_overwritten(
+    monkeypatch, tmp_path, capsys
+):
+    # The guard above reads the list of companies to protect out of the file itself, so a
+    # file it cannot parse answers "none at risk" and the overwrite goes through — in the
+    # one case where the carry-forward cannot rescue anything either, since it reads the
+    # same rows. An older format or a hand-edit that broke the row shape lands here.
+    script = load_script()
+    wire_for_a_dry_run(script, monkeypatch, tmp_path, lambda ticker: a_filing(ticker))
+    older_format = (
+        "# Hand-verification: extracted Section starts\n\n"
+        "AAPL / Item 1A: VERIFIED — starts three pages early, see pp.46-160.\n"
+    )
+    (tmp_path / "c.md").write_text(older_format, encoding="utf-8")
+
+    assert script.main(["--dry-run", "--section-starts", "c.md"]) == 0
+
+    assert (tmp_path / "c.md").read_text(encoding="utf-8") == older_format
+    assert "no verification rows could be read" in capsys.readouterr().err
+
+
+def test_an_empty_checklist_file_is_not_mistaken_for_an_unreadable_one(monkeypatch, tmp_path):
+    # A zero-byte placeholder holds nothing to lose, so the refusal above must not fire on
+    # it and leave the operator with no way to generate the artifact at all.
+    script = load_script()
+    wire_for_a_dry_run(script, monkeypatch, tmp_path, lambda ticker: a_filing(ticker))
+    (tmp_path / "c.md").write_text("   \n", encoding="utf-8")
+
+    assert script.main(["--dry-run", "--section-starts", "c.md"]) == 0
+
+    assert "Hand-verification" in (tmp_path / "c.md").read_text(encoding="utf-8")
+
+
 def test_a_full_run_may_still_re_render_the_committed_checklist(monkeypatch, tmp_path):
     # The guard is about coverage, not about writing: a full run — dry or not — is exactly
     # who is allowed to rewrite the artifact, and the ticks it carries forward.

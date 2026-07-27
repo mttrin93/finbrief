@@ -243,6 +243,17 @@ unticked by design. That run also re-embeds all fifteen filings once — pre-§7
 no `content_hash`, so the conservative answer is to rebuild them — which is the cost of
 knowing the KB matches the artifact rather than assuming it.
 
+The chunk *text* changed once more after that, and the two changes are related. The splitter
+ran with `keep_separator=True`, which hands the separator to the following chunk, so 31 of
+the recorded AAPL filing's 152 chunk bodies opened with a dangling `". "` — embedded,
+BM25-indexed, and shown as the first words of a citation. It is `"end"` now. That is exactly
+the class of change the first version of §7's digest could not see: it hashed the two size
+constants and not the separator list or `keep_separator`, and not `Section.heading` either,
+though the heading is printed into every chunk's indexed text. All four are in the digest
+now, so this change invalidates it on its own and no `--force` is needed to pick it up. None
+of it touches a Section *boundary*, so no checklist row moves because of it (issue #3
+review).
+
 The committed `docs/verification/ingest-report.md` is the evidence that §7 describes a real
 defect and not a hypothetical one: its gate table carries the *post*-repair character counts
 while all fifteen of its rows read `skipped (already ingested)`, so the 5,842 chunks it

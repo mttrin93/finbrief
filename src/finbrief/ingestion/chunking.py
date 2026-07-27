@@ -31,6 +31,14 @@ CHUNK_OVERLAP_CHARS = 200
 #: embeds as two half-thoughts.
 _SEPARATORS = ("\n\n", "\n", ". ", " ", "")
 
+#: `"end"`, not `True`. Both keep the separator, and they disagree about *which side* of
+#: the cut it lands on: `True` prepends it to the following chunk, so every chunk split at
+#: a sentence boundary opened with a dangling `". "` — 31 of the 152 chunks of the recorded
+#: AAPL filing did. That fragment is embedded, BM25-indexed, and displayed as the opening
+#: words of a citation (issue #3 review). `"end"` closes the preceding chunk with its own
+#: full stop instead, which is what a sentence boundary means.
+_KEEP_SEPARATOR = "end"
+
 
 @dataclass(frozen=True, slots=True)
 class Chunk:
@@ -98,7 +106,7 @@ def chunk_filing(filing: ExtractedFiling) -> tuple[Chunk, ...]:
         chunk_size=CHUNK_SIZE_CHARS,
         chunk_overlap=CHUNK_OVERLAP_CHARS,
         separators=list(_SEPARATORS),
-        keep_separator=True,
+        keep_separator=_KEEP_SEPARATOR,
     )
 
     fingerprint = content_hash(filing)
@@ -139,15 +147,24 @@ def content_hash(filing: ExtractedFiling) -> str:
     holding chunks of pre-repair text while the run reported `skipped (already ingested)`
     and the verification artifact attested to the new text (issue #3 review).
 
-    Covers exactly what would go into the store and nothing else: the provenance header
-    `Chunk.text` prepends, the Section texts `chunk_filing` actually chunks — a Section
-    incorporated by reference is skipped here for the same reason it is skipped there —
-    and the splitter's parameters, so a chunk-size change no longer needs `--force` to be
-    remembered. It cannot see the *embedding model*, which leaves no trace in the text;
-    that one is still `--force`'s job (`retrieval/embeddings.py`).
+    Covers exactly what would go into the store and nothing else: every field of the
+    provenance header `Chunk.text` prepends — `section.heading` included, because it is
+    indexed text and not decoration — the Section texts `chunk_filing` actually chunks — a
+    Section incorporated by reference is skipped here for the same reason it is skipped
+    there — and *all four* splitter parameters, so a chunk-size change no longer needs
+    `--force` to be remembered. The separator list and `_KEEP_SEPARATOR` belong there for
+    the same reason the two sizes do: they decide where every boundary falls and which
+    chunk keeps the separator, so changing either rewrites every stored chunk. Hashing only
+    the sizes left the hole §7 exists to close still open — a run would report `skipped
+    (already ingested)` over text it no longer produces (issue #3 review). It cannot see
+    the *embedding model*, which leaves no trace in the text; that one is still `--force`'s
+    job (`retrieval/embeddings.py`).
     """
     digest = hashlib.sha256()
-    digest.update(f"{CHUNK_SIZE_CHARS}\0{CHUNK_OVERLAP_CHARS}\0".encode())
+    digest.update(
+        f"{CHUNK_SIZE_CHARS}\0{CHUNK_OVERLAP_CHARS}\0"
+        f"{_SEPARATORS}\0{_KEEP_SEPARATOR}\0".encode()
+    )
     digest.update(
         f"{filing.ref.ticker}\0{filing.ref.form}\0{filing.ref.fiscal_year}\0".encode()
     )
@@ -155,7 +172,7 @@ def content_hash(filing: ExtractedFiling) -> str:
         text = filing.sections.get(section)
         if not text or is_incorporated_by_reference(section, text):
             continue
-        digest.update(f"{section.value}\0{text}\0".encode())
+        digest.update(f"{section.value}\0{section.heading}\0{text}\0".encode())
     return digest.hexdigest()[:_CONTENT_HASH_CHARS]
 
 

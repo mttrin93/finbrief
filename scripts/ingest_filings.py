@@ -82,8 +82,23 @@ def _write_section_starts(path: Path, filings) -> None:
     gate output only, so a dry run is the cheap, key-free way to regenerate it.
     """
     previous = path.read_text(encoding="utf-8") if path.exists() else None
-    if previous:
-        absent = sorted(checklist_tickers(previous) - {filing.ref.ticker for filing in filings})
+    if previous and previous.strip():
+        held = checklist_tickers(previous)
+        if not held:
+            # The guard below asks "which companies would this run drop?" and reads the
+            # answer out of the file itself — so a file it cannot parse answers "none" and
+            # waves the overwrite through, in precisely the case where the carry-forward
+            # can rescue nothing either, since it reads the same rows. An older format, or
+            # a hand-edit that broke the row shape, lands here (issue #3 review).
+            print(
+                f"\n{path} exists but no verification rows could be read out of it — an "
+                f"older format, or a hand-edit that broke the `- [ ]` row shape. Every "
+                f"tick and note in it would be lost. Left untouched — move it aside "
+                f"deliberately if you mean to start over.",
+                file=sys.stderr,
+            )
+            return
+        absent = sorted(held - {filing.ref.ticker for filing in filings})
         if absent:
             print(
                 f"\n{path} holds hand-verified rows for {', '.join(absent)}, which this run "

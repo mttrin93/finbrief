@@ -119,5 +119,49 @@ Item 1B. Unresolved Staff Comments
     assert extracted.strip() != "Item 1A. Risk Factors\n\nSummarised above."
 
 
+def test_a_bare_item_label_on_its_own_line_is_a_heading_not_a_toc_row():
+    # `Item 7` ends in a digit, and the TOC test used to be run against the whole line —
+    # so the label's own number stood in for a page number and every filer that puts the
+    # label on one line and the title on the next had its real heading thrown away. The
+    # fallback then returned nothing at all, for exactly the ragged filers it exists for.
+    label_and_title_on_separate_lines = f"""Item 7
+Management's Discussion and Analysis
+
+{MDA}
+
+Item 7A
+Quantitative and Qualitative Disclosures About Market Risk
+
+We are exposed to interest rate risk.
+"""
+
+    extracted = _extract_by_regex(label_and_title_on_separate_lines, Section.MDA)
+
+    assert "Revenue grew" in extracted
+    assert "interest rate risk" not in extracted, "and it still stops at the next Item"
+
+
+def test_a_title_less_toc_row_is_still_a_toc_row():
+    # The other side of the same fix: dropping the label from the tested text must not
+    # take the page number with it. A two-column TOC flattens to `Item 7    30`, and that
+    # candidate nests around the real section, so admitting it returns the wordier
+    # polluted span.
+    with_a_title_less_toc = f"""Item 1A    9
+Item 7    30
+Item 7A    44
+
+Item 7. Management's Discussion and Analysis
+
+{MDA}
+
+Item 7A. Quantitative and Qualitative Disclosures About Market Risk
+"""
+
+    extracted = _extract_by_regex(with_a_title_less_toc, Section.MDA)
+
+    assert "Revenue grew" in extracted
+    assert extracted.count("Item 7A") == 0, "the TOC block is not part of the section"
+
+
 def test_a_missing_section_yields_nothing_rather_than_a_guess():
     assert _extract_by_regex("Item 3. Legal Proceedings\n\nNone.", Section.MDA) == ""

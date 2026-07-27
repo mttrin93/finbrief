@@ -207,10 +207,14 @@ def _parse_prior(markdown: str) -> dict[tuple[str, str], _PriorRow]:
             excerpt = _EXCERPT_BLOCK.search(chunk)
             chars = re.search(r"([\d,]+) characters extracted", status.group(2))
             # Everything in the row that this renderer did not write is a note, wherever
-            # the verifier put it. Reading only as far as the excerpt fence dropped any
-            # note written *under* the excerpt — which is the natural place to write after
-            # reading one, and the loss was silent (issue #3 review).
-            body = _EXCERPT_BLOCK.sub("", chunk[status.end() :])
+            # the verifier put it — so the row minus the three things it did write: the
+            # `###` heading, the status line, and the excerpt block. Reading only as far as
+            # the excerpt fence dropped any note written *under* the excerpt, and reading
+            # only from the status line onward dropped any note written *above* it. Both
+            # losses were silent, and the preamble promises neither (issue #3 review).
+            head = chunk[: status.start()]
+            above = head.split("\n", 1)[1] if "\n" in head else ""
+            body = _EXCERPT_BLOCK.sub("", f"{above}\n{chunk[status.end() :]}")
             # A fence with no closing fence is a hand-edit gone wrong; the remainder is
             # excerpt, not notes, and re-emitting it as one would corrupt the row.
             notes = tuple(

@@ -6,6 +6,7 @@ stability, are behavior rather than bookkeeping.
 """
 
 from finbrief.config import CHUNK_SIZE_CHARS
+from finbrief.ingestion import chunking, model
 from finbrief.ingestion.chunking import CHUNK_OVERLAP_CHARS, chunk_filing, content_hash
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 
@@ -129,11 +130,61 @@ def test_chunks_overlap_so_a_sentence_split_across_them_is_still_retrievable():
 
     assert len(chunks) > 1, "the fixture needs to be long enough to split"
     for previous, current in zip(chunks, chunks[1:], strict=False):
-        head = current.body.lstrip(". ")[:40]
+        head = current.body[:40]
         assert head in previous.body, (
             f"each chunk must reopen inside its predecessor's tail "
             f"({CHUNK_OVERLAP_CHARS}-char overlap), but {head!r} appears nowhere there"
         )
+
+
+def test_no_chunk_opens_with_the_separator_it_was_split_on():
+    # `keep_separator=True` hands the separator to the *following* chunk, so every chunk
+    # split at a sentence boundary opened with a dangling ". " — 31 of the 152 chunks of
+    # the recorded AAPL filing did. That fragment is embedded, BM25-indexed and shown as
+    # the first words of a citation. The overlap test above hid it behind `lstrip(". ")`.
+    prose = " ".join(
+        f"Sentence number {i:04d} of the business narrative continues here." for i in range(60)
+    )
+    sections = dict(a_filing().sections)
+    sections[Section.BUSINESS] = f"Item 1. Business\n\n{prose}"
+
+    chunks = chunk_filing(a_filing(sections=sections))
+
+    assert len(chunks) > len(Section), "the fixture needs to be long enough to split"
+    for chunk in chunks:
+        assert not chunk.body.startswith((". ", ".", " ", "\n")), (
+            f"chunk {chunk.id} opens with a separator fragment: {chunk.body[:40]!r}"
+        )
+
+
+def test_the_content_hash_covers_every_splitter_parameter(monkeypatch):
+    # It is not just the sizes that decide what gets stored: the separator list picks where
+    # every boundary falls and `_KEEP_SEPARATOR` picks which side of the cut keeps the
+    # separator. Hashing only the sizes meant changing either rewrote every chunk while the
+    # hash stayed put, so the next run reported `skipped (already ingested)` over text it
+    # no longer produces — the exact hole ADR-0007 §7 exists to close.
+    filing = a_filing()
+    baseline = content_hash(filing)
+
+    monkeypatch.setattr(chunking, "_KEEP_SEPARATOR", True)
+    assert content_hash(filing) != baseline, "_KEEP_SEPARATOR is not in the hash"
+
+    monkeypatch.setattr(chunking, "_KEEP_SEPARATOR", "end")
+    monkeypatch.setattr(chunking, "_SEPARATORS", ("\n\n", " ", ""))
+    assert content_hash(filing) != baseline, "_SEPARATORS is not in the hash"
+
+
+def test_the_content_hash_covers_the_provenance_header_it_indexes(monkeypatch):
+    # `Section.heading` is printed into `Chunk.text`, which is what gets embedded — so
+    # rewording one changes every stored chunk of that Section. Hashing `section.value`
+    # alone left that invisible.
+    filing = a_filing()
+    baseline = content_hash(filing)
+
+    monkeypatch.setitem(model._HEADINGS, Section.MDA, "MD&A")
+
+    assert Section.MDA.heading == "MD&A", "the fixture needs the reword to take effect"
+    assert content_hash(filing) != baseline, "section.heading is not in the hash"
 
 
 def test_a_section_incorporated_by_reference_is_not_chunked():

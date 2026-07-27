@@ -53,6 +53,11 @@ _NEXT_ITEM: Mapping[Section, str] = {
 #: How a table-of-contents row ends: dot leaders, a page number, or a page range
 #: ("Risk Factors. 9-31" is JPM's). A real heading is followed by a line break and prose,
 #: never by its own page number.
+#:
+#: Matched against what follows the Item label, never the whole line: the `\s` alternative
+#: is loose enough to match the label's *own* digits, so a filer whose heading line is a
+#: bare `Item 7` with the title on the next line had its real heading read as a TOC row and
+#: the fallback returned nothing at all for it (issue #3 review).
 _TOC_TAIL = re.compile(r"(\.{2,}|\s)\s*\d{1,4}(\s*[-–]\s*\d{1,4})?\s*$")
 
 
@@ -359,7 +364,7 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
     best = ""
     best_words = 0
     for match in start.finditer(full_text):
-        if _is_toc_line(full_text, match.start()):
+        if _is_toc_line(full_text, match.end()):
             continue
         stop = end.search(full_text, match.start() + 1)
         if stop is None:
@@ -371,8 +376,8 @@ def _extract_by_regex(full_text: str, section: Section) -> str:
     return best
 
 
-def _is_toc_line(full_text: str, position: int) -> bool:
-    """Does the heading at `position` sit on a table-of-contents row?
+def _is_toc_line(full_text: str, heading_end: int) -> bool:
+    """Does the heading ending at `heading_end` sit on a table-of-contents row?
 
     Wordiest-candidate-wins cannot settle this on its own, and the reason is worth stating
     because it is not obvious: the candidates *nest*. A span anchored at the TOC row runs
@@ -382,11 +387,23 @@ def _is_toc_line(full_text: str, position: int) -> bool:
 
     A TOC row is recognised by what follows the heading on its own line: dot leaders, a
     page number, or both. A real section heading is followed by a line break and prose.
+
+    `heading_end`, not the start of the line, and that distinction is the whole of a bug:
+    `Item 7` *ends in a digit*, so testing the whole line let the label's own number stand
+    in for a page number, and any filer whose heading line is a bare `Item 7` with the
+    title on the following line had its real heading discarded as a TOC row — silently
+    defeating the fallback for exactly the ragged filers it exists for (issue #3 review).
+    The prepended space stands in for the whitespace `item_heading` has already consumed,
+    so a title-less TOC row (`Item 7    30`) still reads as one.
+
+    What it still cannot tell apart: a heading line whose *title* ends in a number
+    ("... for fiscal 2025"). Tightening further needs calibration against filings not
+    recorded here, and the failure is the loud one — a missing Section is a `section_found`
+    finding naming the company, never a mislabelled chunk.
     """
-    line_start = full_text.rfind("\n", 0, position) + 1
-    line_end = full_text.find("\n", position)
-    line = full_text[line_start : line_end if line_end != -1 else len(full_text)]
-    return bool(_TOC_TAIL.search(line))
+    line_end = full_text.find("\n", heading_end)
+    tail = full_text[heading_end : line_end if line_end != -1 else len(full_text)]
+    return bool(_TOC_TAIL.search(f" {tail}"))
 
 
 def _clean(text: str) -> str:

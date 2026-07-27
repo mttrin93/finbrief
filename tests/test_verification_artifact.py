@@ -94,6 +94,36 @@ def test_a_note_written_under_the_excerpt_survives_a_rerender():
     assert rerendered.count(note) == 1
 
 
+def test_a_note_written_above_the_status_line_survives_a_rerender():
+    # The third place a verifier can write, and the last one that was dropped: straight
+    # under the `### Item 1A.` heading, before the checkbox. The parser read from the
+    # status line onward, so it never saw it. The preamble promises anything written
+    # inside a row comes back, without qualifying where (issue #3 review).
+    verified = tick_everything(render_section_starts([a_filing()]))
+    note = "**Finding (hand-verification):** compare against last year's Item 1A."
+    above_the_status_line = verified.replace(
+        "### Item 1A. Risk Factors\n\n", f"### Item 1A. Risk Factors\n\n{note}\n\n", 1
+    )
+    assert above_the_status_line != verified, "the fixture must actually place a note"
+
+    rerendered = render_section_starts([a_filing()], above_the_status_line)
+
+    assert note in rerendered
+    item_1a = rerendered.split("### Item 1A.")[1].split("### Item 7.")[0]
+    assert note in item_1a, "and under the row it was written for"
+    assert rerendered.count(note) == 1
+
+
+def test_a_row_heading_is_never_carried_forward_as_if_it_were_a_note():
+    # The guard on the fix above: read the row from its first line and the `### Item 1A.`
+    # heading itself comes back as a note, duplicated on every re-render.
+    verified = tick_everything(render_section_starts([a_filing()]))
+
+    rerendered = render_section_starts([a_filing()], verified)
+
+    assert rerendered.count("### Item 1A.") == 1
+
+
 def test_the_excerpt_is_never_carried_forward_as_if_it_were_a_note():
     # The guard on the fix above: strip the fence too eagerly and the generated excerpt
     # comes back as a hand-written note, duplicated on every re-render.
