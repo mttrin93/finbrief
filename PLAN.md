@@ -186,7 +186,8 @@ finbrief/
 │   ├── tools/             # search_filings.py (Phase 3, the wrapped engine);
 │   │                      # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
 │   ├── agent/             # agent.py (create_agent + the SqliteSaver checkpointer that
-│   │                      # is its memory of record — Phase 3), guardrails.py
+│   │                      # is its memory of record), citations.py (the one place a
+│   │                      # citation number is assigned — Phase 3), guardrails.py
 │   ├── evaluation/        # golden_set.json, ragas_eval.py, ab_test.py, tool_eval.py
 │   └── observability/     # logging_setup.py, costs.py
 ├── app/
@@ -212,11 +213,13 @@ finbrief/
 │   │                      # verdicts and their report, the script's exits, the persona,
 │   │                      # the scope disclosure vs. the ingest evidence (Phase 2)
 │   ├── fakes.py           # hermetic doubles: KeywordEmbeddings, a_context (Phase 2),
-│   │                      # ScriptedChatModel, a_tool_runtime (Phase 3)
+│   │                      # ScriptedChatModel (Phase 3)
 │   ├── test_app_smoke.py  # AppTest — page renders, sources panel, disclaimer, scope
 │   │                      # disclosure, a message reaches the agent seam
 │   ├── test_search_filings.py      # seam 5: the tool wraps the engine, verbatim
 │   │                      # contract, JSON-safe artifact (Phase 3)
+│   ├── test_citations.py  # the citation register: a step with two searches, an
+│   │                      # artifact that did not survive, idempotence (Phase 3)
 │   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
 │                          # reruns, distinctness across two sessions,
 │                          # fresh-uuid+surviving-agent on start-over; the model-picker
@@ -288,10 +291,13 @@ retrieval chain and landed with it — ticket T3, #5)
   cached instance — asserted by two `AppTest` sessions in one process, not claimed
   (`test_app_state.py`). `search_filings` wraps `retrieve()`, so the measured chain and the
   shipped path stay one code path (ADR-0003); its description carries the verbatim-query
-  contract, and the agent's issued query is logged against the original so the divergence is
-  reported rather than assumed away. Citation numbering continues across a conversation,
-  counted from the thread's own tool messages, because a second search that reused `[1]` would
-  make every marker above it unresolvable.
+  contract, which is **measured rather than enforced** — the agent's issued query is logged
+  against the original and T10 (#11) reports the rate, because nothing in the code prevents a
+  rephrasing and the alternative that would (overwriting the model's argument) breaks every
+  follow-up. Citation numbering continues across a conversation, assigned in one pass at the
+  agent seam (`agent/citations.py`), because a second search that reused `[1]` would make every
+  marker above it unresolvable — and a tool cannot do it, since LangGraph runs a step's calls
+  concurrently against identical state (#7 review).
 - Still open (ticket T5, #9): three `@tool` functions with caching + error handling, tool-call
   cards in the UI, per-tool progress indicators. Until they land the agent has one tool, so
   the tool-*selection* the loop exists for is not yet exercised.

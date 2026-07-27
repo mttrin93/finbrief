@@ -38,13 +38,22 @@ The decision above stands as written. Four things it did not say, recorded here 
 left in the code for the next reader to reconstruct.
 
 **1. The checkpointer is also the citation register.** `retrieve()` ranks 1…k on every call, so
-`search_filings` offsets each result by the number of sources the thread has already issued —
-counted from the thread's own tool messages, which the checkpointer already persists. No new
-state, and the register cannot drift from the transcript it numbers. This is the decision's
-"the agent's context always comes from the checkpointer" doing more work than it was written
-for, and it is why the sequence is deliberately *thread-global* rather than per-turn: `[7]` then
-means one chunk for a whole conversation, so a marker in an earlier answer still resolves to the
-source the reader was shown beside it (ADR-0003 amendment §3).
+a thread's search replies are renumbered into one running sequence, computed from the thread's own
+tool messages — which the checkpointer already persists. No new state, and the register cannot
+drift from the transcript it numbers. This is the decision's "the agent's context always comes
+from the checkpointer" doing more work than it was written for, and it is why the sequence is
+deliberately *thread-global* rather than per-turn: `[7]` then means one chunk for a whole
+conversation, so a marker in an earlier answer still resolves to the source the reader was shown
+beside it (ADR-0003 amendment §3).
+
+**Where** the renumbering runs is not a detail. T4 first did it inside `search_filings`, which
+cannot be correct: LangGraph builds every `ToolRuntime` in a step from the same state and then
+runs the calls concurrently, so two searches in one step read the same "already issued" count and
+both emit `[1…k]`. It now runs at the `before_model` seam (`agent/citations.py`) as one sequential
+pass — the only reader of the register is also its only writer, which is what makes a collision
+unrepresentable rather than merely unlikely (issue #7 review; ADR-0003 amendment §3 and §5). The
+pass is idempotent and recomputes the whole sequence, so a thread checkpointed by an earlier
+shape is numbered correctly the next time it is read rather than needing a migration.
 
 **2. Nothing that crosses into the checkpoint may be a domain object.** Every message is
 serialised, artifacts included. A frozen dataclass holding an enum survives that round trip only

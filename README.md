@@ -84,14 +84,23 @@ stale.
   Community Cloud, and `FINBRIEF_CHECKPOINT_DB` exists so a deployment can put it somewhere
   writable. Losing it costs conversations and nothing else; the knowledge base is a separate
   artifact.
-- **The agent's query is logged against yours.** `search_filings`'s description tells the agent
-  to pass your question verbatim — the tool owns query optimization, so translating before it
-  would translate twice (ADR-0003) — with one exception: a pronoun or elliptical reference is
-  resolved first, because the retrieval engine is stateless and *"its debt"* names no company.
-  Whether each search ran your words is logged as a verdict (never the text of either query),
-  so the divergence between the shipped path and the measured chain is reported rather than
-  assumed away. On the first live two-turn run the model rephrased both queries; the rate is a
-  finding for the evaluation phase, not something to tune the prompt against.
+- **The agent's query is logged against yours — measured, not enforced.** `search_filings`'s
+  description tells the agent to pass your question verbatim — the tool owns query optimization,
+  so translating before it would translate twice (ADR-0003) — with one exception: a pronoun or
+  elliptical reference is resolved first, because the retrieval engine is stateless and *"its
+  debt"* names no company. That instruction is a **prompt, and nothing in the code enforces
+  it**: the tool pre-processes nothing on our side, and what the model actually passes is then
+  recorded rather than corrected. Whether each search ran your words is logged as a verdict
+  (never the text of either query), and T10 reports the rate. On the first live two-turn run the
+  model rephrased **both** queries, so the rate so far is 0 of 2. That is a finding for the
+  evaluation phase, not something to tune the prompt against — and not a criterion this project
+  claims to have met.
+- **One `[n]` means one chunk for the whole conversation.** A second search continues the
+  numbering rather than restarting at `[1]`, so a marker in an answer three turns up still
+  resolves to the source you were shown beside it. The numbers are assigned in a single pass
+  over the conversation (`agent/citations.py`) rather than by each search for itself, because
+  searches in one step run concurrently against identical state and would otherwise all number
+  from `[1]`.
 
 ## Configuration
 

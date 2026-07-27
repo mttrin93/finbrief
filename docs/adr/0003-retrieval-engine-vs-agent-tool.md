@@ -86,42 +86,90 @@ default. Phase 4 deletes that constant and reads the setting.
 The decision above stands, `search_filings` now exists, and building it found one case the
 verbatim rule as written cannot serve.
 
-**1. Verbatim, except that a reference must be resolved.** §1 says the tool's description
-instructs the agent to pass the user question verbatim. A conversation breaks that: *"And what
-does it say about its debt?"* names no company, and passed through unchanged it embeds a
-question about nobody. Nothing inside `retrieve()` can fix this — the engine is stateless and
-the evaluation harness only ever hands it self-contained questions, which is the same split
-this ADR is built on. So the description permits exactly one edit, and says so: replace a
-pronoun or elliptical reference with the company or subject it refers to, and change nothing
-else. Rewriting, keyword expansion, added tickers and decomposition remain forbidden, because
-those are the *optimizations the tool owns* and doing them twice is the failure §1 exists to
-prevent.
+**1. Verbatim, except that a reference must be resolved — stated in exactly one place.** §1 says
+the tool's description instructs the agent to pass the user question verbatim. A conversation
+breaks that: *"And what does it say about its debt?"* names no company, and passed through
+unchanged it embeds a question about nobody. Nothing inside `retrieve()` can fix this — the
+engine is stateless and the evaluation harness only ever hands it self-contained questions,
+which is the same split this ADR is built on. So the description permits exactly one edit, and
+says so: replace a pronoun or elliptical reference with the company or subject it refers to, and
+change nothing else. Rewriting, keyword expansion, added tickers and decomposition remain
+forbidden, because those are the *optimizations the tool owns* and doing them twice is the
+failure §1 exists to prevent.
 
-**2. The rule is a prompt, so §2's logging is what makes it a claim.** `agent.answer` emits one
-`agent_query` line per search with a `verbatim` verdict, plus an `agent_turn` summary — verdicts
-and lengths only, never the text of either query, since a question is user content and these
-lines are kept. `verbatim` compares stripped strings: whitespace is not a translation, and
-translation is what this ADR asks us to count.
+The description is the **only** statement of that rule. A first pass also paraphrased the
+exception in `AGENT_SYSTEM_PROMPT` ("work out which company it means from the conversation"),
+which is one rule in two wordings — and a model handed two wordings of a constraint is being
+invited to satisfy the looser one. The system prompt now names the description and stops there
+(issue #7 review); the description's words live in `prompts.py`, which CLAUDE.md makes the owner
+of anything the model reads, and its scope sentence is derived from `config`/`Section` like every
+other rather than typed.
 
-That instrumentation immediately earned itself. On the first live two-turn run
+**2. The rule is measured, not enforced — and §2's logging is the whole of what makes it a
+claim.** This is the honest reading of the acceptance criterion, and worth stating plainly
+because it is easy to tick: nothing in the code *prevents* the agent from rephrasing. The tool
+performs no pre-processing of its own (`test_the_query_reaches_the_engine_unchanged_under_the_shipped_strategy`
+pins that half, which is the half we control), and what the model chooses to pass is then
+recorded rather than corrected. `agent.answer` emits one `agent_query` line per search with a
+`verbatim` verdict, plus an `agent_turn` summary — verdicts and lengths only, never the text of
+either query, since a question is user content and these lines are kept. `verbatim` compares
+stripped strings: whitespace is not a translation, and translation is what this ADR asks us to
+count. T10 (#11) reports the rate.
+
+An enforcing alternative was available and is **rejected**: overwrite the model's `query`
+argument with the user's question before calling `retrieve()`. That would make the criterion
+true by construction and break every follow-up, since the one edit §1 permits is exactly the
+one such a guard cannot tell from a rewrite. Measuring a prompt we cannot enforce is the
+honest option; asserting compliance we never checked is not.
+
+The instrumentation immediately earned itself. On the first live two-turn run
 (`openai/gpt-4o-mini`, 2026-07-27) the model diverged on **both** turns — `main risk factors for
 Tesla`, then `Tesla debt`, the second a keyword reduction the description explicitly forbids —
 and the second query returned four Ford chunks out of five (#6 has the case; #11 has the
-metric). Per this ADR's own position that is a **finding, not a defect to tune away**: the
-prompt stays as written and the rate gets reported, because a prompt tuned against a paid model
-until the number looks good is a number about the tuning.
+metric). So the shipped path's verbatim rate at the time of writing is **0 of 2 searches**, on a
+sample of one conversation. Per this ADR's own position that is a **finding, not a defect to
+tune away**: the prompt stays as written and the rate gets reported, because a prompt tuned
+against a paid model until the number looks good is a number about the tuning.
 
-**3. Citation numbering became the tool's, and had to.** `retrieve()` ranks 1…k on every call,
-so a second search in one conversation would reuse `[1]` for a different chunk and every marker
-in the transcript above it would stop resolving — the property user story 2 rests on. The tool
-therefore offsets each result by the number of sources the thread has already issued, counted
-from the agent's own `search_filings` messages, which the checkpointer persists (ADR-0008). The
-engine is untouched: `Context.rank` still arrives 1…k, and what the eval harness measures is
-unchanged. What this costs is that a chunk retrieved twice in one conversation is numbered
-twice; both numbers resolve to the same source, so a citation stays checkable.
+**3. Citation numbering is the *agent's*, not the tool's.** `retrieve()` ranks 1…k on every
+call, so a second search in one conversation would reuse `[1]` for a different chunk and every
+marker in the transcript above it would stop resolving — the property user story 2 rests on.
+Something must renumber into the thread's running sequence.
+
+T4 first put that in the tool, offsetting each result by the number of sources the thread had
+already issued. **That cannot work, and the review caught it.** LangGraph's tool node builds
+every `ToolRuntime` from the same node input and *then* runs a step's calls concurrently, so two
+`search_filings` calls in one step read an identical offset and both number their chunks
+`[1…k]`. Nothing raises; the model is simply handed two source blocks with the same numbers in
+them. Only the prompt stood between us and that — and §2 above is the record of this model
+declining a plainer instruction than "do not split it into several searches".
+
+So the register is assigned at the agent seam (`agent/citations.py`), in one sequential pass over
+the thread's search replies, after a step's tool messages have returned and before the model
+reads them. Collisions are not prevented there; they are unrepresentable, because no two callers
+compute a number independently. `search_filings` went back to being stateless — query in, framed
+chunks out — which is what this ADR asks a wrapper to be, and the engine is untouched:
+`Context.rank` still arrives 1…k and what the harness measures is unchanged. What this costs is
+that a chunk retrieved twice in one conversation is numbered twice; both numbers resolve to the
+same source, so a citation stays checkable.
 
 **4. What the agent's turn returns is not a `GroundedAnswer`.** `agent.answer` returns an
 `AgentTurn` carrying the searches it ran, not just their chunks, so a surface can tell "searched
 and the collection returned nothing" from "answered from the conversation". `GroundedAnswer`
 stays the chain's type. Conflating them would let agent output reach the harness that is
 supposed to measure the chain, which is the one confusion this ADR is written to prevent.
+
+**5. One tool call per step, asked for at the binding.** The model is bound with
+`parallel_tool_calls=False` (through `create_agent`'s `model_settings`, which it spreads into
+`bind_tools`). Two reasons, and neither of them is §3 — the register no longer needs this to be
+true. First, a step that fans out into several searches makes the `verbatim` verdict of §2
+ambiguous: several queries against one question, none of them the question. Second, splitting a
+question up *is* decomposition, which ADR-0004 puts inside `retrieve()`, so a fan-out is the
+double-translation §1 exists to prevent arriving by another route — and the tool's description
+already forbids it in words the live run shows are not binding.
+
+It is a **request**, and recorded as one: the flag reaches OpenRouter, which fronts many
+upstreams, and whether a given one honours it is not something we can assert. That is why it is
+the second line and not the first. §3's register is what makes the failure impossible; this only
+makes it rare, which is worth having for the measurement but is not what the correctness rests
+on.
