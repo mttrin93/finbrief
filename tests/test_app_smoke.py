@@ -14,6 +14,7 @@ from fakes import a_context
 from streamlit.testing.v1 import AppTest
 
 from finbrief.agent import agent
+from finbrief.ingestion.model import Section
 from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK
 from finbrief.rag import GroundedAnswer
 
@@ -108,9 +109,56 @@ def test_an_answer_renders_with_its_sources_and_the_disclaimer(app, monkeypatch)
     panel = " ".join(md.value for md in sources.markdown)
     assert panel.count("TSLA 10-K FY2025, Item 1A") == 2
     assert "[1]" in panel and "[2]" in panel
-    assert "Tesla's risk factor number 1, in the filer's own words." in panel
+    assert "Tesla's risk factor number 1, in the filer's own words." in [
+        text.value for text in sources.text
+    ]
     # The disclaimer is rendered by the app, not asked of the model (user story 15).
     assert DISCLAIMER in [caption.value for caption in app.caption]
+
+
+def a_dollar_bearing_body(recorded_filing) -> str:
+    """Apple's real Item 7 around its first dollar figure, whole paragraphs, verbatim.
+
+    Real text, not invented text, because the characters that break rendering are the
+    filer's own and no hand-written fixture would think to include them — segment figures
+    run together as `Americas$178,353 7 %$167,045`, and the tables sit between blank lines.
+
+    Sliced on paragraph boundaries rather than by character offset so it is shaped like a
+    body `retrieve()` actually produces: `_as_context` splits on the same blank line and
+    every one of the recorded filing's chunks arrives already stripped, which matters
+    because `st.text` strips what it is given. The interior is what this guards.
+    """
+    paragraphs = recorded_filing.sections[Section.MDA].split("\n\n")
+    first_figure = next(index for index, text in enumerate(paragraphs) if "$" in text)
+    body = "\n\n".join(paragraphs[first_figure - 2 : first_figure + 3])
+    assert body.count("$") > 1, "the slice must carry the figures KaTeX would swallow"
+    assert "\n\n" in body, "and a paragraph break, which a blockquote would end at"
+    assert body == body.strip(), "and no outer whitespace, as a real body has none"
+    return body
+
+
+def test_a_source_body_renders_the_filers_words_character_identical(
+    app, monkeypatch, recorded_filing
+):
+    # The panel is where an inline `[n]` gets checked against the primary source, so the
+    # body has to survive rendering exactly. A Markdown blockquote does not: Streamlit
+    # parses `$…$` as KaTeX, which swallows the segment figures a valuation question is
+    # asked *about*, and the quote silently ends at the filing's first blank line.
+    body = a_dollar_bearing_body(recorded_filing)
+    stub_answer(
+        monkeypatch,
+        GroundedAnswer(
+            text="Apple reports net sales by segment [1].",
+            contexts=(a_context(1, ticker="AAPL", section=Section.MDA, body=body),),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("How did Apple's segments perform?").run()
+
+    assert not app.exception
+    (sources,) = app.chat_message[1].expander
+    assert [text.value for text in sources.text] == [body]
 
 
 def test_the_sources_panel_survives_the_next_turn(app, monkeypatch):

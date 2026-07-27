@@ -89,7 +89,13 @@ def render_sources(contexts: tuple[Context, ...]) -> None:
         for context in contexts:
             st.markdown(f"**[{context.rank}] {context.citation}**")
             st.caption(f"`{context.chunk_id}` · distance {context.distance:.4f}")
-            st.markdown(f"> {context.body}")
+            # `st.text`, not a Markdown blockquote: the body is the filer's own words, and
+            # this is the surface a reader checks a citation against, so it must render
+            # character-identical. `st.markdown` does not — it parses `$…$` as KaTeX, so
+            # Apple's own segment line `Americas$178,353 7 %$167,045` renders as prose plus
+            # a maths expression, and a blockquote silently ends at the filing's first
+            # blank line. Losing the quote styling is the cheaper trade.
+            st.text(context.body)
 
 
 if "messages" not in st.session_state:
