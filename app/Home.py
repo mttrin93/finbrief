@@ -42,6 +42,7 @@ from finbrief.config import (
 )
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.prompts import DISCLAIMER, GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
@@ -178,8 +179,11 @@ def retriever_label(context: Context) -> str:
     The shortest answer to the question ADR-0004's exact-identifier prediction turns on, put
     where a reader is already looking at the citation.
     """
-    names = {"vector": "vector", "bm25": "BM25"}
-    found = [names.get(retriever.value, retriever.value) for retriever in context.retrievers]
+    # `Retriever` is a closed two-member enum, so this is a casing fix and not a lookup with a
+    # fallback: a dict `.get` here had a `"vector": "vector"` entry and a default branch nothing
+    # could reach. The empty case *is* reachable — a reply checkpointed before Phase 4 carries
+    # no provenance at all.
+    found = ["BM25" if r is Retriever.BM25 else r.value for r in context.retrievers]
     return " + ".join(found) if found else "provenance not recorded"
 
 
@@ -265,13 +269,25 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                     "model: a chunk's header carries `TSLA`, so a lexical search for *Tesla* "
                     "would miss most of the filer (ADR-0004 amendment)."
                 )
-            if search.translated and not search.sub_queries:
+            if not search.translated:
+                st.caption("Query translation was off, so only the question itself was run.")
+            elif not search.planned:
+                # Distinguished from the caption below, because the causes are different and
+                # only one of them is the model's: at `FINBRIEF_MAX_SUB_QUERIES=0` translation
+                # is on and the planner is never invoked, so crediting the emptiness to a
+                # question that "was already specific" describes a chat call that never
+                # happened — in the one cell ADR-0004 §6 uses to isolate what the planner
+                # contributes (issue #6 review).
+                st.caption(
+                    "The query planner is switched off (`FINBRIEF_MAX_SUB_QUERIES=0`), so no "
+                    "sub-query was asked for — only the question and, where one applies, its "
+                    "ticker form were run."
+                )
+            elif not search.sub_queries:
                 st.caption(
                     "The query planner added nothing — the question was already one specific "
                     "thing a filing answers, so no sub-query was retrieved."
                 )
-            elif not search.translated:
-                st.caption("Query translation was off, so only the question itself was run.")
             for context in search.contexts:
                 st.markdown(
                     f"**[{context.rank}] {context.citation}** · RRF "

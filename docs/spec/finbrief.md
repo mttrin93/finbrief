@@ -151,10 +151,10 @@ built once under `@st.cache_resource` (SQLite `check_same_thread=False`).
 Good tests assert **external behavior at the highest seam**, not implementation details.
 Six seams (confirmed):
 
-1. **`retrieve(question, strategy, k)`** — all retrieval-quality behavior: RRF fusion,
-   symmetric translation+hybrid composition, provenance, per-bucket metrics. The eval harness
-   (RAGAs, A/B, precision/recall) drives this exact seam, so measured and shipped retrieval
-   are one code path — no separate eval rig.
+1. **`retrieve(question, strategy, translate, k)`** — all retrieval-quality behavior: RRF
+   fusion, symmetric translation+hybrid composition, provenance, per-bucket metrics. The eval
+   harness (RAGAs, A/B, precision/recall) drives this exact seam, so measured and shipped
+   retrieval are one code path — no separate eval rig.
 2. **Agent entrypoint** (`answer(question, thread_id)`) — tool-selection and combined-query
    orchestration. Runs the **real agent against a small fixture collection** (not the full
    index) with **external tool data mocked**; `retrieve()` real.

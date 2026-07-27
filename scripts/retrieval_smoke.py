@@ -114,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')} · `scripts/retrieval_smoke.py`"
         ),
         strategy=SMOKE_STRATEGY,
+        translate=SMOKE_TRANSLATION,
         k=k,
         embedding_model=settings.embedding_model,
     )

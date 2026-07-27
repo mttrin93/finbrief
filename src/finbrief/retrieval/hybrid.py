@@ -134,12 +134,14 @@ class Surfaced:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> Surfaced:
-        """Rebuild a row from `as_payload`, tolerating one written before it carried a distance.
+        """Rebuild a row from `as_payload`, reading an absent `distance` as `None`.
 
-        A live conversation's checkpoint outlives a deploy, so a thread can hold rows of both
-        shapes. `None` is the honest reading of an absent key here — it is what a BM25 row
-        carries anyway, and no distance was recorded for a vector row written by the older
-        shape, so there is nothing to invent.
+        Every reader of a checkpointed payload here tolerates a shape written before the current
+        one, because a live conversation's checkpoint outlives a deploy. Unlike `Context` and
+        `Retrieval`, `Surfaced` has no *deployed* older shape to tolerate — the class arrives
+        whole in Phase 4 — so this is the convention applied consistently rather than a shim for
+        a payload seen in the wild. `None` is the honest absence value: it is what a BM25 row
+        carries anyway, and there is no distance to invent for a row that recorded none.
         """
         distance = payload.get("distance")
         return cls(
@@ -263,12 +265,17 @@ class BM25Index:
         self,
         documents: tuple[Document, ...],
         index: BM25Okapi | None,
-        terms: tuple[frozenset[str], ...] = (),
+        terms: tuple[frozenset[str], ...],
     ) -> None:
         self._documents = documents
         self._index = index
         #: Each document's term set, kept so membership is a set intersection rather than a
         #: threshold on the score. See `nearest` for why the score cannot answer that question.
+        #:
+        #: Required rather than defaulted to `()`: the default was only ever right for the empty
+        #: corpus `over` builds explicitly, and for any other it produced an object that
+        #: constructs cleanly and then fails inside `nearest`'s `zip(..., strict=True)` at query
+        #: time, complaining about argument lengths (issue #6 review).
         self._terms = terms
 
     def __len__(self) -> int:
@@ -286,7 +293,7 @@ class BM25Index:
         """
         held = tuple(documents)
         if not held:
-            return cls((), None)
+            return cls((), None, ())
         tokenized = [tokenize(document.page_content) for document in held]
         return cls(
             held,

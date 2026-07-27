@@ -71,6 +71,14 @@ either: `agent.BASELINE_STRATEGY = vector` is what runs, and the sidebar states 
 the configured value rather than in place of it, so the UI cannot advertise the unmeasured
 default. Phase 4 deletes that constant and reads the setting.
 
+**Closed by T6 (issue #6).** All three sentences above are now history: `retrieve()` implements
+`hybrid` and takes `translate` as a second caller-named switch, `BASELINE_STRATEGY` is deleted,
+`build_agent` reads `settings.retrieval_strategy` / `settings.query_translation_enabled`, and
+the sidebar names **one** configuration because the configured one is what answers. What
+survives from this section is the rule it was written to protect — a number is never reported
+against a configuration nobody selected — which is now enforced by the switches being arguments
+with conservative defaults rather than values read from config inside the engine.
+
 **Also true of the implementation, and not visible in the signature.**
 
 - `store` and `settings` are injectable keyword arguments. That is what lets the eval harness

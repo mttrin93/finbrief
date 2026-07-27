@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage
 from finbrief.config import RRF_K, RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.hybrid import Retriever, bm25_index
-from finbrief.retrieval.retrieve import Retrieval, retrieve
+from finbrief.retrieval.retrieve import Context, Retrieval, retrieve
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test", "FINBRIEF_RETRIEVAL_K": "3"})
 
@@ -214,7 +214,75 @@ def test_translation_reports_that_it_ran_even_when_it_added_nothing(filings_stor
 
     assert result.variants == (NO_COMPANY,), "no planner output, and no company to normalise"
     assert result.translated is True
+    assert result.planned is True, "the planner ran and offered nothing usable"
     assert retrieve(QUESTION, strategy=VECTOR, k=3, store=filings_store).translated is False
+
+
+def test_a_zero_cap_reports_translation_on_and_the_planner_never_asked(filings_store):
+    # A third state, and the reason `planned` exists beside `translated`: at
+    # `FINBRIEF_MAX_SUB_QUERIES=0` translation is on and still normalises, but no chat call is
+    # made — so "the planner added nothing" would describe a model that was never consulted. It
+    # is the cell ADR-0004 §6 isolates the planner's contribution with, so the surface that
+    # reports it must not attribute the emptiness to the model (issue #6 review).
+    settings = Settings.from_env(
+        {
+            "OPENROUTER_API_KEY": "sk-test",
+            "FINBRIEF_RETRIEVAL_K": "3",
+            "FINBRIEF_MAX_SUB_QUERIES": "0",
+        }
+    )
+
+    result = retrieve(
+        QUESTION,
+        strategy=VECTOR,
+        translate=True,
+        k=3,
+        store=filings_store,
+        settings=settings,
+        model=a_translator("Apple supplier concentration"),
+    )
+
+    assert result.variants == (QUESTION, QUESTION_AS_TICKER), "normalised, never planned"
+    assert result.translated is True
+    assert result.planned is False
+
+
+def test_the_planner_verdict_survives_the_artifact_round_trip(filings_store):
+    # `planned` reaches the RAG-viz panel through the tool artifact and the agent's checkpoint,
+    # like every other fact on a `Retrieval` — a panel that had to re-derive it from live
+    # `Settings` would describe the current configuration rather than the one that answered.
+    for planned in (True, False):
+        retrieval = Retrieval(
+            contexts=(), variants=(QUESTION,), translated=True, planned=planned
+        )
+
+        assert Retrieval.from_payload(retrieval.as_payload()).planned is planned
+
+    # And a payload written before the field existed reads as "no planner", which is what the
+    # only shape without it — a pre-Phase-4 reply, whose `translated` is `False` too — means.
+    assert Retrieval.from_payload({"chunks": []}).planned is False
+
+
+def test_a_chunk_checkpointed_before_fusion_existed_reads_back_without_one(filings_store):
+    # The T3 chunk shape, which really is on `main` and really can be in a thread a deploy
+    # interrupts: no `fused_score`, no `provenance`. It reads back as a `Context` reporting no
+    # score and no rows rather than raising, because the alternative is a `KeyError` on the
+    # first rerun after a deploy — and the panel renders nothing for it (`app/Home.py`).
+    # `distance` was never optional in that shape, which is why it is indexed and not defaulted.
+    (context,) = retrieve(QUESTION, strategy=VECTOR, k=1, store=filings_store).contexts
+    older = {
+        key: value
+        for key, value in context.as_payload().items()
+        if key not in {"fused_score", "provenance"}
+    }
+
+    replayed = Context.from_payload(older)
+
+    assert replayed.fused_score == 0.0
+    assert replayed.provenance == ()
+    assert replayed.chunk_id == context.chunk_id
+    assert replayed.distance == context.distance
+    assert replayed.rank == context.rank
 
 
 def test_every_variant_runs_through_every_retriever_the_strategy_names(filings_store):

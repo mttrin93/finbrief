@@ -133,7 +133,16 @@ def sub_queries(reply: str, *, known: Iterable[str], limit: int) -> tuple[str, .
       so far — the original *and* its normalised form — rather than just the question, because a
       planner that echoes the ticker form back would otherwise be retrieved twice;
     - **a repeat of an earlier sub-query**, on the same reasoning.
+
+    `limit=0` keeps nothing, and is checked before the loop rather than inside it: the cap used
+    to be tested *after* appending, so `len(kept) == 0` was never true and a zero cap kept
+    **every** line the model offered — the exact inverse of this function's contract, in the one
+    configuration (`FINBRIEF_MAX_SUB_QUERIES=0`) whose whole point is that the planner
+    contributes nothing (issue #6 review). `translate`'s own guard hides that from production;
+    this one makes the contract true of the function.
     """
+    if limit <= 0:
+        return ()
     seen = {variant.strip().casefold() for variant in known}
     kept: list[str] = []
     for line in reply.splitlines():
@@ -145,7 +154,7 @@ def sub_queries(reply: str, *, known: Iterable[str], limit: int) -> tuple[str, .
             continue
         seen.add(fingerprint)
         kept.append(candidate)
-        if len(kept) == limit:
+        if len(kept) >= limit:
             break
     return tuple(kept)
 

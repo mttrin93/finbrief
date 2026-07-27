@@ -84,7 +84,7 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 
 | Task | Priority | Implementation |
 |---|---|---|
-| Hybrid search | P1 | `EnsembleRetriever`: BM25 (exact tickers, "Item 1A", ratio names) + Chroma vector search; motivated by course Part 2 (exact-identifier problem) |
+| Hybrid search | P1 | `rank_bm25` (`BM25Okapi`) over the collection's indexed text (exact tickers, "Item 1A", ratio names) + Chroma vector search, fused by hand-written RRF (`config.RRF_K = 60`); motivated by course Part 2 (exact-identifier problem). **Not `EnsembleRetriever`**: its blend needs comparable scores, and an L2 distance and a corpus-relative BM25 score are not (ADR-0004, `retrieval/hybrid.py`) |
 | RAG evaluation (RAGAs) | P1 | Golden dataset of ~15–20 Q/A over the universe; all four metrics (faithfulness, answer relevancy, context precision, context recall); results table in README; target faithfulness ≥ 0.8 |
 | A/B testing of RAG strategies | P1 | Config-switchable strategies (vector-only vs. hybrid; w/ vs. w/o query translation); run RAGAs on each; comparison table = the A/B result |
 | Automated KB updates | P2 | Scheduled ingestion script (cron/GitHub Action) pulling newest filings from EDGAR into Chroma; idempotent by accession number |
@@ -145,9 +145,12 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 - **Separate Chroma collections** (`filings`, `news`, `glossary`) with metadata
   filters (ticker, section, year) → enables scoped retrieval and better context
   precision.
-- **Retrieval engine vs. agent tool** (ADR-0003): `retrieve(question, strategy, k)` is a
-  standalone deterministic component (translation + hybrid inside, config-flagged) called
-  *directly* by the eval harness; the same function is wrapped as the `search_filings`
+- **Retrieval engine vs. agent tool** (ADR-0003): `retrieve(question, strategy, translate, k)
+  → Retrieval` is a standalone component (translation + hybrid inside) called
+  *directly* by the eval harness — deterministic apart from the sub-query planner's one chat
+  completion (ADR-0004 §9), and with both switches **named by the caller** rather than read
+  from config inside, so no number is reported against a configuration nobody selected. The
+  same function is wrapped as the `search_filings`
   tool for the `create_agent` loop. Headline RAGAs/A-B measure the chain; the tool-calling
   eval measures the agent's selection layer. Divergence between agent-issued and original
   queries is logged and reported, not assumed away.
@@ -275,10 +278,11 @@ retrieval chain and landed with it — ticket T3, #5)
 
 **Phase 2 — Baseline RAG (P0, ~3 h)** — ✅ **done** (`t3-baseline-rag`, #5)
 - Vector-only retrieval chain, source citations, sources panel in UI. `retrieve()` is the
-  deterministic seam ADR-0003 asks for and is **vector-only by design**: `hybrid` raises
-  rather than serving vector results under a hybrid label, because `DEFAULT_STRATEGY` is
-  the pre-registered `hybrid` (ADR-0005) and Phase 4 is where it becomes true. The sidebar
-  names the gap between the configured strategy and the one that answered.
+  deterministic seam ADR-0003 asks for and was **vector-only by design at the time**: `hybrid`
+  raised rather than serving vector results under a hybrid label, because `DEFAULT_STRATEGY`
+  is the pre-registered `hybrid` (ADR-0005) and Phase 4 is where it became true. The sidebar
+  named the gap between the configured strategy and the one that answered. Phase 4 closed
+  both — see its entry below (T6, #6).
 - Domain system prompt + disclaimer. The grounding-scope disclosure (user story 18) is
   derived from `config`, not typed, and the disclaimer is rendered *beside* the answer
   rather than requested from the model.
@@ -374,17 +378,25 @@ retrieval chain and landed with it — ticket T3, #5)
   with section citations; candidate Q/A drafted by a *different* model than the answering
   pipeline, then hand-verified against the primary source (breaks circularity).
 - RAGAs all four metrics, reported **per bucket**. A/B matrix: vector vs. hybrid ×
-  ±query translation (reads Phase-6 logs). Pre-registered hypotheses: hybrid > vector on
-  exact-identifier; translation wins on multi-hop; both tie on semantic (a predicted tie
-  confirms the harness works, not a failure).
+  ±query translation (reads Phase-6 logs). Pre-registered hypotheses **as revised by ADR-0004's
+  T6 amendment §6/§7**, which supersede the original list here (hybrid > vector on
+  exact-identifier; translation wins on multi-hop; both tie on semantic): `+translation` is
+  positive on exact-identifier *via entity normalisation*, `hybrid` alone may be **negative**
+  there, and hybrid's marginal contribution over `vector + translation` is expected to be
+  **small**. Both lists predate any A/B data; a predicted tie still confirms the harness works
+  rather than being a failure.
 - Injection/guardrail cases are NOT in the RAGAs set (faithfulness against a refusal is
   undefined) — they live in the Phase-5 security suite as pass/fail, reported alongside.
 - Shipping default **pre-registered now** = hybrid + translation (ADR-0005), on the
-  dominance prediction. Falsification (directional — no tight numeric margin, given ~6
+  dominance prediction. **Two triggers, both fixed before the data exists.** (a) The
+  translation falsification clause (directional — no tight numeric margin, given ~6
   Q/bucket): if translation is worse on *both* context precision and recall within any
   bucket, default drops to hybrid-only and the contradiction is a README finding;
-  per-question spread reported alongside. Dominance judged within ≤1.5s p50 added latency
-  from translation (measured from Phase-6 logs).
+  per-question spread reported alongside. (b) The strategy-axis re-examination trigger
+  (ADR-0005 amendment §4): if `hybrid − vector` at equal translation is within per-question
+  spread on *every* bucket, the dominance argument is re-argued rather than defended and
+  `vector + translation` becomes a live candidate. Dominance judged within ≤1.5s p50 added
+  latency from translation (measured from Phase-6 logs).
 - Tool-calling evaluation (Part 4 pattern); results tables → README.
 
 > **── Tier-1 gate ──** Everything above must be finished, evaluated, and

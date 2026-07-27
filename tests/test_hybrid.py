@@ -222,10 +222,11 @@ def test_a_provenance_row_survives_a_payload_round_trip_with_its_distance():
     assert Surfaced.from_payload(row.as_payload()) == row
 
 
-def test_a_provenance_row_written_before_distances_were_recorded_still_reads_back():
-    # A live conversation's checkpoint outlives a deploy, so a thread can hold rows of both
-    # shapes. `None` is the honest reading of the absent key — no distance was recorded, and a
-    # BM25 row carries `None` anyway, so there is nothing to invent.
+def test_a_provenance_row_with_no_distance_recorded_reads_back_as_none():
+    # The repo-wide rule for a checkpointed payload: a reader tolerates a shape written before
+    # the current one, with an honest absence value and never an invented number. `Surfaced` has
+    # no deployed older shape of its own (the class arrives whole in Phase 4) — this pins the
+    # absence value, which is also what every BM25 row carries.
     older = {"variant": ORIGINAL, "retriever": "vector", "rank": 2, "contribution": 1 / 62}
 
     assert Surfaced.from_payload(older) == Surfaced(
@@ -311,9 +312,14 @@ def test_bm25_ranks_the_chunk_naming_the_company_above_four_peers_discussing_deb
 def test_bm25_matches_a_section_literal_the_provenance_header_carries():
     # The chunk-side counterpart in ADR-0004: the header is indexed so "Item 7" matches every
     # chunk of a Section, not only the one the splitter left the heading in.
+    #
+    # Asserted on `f-7-3`, whose *body* holds neither "item" nor any digit, so the only way it
+    # can be a hit is through its header. A bare `assert index.nearest(...)` passed with every
+    # header stripped, because `$5.7 billion` tokenizes to a `7` — the test was true of a corpus
+    # that did not index the header at all (issue #6 review).
     index = BM25Index.over([*FORD_CHUNKS, TSLA_CHUNK])
 
-    assert index.nearest("Item 7", 5)
+    assert "f-7-3" in {hit.id for hit in index.nearest("Item 7", 5)}
 
 
 def test_bm25_returns_at_most_k_hits_best_first_and_the_same_order_every_time():

@@ -80,6 +80,14 @@ def test_a_cap_of_zero_does_not_call_the_model_at_all():
     assert model.prompts == [], "no generation was requested"
 
 
+def test_a_cap_of_zero_keeps_nothing_even_when_a_reply_is_parsed_anyway():
+    # The cap used to be checked *after* appending, so `len(kept) == 0` was never true and a
+    # zero cap kept **every** line offered — the inverse of the contract, reachable the moment
+    # anything parses a reply without `translate`'s guard in front of it. `sub_queries` is
+    # public, and this is the configuration whose whole point is a planner that adds nothing.
+    assert sub_queries("one\ntwo\nthree", known=(NO_COMPANY,), limit=0) == ()
+
+
 def test_the_model_is_given_the_translation_prompt_and_the_question():
     # `prompts.py` owns everything the model reads (CLAUDE.md). If this prompt were assembled
     # here, the one module that guarantees the scope sentences agree would not own it.

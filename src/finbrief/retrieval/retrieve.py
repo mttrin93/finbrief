@@ -37,6 +37,7 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from langchain_chroma import Chroma
@@ -195,11 +196,20 @@ class Retrieval:
     `translated` is a fact about the *run*, not about `variants`' length: translation that ran
     and returned nothing usable is a different thing from translation that was switched off,
     and only one of them is worth a second look in the panel.
+
+    `planned` splits `translated` one step further, for the same reason. At
+    `FINBRIEF_MAX_SUB_QUERIES=0` translation is *on* — the deterministic ticker form is still
+    added — but the planner is never invoked, so "no sub-query came back" is a fact about the
+    configuration and not about the model. Without this the panel attributed an empty planner
+    result to a chat call that never happened, in exactly the cell ADR-0004 §6 uses to isolate
+    what the planner contributes (issue #6 review).
     """
 
     contexts: tuple[Context, ...]
     variants: tuple[str, ...]
     translated: bool
+    #: Whether the sub-query planner actually ran: `translated` **and** a non-zero cap.
+    planned: bool = False
 
     @property
     def question(self) -> str:
@@ -237,6 +247,7 @@ class Retrieval:
             "chunks": [context.as_payload() for context in self.contexts],
             "variants": list(self.variants),
             "translated": self.translated,
+            "planned": self.planned,
         }
 
     @classmethod
@@ -246,7 +257,27 @@ class Retrieval:
             contexts=tuple(Context.from_payload(chunk) for chunk in payload.get("chunks", ())),
             variants=tuple(str(variant) for variant in payload.get("variants", ())),
             translated=bool(payload.get("translated", False)),
+            planned=bool(payload.get("planned", False)),
         )
+
+
+@lru_cache(maxsize=1)
+def _planner_model(settings: Settings) -> BaseChatModel:
+    """The sub-query planner's chat model, built once per process.
+
+    **`temperature=0.0` is named here rather than inherited from `build_chat_model`'s default**,
+    because this is the seam that depends on it: ADR-0003 calls `retrieve()` the deterministic
+    component the headline numbers measure, and the planner is the one sampled step inside it
+    (ADR-0004 §9 records exactly how far that reaches). A default is a reasonable thing for a
+    shared constructor to change; a measurement premise is not one to leave resting on one.
+
+    Cached for the reason `vectorstore.default_filings_store` is, and keyed the same way — on
+    the frozen, hashable `Settings`, so an injected one gets its own model rather than the
+    application's. Built eagerly as a `retrieve()` argument it was a fresh client, with its own
+    connection pool, per `search_filings` call — including at `max_sub_queries=0`, where nothing
+    ever invokes it. Every other collaborator on this path is built once (issue #6 review).
+    """
+    return build_chat_model(settings, temperature=0.0)
 
 
 def retrieve(
@@ -297,16 +328,16 @@ def retrieve(
         store = store if store is not None else default_filings_store(settings)
 
     started = time.perf_counter()
+    planned = False
     if translate:
+        # A fact about the configuration, recorded before the call rather than inferred from
+        # what came back: `translate` with a zero cap adds the ticker form and never asks a
+        # model anything, and "the planner returned nothing" must not be said of a planner that
+        # never ran (`Retrieval.planned`, issue #6 review).
+        planned = settings.max_sub_queries > 0
         variants = query_translation.translate(
             question,
-            # `temperature=0.0` is named here rather than inherited from `build_chat_model`'s
-            # default, because this is the seam that depends on it: ADR-0003 calls `retrieve()`
-            # the deterministic component the headline numbers measure, and the planner is the
-            # one sampled step inside it (see ADR-0004 §9 for exactly how far that reaches). A
-            # default is a reasonable thing for a shared constructor to change; a measurement
-            # premise is not something to leave resting on one (issue #6 review).
-            model=model if model is not None else build_chat_model(settings, temperature=0.0),
+            model=model if model is not None else _planner_model(settings),
             max_sub_queries=settings.max_sub_queries,
         )
     else:
@@ -373,7 +404,9 @@ def retrieve(
             for context in contexts
         ],
     )
-    return Retrieval(contexts=contexts, variants=variants, translated=translate)
+    return Retrieval(
+        contexts=contexts, variants=variants, translated=translate, planned=planned
+    )
 
 
 def _candidate_lists(

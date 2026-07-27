@@ -72,7 +72,15 @@ or asserts against noise.
   embeddings constructor, and ingest and query must share it (a drifting model degrades
   retrieval to noise with no error).
 - `retrieval/vectorstore.py` is the only place the `filings` collection is opened,
-  written, or read (`FILINGS_COLLECTION`).
+  written, or read (`FILINGS_COLLECTION`). `build_filings_store` is the constructor;
+  `default_filings_store` is the **shared per-process handle** the application reads, and the
+  app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
+  that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
+  question. Three process-level `lru_cache`s now sit on this path (`default_filings_store`,
+  `hybrid.bm25_index`, `retrieve._planner_model`, each keyed on the frozen `Settings` or the
+  store) and **conftest does not clear them**, unlike `load_env`/`get_settings`: a test that
+  builds an index clears `bm25_index` itself (see `tests/test_hybrid.py`), and every other test
+  injects its collaborator and never reaches them.
 - `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
   retrieval *means* — the composition, the ranking contract, the `Context` and `Retrieval`
   shapes — and crosses Chroma only through `vectorstore.nearest_chunks`; nothing above it
@@ -96,6 +104,11 @@ or asserts against noise.
   (issue #7 review). A prompt-facing rule is also written **once** — the description owns the
   verbatim-query contract *and its exception*, and `AGENT_SYSTEM_PROMPT` points at it rather
   than restating it, because a rule the model reads in two wordings is one it can pick between.
+  **A prompt that states an enforced limit takes it as an argument** —
+  `query_translation_prompt(max_sub_queries)` is a function so the cap the model reads is the
+  cap `sub_queries()` keeps. And `prompts.py` may not import from `retrieval/` at runtime:
+  `query_translation.py` reads its prompt from here while `retrieve.py` imports *it*, so
+  `Context` is a `TYPE_CHECKING`-only import and closing that loop leaves the class undefined.
 - `rag.answer_question` is the measured chain (ADR-0003) and must stay callable with no agent
   in the way. `GroundedAnswer.text` deliberately carries **no** disclaimer, so every surface
   that renders it owes a `prompts.DISCLAIMER` beside it.
@@ -111,6 +124,16 @@ or asserts against noise.
   user content and these lines are kept. Counts, lengths and verdicts only — which is why the
   `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself
   carries the variant text for the RAG-viz panel to render (ADR-0004 amendment).
+
+**A live conversation's checkpoint outlives a deploy.** Every `from_payload` and every
+transcript-row reader tolerates the shape written before the current one: a new field on a
+checkpointed payload is optional on read with an **honest absence value** and never a fabricated
+number (`Context.fused_score` → `0.0` and `provenance` → `()`; `Retrieval.planned` → `False`;
+`Surfaced.distance` → `None`), and a missing artifact is "no provenance", never an error
+(`tools/search_filings.py`). Adding a *required* field to such a payload `KeyError`s a thread in
+flight on the first rerun after deploy. The corollary matters as much: an absence must not be
+reported as a measurement — "we cannot say what this query found" is a different claim from
+"this query found nothing" (`app/Home.py`'s `barren_variants`, `distance_label`).
 
 ## Agent skills
 

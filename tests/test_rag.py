@@ -102,7 +102,13 @@ def test_the_chain_passes_its_strategy_and_k_to_retrieval(filings_store, monkeyp
 
     def fake_retrieve(question, *, strategy, translate, k, store, settings=None, model=None):
         calls.append(
-            {"question": question, "strategy": strategy, "translate": translate, "k": k}
+            {
+                "question": question,
+                "strategy": strategy,
+                "translate": translate,
+                "k": k,
+                "model": model,
+            }
         )
         return Retrieval(
             contexts=(a_context(ticker="AAPL", body="A risk factor."),),
@@ -112,25 +118,33 @@ def test_the_chain_passes_its_strategy_and_k_to_retrieval(filings_store, monkeyp
 
     monkeypatch.setattr(rag, "retrieve", fake_retrieve)
 
+    answering, planner = a_model(), a_model()
     answer_question(
         QUESTION,
         strategy=RetrievalStrategy.VECTOR,
         translate=True,
         k=7,
         store=filings_store,
-        model=a_model(),
+        model=answering,
+        translation_model=planner,
     )
 
     # The question reaches the engine unchanged and translation happens *inside* it (ADR-0004).
     # A chain that pre-decomposed would translate twice and part the measured path from the
     # shipped one — so what this asserts is that the chain forwards the switch, never that it
     # acts on it.
+    #
+    # `model` is asserted too, and it is the *planner's*: `translation_model` is separate from
+    # `model` precisely so the answering model is not the one decomposing (`rag.py`), and
+    # forwarding the wrong one is a swap the rest of the suite cannot see — the fake ignored the
+    # argument, so handing `retrieve()` the answering model passed every test (issue #6 review).
     assert calls == [
         {
             "question": QUESTION,
             "strategy": RetrievalStrategy.VECTOR,
             "translate": True,
             "k": 7,
+            "model": planner,
         }
     ]
 

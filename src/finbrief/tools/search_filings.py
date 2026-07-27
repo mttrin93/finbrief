@@ -112,12 +112,20 @@ def build_search_filings(
     return search_filings
 
 
-#: What a reply carries when its artifact did not survive — a failed call, or a checkpoint
-#: written before the artifact had this shape. Not an error: the reply is still evidence that
-#: the knowledge base *was* consulted, which is a different fact from "the answer is not
-#: grounded", and a caller that could not tell those apart would tell its reader to re-run a
-#: paid ingest because a search failed.
-_NOTHING: Artifact = {"chunks": [], "variants": [], "translated": False}
+def _nothing() -> Artifact:
+    """What a reply carries when its artifact did not survive — a failed call, or a checkpoint
+    written before the artifact had this shape.
+
+    Not an error: the reply is still evidence that the knowledge base *was* consulted, which is
+    a different fact from "the answer is not grounded", and a caller that could not tell those
+    apart would tell its reader to re-run a paid ingest because a search failed.
+
+    A function rather than a module constant, so the empty `chunks` and `variants` lists are
+    fresh per call. As a constant, `{**_NOTHING, **artifact}` copied the dict but *aliased* the
+    two lists into every artifact it filled a key for, and one in-place edit of a returned
+    artifact would have corrupted the fallback for the rest of the process (issue #6 review).
+    """
+    return {"chunks": [], "variants": [], "translated": False, "planned": False}
 
 
 def search_results(
@@ -146,7 +154,7 @@ def search_results(
 def _as_artifact(artifact: Any) -> Artifact:
     """One reply's artifact in the current shape, whatever shape it was written in."""
     if isinstance(artifact, Mapping):
-        return {**_NOTHING, **artifact}
+        return {**_nothing(), **artifact}
     if isinstance(artifact, list | tuple):
-        return {**_NOTHING, "chunks": list(artifact)}
-    return dict(_NOTHING)
+        return {**_nothing(), "chunks": list(artifact)}
+    return _nothing()

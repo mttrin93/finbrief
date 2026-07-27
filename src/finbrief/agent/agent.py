@@ -100,6 +100,9 @@ class Search:
     contexts: tuple[Context, ...]
     variants: tuple[str, ...] = ()
     translated: bool = False
+    #: Whether the sub-query planner ran, as opposed to translation merely being on — see
+    #: `Retrieval.planned`. The panel needs both facts to describe an empty planner result.
+    planned: bool = False
 
     @property
     def ticker_form(self) -> str | None:
@@ -346,6 +349,7 @@ def _searches_in(messages: list[AnyMessage]) -> tuple[Search, ...]:
                 contexts=retrieval.contexts,
                 variants=retrieval.variants,
                 translated=retrieval.translated,
+                planned=retrieval.planned,
             )
         )
     return tuple(searches)

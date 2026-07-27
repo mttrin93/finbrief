@@ -26,6 +26,7 @@ from finbrief.prompts import (
     GROUNDING_SCOPE_DETAILS,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
+    query_translation_prompt,
 )
 
 REPORT = Path(__file__).parents[1] / "docs" / "verification" / "ingest-report.md"
@@ -107,6 +108,11 @@ def test_every_scope_claim_in_a_prompt_is_derived_and_not_typed():
         ("SEARCH_FILINGS_DESCRIPTION", SEARCH_FILINGS_DESCRIPTION),
         ("SYSTEM_PROMPT", SYSTEM_PROMPT),
         ("AGENT_SYSTEM_PROMPT", AGENT_SYSTEM_PROMPT),
+        # A prompt whether or not it is a constant: the planner reads the same scope sentence
+        # and decides what to decompose against it, so a hand-typed count here misdirects
+        # retrieval itself rather than only the reader (issue #6 review). The argument is the
+        # enforced cap, not part of the scope claim.
+        ("query_translation_prompt", query_translation_prompt(3)),
     ):
         assert f"Items {items}" in prompt, f"{name} lists the Items from the enum"
         assert str(len(UNIVERSE)) in prompt, f"{name} counts the Universe from config"

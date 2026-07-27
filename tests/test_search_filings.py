@@ -253,4 +253,4 @@ def test_a_reply_whose_artifact_did_not_survive_at_all_is_still_a_reply(filings_
         [ToolMessage(content="boom", name=TOOL_NAME, tool_call_id="call-1", status="error")]
     )
 
-    assert artifact == {"chunks": [], "variants": [], "translated": False}
+    assert artifact == {"chunks": [], "variants": [], "translated": False, "planned": False}

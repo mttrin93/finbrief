@@ -734,3 +734,83 @@ def test_the_panel_names_the_ticker_form_apart_from_the_planners_sub_queries(app
     # And the panel says *why* a ticker form exists, since it is the least obvious of the three.
     captions = " ".join(c.value for c in how_i_answered(assistant).caption)
     assert "deterministically" in captions
+
+
+def a_search(**kwargs) -> Search:
+    """A search whose only interesting facts are the translation switches it ran under."""
+    return Search(
+        query="Tesla debt",
+        contexts=(a_context(1),),
+        variants=("Tesla debt", "TSLA debt"),
+        **kwargs,
+    )
+
+
+def captions_for(app, monkeypatch, search: Search) -> str:
+    """The *newest* answer's panel captions, so several searches can be asked of one app.
+
+    Indexed from the end because the transcript accumulates: a second question leaves the first
+    answer at `chat_message[1]`, and reading that one would assert against the previous case.
+    """
+    stub_answer(monkeypatch, AgentTurn(text="Tesla reports debt [1].", searches=(search,)))
+    app.run()
+    app.chat_input[0].set_value("Tesla debt").run()
+    return " ".join(c.value for c in how_i_answered(app.chat_message[-1]).caption)
+
+
+def test_the_panel_distinguishes_a_planner_that_found_nothing_from_one_that_never_ran(
+    app, monkeypatch
+):
+    # Three states, three captions, because the causes are different and only one of them is the
+    # model's. At `FINBRIEF_MAX_SUB_QUERIES=0` translation is *on* — the ticker form is still
+    # added — and no chat call is made, so "the question was already one specific thing a filing
+    # answers" describes a generation that never happened. That cell is ADR-0004 §6's own
+    # falsification channel for the planner's contribution, so the surface a reviewer reads it
+    # off is the last place to misreport it (issue #6 review).
+    ran = captions_for(app, monkeypatch, a_search(translated=True, planned=True))
+    assert "planner added nothing" in ran
+    assert "switched off" not in ran
+
+    off = captions_for(app, monkeypatch, a_search(translated=True, planned=False))
+    assert "FINBRIEF_MAX_SUB_QUERIES=0" in off
+    assert "planner added nothing" not in off
+
+    none = captions_for(app, monkeypatch, a_search(translated=False))
+    assert "translation was off" in none.lower()
+    assert "planner" not in none
+
+
+def test_the_panel_reports_the_variants_of_a_search_that_returned_no_chunks(app, monkeypatch):
+    # The empty-collection case *under the shipping default*: the queries ran, and every one of
+    # them surfaced nothing. The variants are the whole reason `retrieve()` returns a
+    # `Retrieval` rather than a bare sequence of contexts, so a search with no chunks is exactly
+    # when the panel has something no chunk could carry — and `render_sources` raises its own
+    # "re-run ingest" banner beside it.
+    stub_answer(
+        monkeypatch,
+        AgentTurn(
+            text=NO_CONTEXT_FALLBACK,
+            searches=(
+                Search(
+                    query="Tesla debt",
+                    contexts=(),
+                    variants=("Tesla debt", "TSLA debt"),
+                    translated=True,
+                    planned=True,
+                ),
+            ),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("Tesla debt").run()
+
+    assistant = app.chat_message[1]
+    panel = how_i_answered(assistant)
+    assert panel is not None, "variants ran, so there is something to explain"
+    text = " ".join(md.value for md in panel.markdown)
+    assert "`original`" in text and "`ticker form`" in text
+    # Not "every variant was barren": with no provenance recorded anywhere, `barren_variants`
+    # says nothing at all, and the empty collection gets its own banner instead.
+    assert "Surfaced no chunk" not in " ".join(c.value for c in panel.caption)
+    assert sources_panel(assistant) is None

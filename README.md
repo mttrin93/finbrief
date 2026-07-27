@@ -17,9 +17,13 @@ business overview, risk factors, current valuation, and recent news — in minut
 > Retrieval is **hybrid + query translation**, the pre-registered shipping default (ADR-0005),
 > and the sidebar now names one configuration because the configured one is what answers.
 > One symmetric pipeline: the analyst's question is always retained as a query variant,
-> translation only ever *adds* to it, every variant runs through both BM25 and vector, and the
+> translation only ever *adds* to it — a deterministic **ticker form** when a Universe company
+> is named by name (a `config` lookup, not a model) plus up to three planner sub-queries, so
+> 1 + ≤1 + ≤3 = five variants and ten candidate lists under hybrid — every variant runs through
+> both BM25 and vector, and the
 > candidate lists are fused with Reciprocal Rank Fusion (`k = 60`, the published default,
-> stated and not tuned), deduplicated by chunk id and truncated to top-k. Every answer carries
+> stated and not tuned), deduplicated by chunk id and truncated to top-k. Every answer that
+> searched the filings carries
 > a **"How I answered"** panel showing the queries that ran and, per chunk, which variant ×
 > which retriever surfaced it and what it contributed to the fused score — so *why* a chunk
 > was retrieved is checkable on the turn itself, not only in an aggregate table. Building it
@@ -199,6 +203,16 @@ because a query embedded by a different model retrieves noise with no error. It 
 check, not an evaluation**: five hand-written queries, no buckets, no ground truth, no
 baseline, so no number it prints may be cited as a retrieval-quality claim. ADR-0002's
 stratified golden set with per-bucket RAGAs (ticket T9) is the measurement artifact of record.
+
+It runs plain `vector` with translation **off** — deliberately *not* the shipping default, and
+the report names both switches so nobody reads its distances as `hybrid + translation`'s. The
+check asks one question ("is retrieval reading the collection ingest wrote, embedded by the
+model that wrote it?"), and every part of the shipped configuration would absorb the failure it
+exists to catch: BM25 matches lexically and would find the right filing even after an embedding
+model drifted, which is precisely the drift being watched for, and translation would put a paid
+*chat* call in front of it and make the queries non-verbatim. Holding it at T3's configuration
+also keeps every run comparable with the reports already committed. Strategy comparison is the
+golden set and the T10 A/B ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this script.
 
 Three committed evidence files, all generated:
 
