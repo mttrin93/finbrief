@@ -87,5 +87,37 @@ def test_an_unterminated_span_is_a_miss_not_a_candidate():
     assert _extract_by_regex(unterminated, Section.BUSINESS) == ""
 
 
+def test_the_wordiest_candidate_wins_when_neither_is_a_toc_row():
+    # The discriminator the docstring names, actually deciding something. In `FILING`
+    # above every rival is a dot-leadered TOC row that `_is_toc_line` removes first, so
+    # exactly one candidate survives per Section and `words > best_words` is never the
+    # reason for the answer — replacing it with "last match wins" left the suite green.
+    #
+    # This is the case the docstring warns about instead: a back-of-document part summary
+    # that repeats the heading with no page number, so nothing but the word count
+    # separates it from the real section. Last-match-wins returns the summary.
+    with_a_part_summary = f"""Item 1A. Risk Factors
+
+{RISKS}
+
+Item 1B. Unresolved Staff Comments
+
+None.
+
+Part IV Summary
+
+Item 1A. Risk Factors
+
+Summarised above.
+
+Item 1B. Unresolved Staff Comments
+"""
+
+    extracted = _extract_by_regex(with_a_part_summary, Section.RISK_FACTORS)
+
+    assert "intense competition" in extracted
+    assert extracted.strip() != "Item 1A. Risk Factors\n\nSummarised above."
+
+
 def test_a_missing_section_yields_nothing_rather_than_a_guess():
     assert _extract_by_regex("Item 3. Legal Proceedings\n\nNone.", Section.MDA) == ""

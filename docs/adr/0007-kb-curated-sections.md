@@ -83,20 +83,53 @@ Where structure-anchored extraction crosses a boundary, the Section is trimmed a
 first next-Item marker. This is the same species as the bounded regex fallback this ADR
 already sanctions: one rule, always a prefix of the filer's own words (never a rewrite, so
 BM25 still sees them — ADR-0004), and never silent, since every trim logs a
-`section_trimmed` event. What keeps it from being the extractor grading its own homework
-is ordering: the trimmed text still faces the same marker check in the gate, so a repair
-that misses fails exactly as it would have before. The repair proposes; the gate disposes.
-Rejected the alternative of discarding the whole Section — it would have thrown away a
-bank's entire MD&A over 3% contamination.
+`section_trimmed` event. Rejected the alternative of discarding the whole Section — it
+would have thrown away a bank's entire MD&A over 3% contamination.
+
+*What the ordering does and does not buy* (corrected — the first draft of this ADR said
+"the repair proposes; the gate disposes", which overstates it). The trimmed text still
+faces the gate's marker check, so a repair that found **no** marker to cut at fails there
+exactly as it would have before the repair existed. But the cut is at the *first* marker,
+so the survivor provably contains none: `section_stops_before_the_next_item` cannot fire
+on text this has already trimmed, and the same holds for `section_starts_at_its_heading`
+against `trim_to_section_start`. A cut in the **wrong place** — an over-eager marker
+(`"critical audit matter"` is the one an MD&A could plausibly use), or a title fallback
+anchoring on a body line — is therefore invisible to the gate. What catches it is the
+`section_trimmed` event and the hand-verification artifact below, which flags any row
+whose text moved as `CHANGED` and unticks it. That is the honest division of labour: the
+gate proves mechanical properties, and a person proves the text is the right text.
 
 **4. Incorporation by reference is a lawful filing, not a defect — and not ingested.**
 Six of the fifteen Universe companies — every bank and every healthcare name — answer Item
 7A with a sentence directing the reader to Item 7. Their wordings share no formula
 ("Refer to", "See", "are set forth in", "incorporated herein by reference", "You can
-find"). This is recognised *positively* — short, plus hand-off language, plus a target that
-is itself ingested — and never as "short sections are forgiven", so a genuine extraction
-miss that happens to be brief still fails loudly. "Item 7A. Not applicable." matches
-nothing and still fails.
+find"). This is recognised *positively*, never as "short sections are forgiven", so a
+genuine extraction miss that happens to be brief still fails loudly. "Item 7A. Not
+applicable." matches nothing and still fails.
+
+The recognition is three cuts, and each one replaced a way the previous rule could excuse
+a truncated genuine Section:
+
+1. Only Item 7A, and only under `POINTER_MAX_CHARS` (1,500 — J&J's real pointer is 502,
+   so the gate's own floor would be far too tight a test).
+2. Some **single sentence** must both hand off and name an ingested target. Co-occurrence
+   anywhere in the text was the original rule, and a "See below" three sentences away from
+   a mention of MD&A is not a hand-off. Both halves match as whole tokens: substring `see`
+   fired inside `oversee` and `foresee`, and substring `item 7` fires inside `item 7a` —
+   a pointer at a prior year's Item 7A names something the KB does not contain at all.
+3. The hand-off must be essentially the whole text. Sentences doing no handing-off may
+   total `POINTER_RESIDUE_MAX_WORDS` (15) words — measured against GS's five-word running
+   header and JNJ's and PFE's page footers, while a single sentence of real market-risk
+   prose already runs past it.
+
+**The excusal never acts alone.** It may only fire for a filer hand-verified to answer
+Item 7A by reference, recorded in `config.ITEM_7A_POINTER_FILERS` (BAC, GS, JNJ, JPM, LLY,
+PFE). Any other firing is a `pointer_filer_is_recorded` finding: either the filer changed
+its answer — verify against EDGAR, then record it there — or the detection misfired on a
+broken parse. Both want a human; neither may be a silent drop. Note the corollary, which
+is why cut 2's whole-token matching matters: for the six *recorded* filers this check
+raises nothing, so the detection's own precision is the only thing standing between a
+truncated real Item 7A and a silent drop.
 
 Such a Section passes the gate and is **not** chunked: "Refer to pages 133-142" would
 embed cleanly, retrieve for every market-risk question, and ground none of them. The
@@ -124,11 +157,10 @@ opened on a stray `Table of Contents` or company-name line — the same defect, 
 orders of magnitude smaller.
 
 So: `edgar.trim_to_section_start` drops anything before the Section's own heading, and
-`gate` asserts `section_starts_at_its_heading` on the result. The judgement a human made
-by reading is now a check, and the ordering that keeps the other repairs honest applies
-here too — the repair proposes, the gate disposes. Applied uniformly rather than to the
-banks alone: "starts at its heading" is either an invariant of the KB or it is a special
-case, and a special case is not checkable.
+`gate` asserts `section_starts_at_its_heading` on the result — which catches the Section
+with no anchor anywhere, and, per §3's correction, not a trim that anchored on the wrong
+line. Applied uniformly rather than to the banks alone: "starts at its heading" is either
+an invariant of the KB or it is a special case, and a special case is not checkable.
 
 Anchoring prefers the `Item N.` label and falls back to the Section's title only when the
 label is absent entirely. That ordering is load-bearing: `Business` is too common a word
@@ -159,8 +191,13 @@ file that no longer claims anything. Hand-written notes are carried through
 unconditionally: a tick can be redone from the filing, a finding cannot.
 
 **Verification artifact.** `docs/verification/section-starts.md`, generated by
-`scripts/ingest_filings.py --section-starts` and committed unticked. The gate proves a
-Section is present, non-empty, bounded, body-heavy and free of the next Item — none of
-which distinguishes the real Item 1A from a plausible mis-extraction that is also all
-five. Only a person reading the excerpts against EDGAR closes that gap, which is why the
-boxes ship unticked.
+`scripts/ingest_filings.py --section-starts`. The gate proves a Section is present,
+non-empty, bounded, body-heavy, starts at its own heading and is free of the next Item —
+none of which distinguishes the real Item 1A from a plausible mis-extraction that is also
+all six. Only a person reading the excerpts against EDGAR closes that gap, which is why
+the boxes are generated unticked.
+
+**Outcome.** Hand-verified at 60/60 and committed ticked. Amendment §5 above records the
+one row that failed and the rule it bought. The file in the repo predates the fixes in
+§4's cut 2 and the fallback change in §3; the next full run will re-render it, and every
+row whose text those changed will come back `CHANGED` and unticked for another look.

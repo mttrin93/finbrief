@@ -42,10 +42,18 @@ def build_filings_store(
     """
     if embeddings is None or persist_directory is None:
         settings = settings or get_settings()
+    # `is None`, matching the guard above — not `or`. With truthiness, a falsy-but-present
+    # argument (`persist_directory=""`) skips the guard, leaves `settings` unresolved, and
+    # then reports the mistake as `AttributeError: 'NoneType' has no attribute
+    # 'chroma_dir'` from inside this function.
     return Chroma(
         collection_name=FILINGS_COLLECTION,
-        embedding_function=embeddings or build_embeddings(settings),
-        persist_directory=persist_directory or settings.chroma_dir,
+        embedding_function=(
+            embeddings if embeddings is not None else build_embeddings(settings)
+        ),
+        persist_directory=(
+            persist_directory if persist_directory is not None else settings.chroma_dir
+        ),
     )
 
 

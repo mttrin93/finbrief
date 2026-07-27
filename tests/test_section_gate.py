@@ -269,6 +269,31 @@ def test_a_word_merely_containing_a_handoff_phrase_is_not_a_handoff():
     assert not is_incorporated_by_reference(Section.MARKET_RISK, text)
 
 
+def test_a_pointer_at_item_7a_itself_is_not_a_pointer_at_an_ingested_target():
+    # The same prefix trap `item_heading`'s negative lookahead exists for, one layer up:
+    # `item 7` substring-matches `item 7a`. A filer pointing at a *prior year's* Item 7A
+    # is naming something the knowledge base does not contain at all, so excusing it is a
+    # silent hole — and for the six recorded filers the gate raises nothing to catch it.
+    text = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "For a discussion of market risk, see Item 7A of our Annual Report on Form 10-K "
+        "for the year ended December 31, 2024."
+    )
+
+    assert not is_incorporated_by_reference(Section.MARKET_RISK, text)
+
+
+def test_a_pointer_at_item_7_is_still_a_pointer():
+    # The other side of the lookahead: narrowing the target match must not stop the six
+    # real wordings from being recognised.
+    for target in ("Item 7", "Item 7.", "MD&A", "Management's Discussion and Analysis"):
+        text = (
+            "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+            f"Refer to {target} for a discussion of market risk."
+        )
+        assert is_incorporated_by_reference(Section.MARKET_RISK, text), target
+
+
 def test_the_length_bounds_are_inclusive_at_both_ends():
     # The bounds state the plausible range; an off-by-one in the comparison would
     # silently narrow what a legal Section is.

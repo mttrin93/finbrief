@@ -7,6 +7,8 @@ either redoes everything or, more likely, trusts a file that now claims nothing 
 verified.
 """
 
+import re
+
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.ingestion.reporting import render_section_starts
 
@@ -120,3 +122,40 @@ def test_a_pointer_that_changes_beyond_the_excerpt_loses_its_tick():
     assert rerendered.count("**CHANGED**") == 1
     item_7a = rerendered.split("### Item 7A.")[1]
     assert "- [ ] Verified **incorporated by reference" in item_7a
+
+
+def test_a_prior_row_with_no_character_count_cannot_carry_its_tick():
+    # The committed artifact predates the count on referenced rows, and `chars in (None,
+    # len(text))` treated "we cannot tell whether it moved" as "it did not move" — so
+    # exactly the six pointer rows the count was added for kept ticks nobody re-earned.
+    # A hand-edit that breaks a status line has the same shape. Unticked is the only safe
+    # answer: a tick can be redone from the filing.
+    verified = tick_everything(render_section_starts([pointer_filing()]))
+    countless = re.sub(r"(not ingested\*\*) — [\d,]+ characters extracted", r"\1", verified)
+    assert countless != verified, "the fixture must actually remove the count"
+
+    rerendered = render_section_starts([pointer_filing()], countless)
+
+    assert rerendered.count("- [x]") == len(Section) - 1
+    item_7a = rerendered.split("### Item 7A.")[1]
+    assert "- [ ] Verified **incorporated by reference" in item_7a
+
+
+def test_a_section_that_vanished_is_flagged_and_keeps_its_verifiers_notes():
+    # The checklist is written before the findings check, so a gate-failing run renders
+    # this branch — and it is the run in which a verifier most needs their own notes on
+    # the Section that just disappeared.
+    verified = tick_everything(render_section_starts([a_filing()]))
+    note = "**Finding (hand-verification):** this one is the JPM shape, check pp.46-160."
+    verified = verified.replace("```text", f"{note}\n\n```text", 3)
+
+    filing = a_filing()
+    without_mda = {s: t for s, t in filing.sections.items() if s is not Section.MDA}
+    rerendered = render_section_starts(
+        [type(filing)(ref=filing.ref, latest_annual_form="10-K", sections=without_mda)],
+        verified,
+    )
+
+    item_7 = rerendered.split("### Item 7. Management")[1].split("### Item 7A.")[0]
+    assert "- [ ] **NOT EXTRACTED**" in item_7
+    assert note in item_7

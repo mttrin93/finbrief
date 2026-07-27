@@ -96,6 +96,15 @@ HEADING_LINE_MAX_CHARS = 120
 #: false accusation would be worse than the miss, because it trains a reader to wave the
 #: gate through. For those two, `gate.MAX_SECTION_CHARS` is the only backstop — a stated
 #: limitation (ADR-0007).
+#:
+#: Item 7 -> Item 7A is the third gap, and it is not the same as the other two: the Item 7A
+#: *heading* is unambiguous, but its content is market-risk prose that a bank's MD&A
+#: discusses at length, so there is no content marker to key on. An MD&A that swallowed
+#: Item 7A and stopped before Item 8 therefore passes this check, and the same prose would
+#: be indexed twice — once under `Item 7`, once under `Item 7A`. Note that
+#: `edgar._NEXT_ITEM` *does* bound the regex fallback's MD&A span at the Item 7A heading;
+#: these markers judge the text after extraction, where no heading survives to key on.
+#: Stated limitation, same as the other two.
 _ITEM_8_MARKERS = (
     "report of independent registered public accounting firm",
     "we have served as the",
@@ -141,7 +150,17 @@ _REFERENCE_PHRASE_PATTERNS = tuple(
 #: Where the hand-off has to point for the content to still be in the knowledge base.
 #: Item 7 is ingested, so a pointer into it loses nothing but the label; this is what
 #: makes skipping the pointer acceptable rather than a silent hole.
-_REFERENCE_TARGETS = ("item 7", "md&a", "management's discussion", "management’s discussion")
+#:
+#: Whole-token patterns, with `item_heading`'s negative lookahead, for `item_heading`'s
+#: reason: `item 7` substring-matches `item 7a`, so "see Item 7A of our Annual Report for
+#: the year ended December 31, 2024" — a pointer at a *prior year's* filing, which is not
+#: in the knowledge base at all — used to satisfy "points at an ingested target". For the
+#: six recorded pointer filers the gate has no second opinion, so that was a silent drop.
+_REFERENCE_TARGET_PATTERNS = (
+    re.compile(r"\bitem[ \t ]+7(?![A-Za-z0-9])", re.IGNORECASE),
+    re.compile(r"\bmd&a\b", re.IGNORECASE),
+    re.compile(r"management[’']s discussion", re.IGNORECASE),
+)
 
 #: Most words a pointer text may carry in sentences that do no handing-off. This is what
 #: "*nothing but* a pointer" means, measured: of the six real pointers, the largest
@@ -161,15 +180,6 @@ _ITEM_LABEL_DOT = re.compile(r"(Item[ \t\u00a0]+\d{1,2}[AB]?)\.", re.I)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
-#: The only Section a filer may answer by reference. Scoped rather than applied to all
-#: four, because `_REFERENCE_TARGETS` contains Item 7's own name: a truncated Item 7 whose
-#: surviving fragment says "Management's discussion" could otherwise excuse itself as a
-#: pointer and be dropped without a finding — a silent hole where the gate should have
-#: raised. Item 7A is the case ADR-0007's amendment actually documents, and the six
-#: Universe filers that do this all do it there.
-_MAY_BE_INCORPORATED = frozenset({"Item 7A"})
-
-
 def is_incorporated_by_reference(section: Section, text: str) -> bool:
     """Is this text *nothing but* a pointer to another Item, rather than a Section itself?
 
@@ -183,7 +193,7 @@ def is_incorporated_by_reference(section: Section, text: str) -> bool:
 
     1. Only Item 7A, and only under `POINTER_MAX_CHARS` — as before.
     2. Some single sentence must both hand off (a `_REFERENCE_PHRASES` wording) and name
-       an ingested target (`_REFERENCE_TARGETS`). Co-occurrence anywhere in the text was
+       an ingested target (`_REFERENCE_TARGET_PATTERNS`). Co-occurrence anywhere was
        the old rule, and a truncated genuine Section could satisfy it by accident — a
        "See below" three sentences away from a mention of MD&A is not a hand-off.
     3. The hand-off must be essentially the whole text: sentences carrying no hand-off
@@ -195,12 +205,18 @@ def is_incorporated_by_reference(section: Section, text: str) -> bool:
     `gate` cross-checks every firing against `config.ITEM_7A_POINTER_FILERS`, so a filer
     this function newly excuses is a finding for a human, not a silent drop.
     """
-    if section.value not in _MAY_BE_INCORPORATED or len(text) > POINTER_MAX_CHARS:
+    # Market risk only, and scoped rather than applied to all four because
+    # `_REFERENCE_TARGET_PATTERNS` contains Item 7's own name: a truncated Item 7 whose
+    # surviving fragment says "Management's discussion" could otherwise excuse itself as a
+    # pointer and be dropped without a finding — a silent hole where the gate should have
+    # raised. Item 7A is the case ADR-0007's amendment documents, and the six Universe
+    # filers that answer by reference all do it there.
+    if section is not Section.MARKET_RISK or len(text) > POINTER_MAX_CHARS:
         return False
     body = _without_own_heading(text, section)
     sentences = _SENTENCE_END.split(_ITEM_LABEL_DOT.sub(r"\1", body))
     handoff = [s for s in sentences if any(p.search(s) for p in _REFERENCE_PHRASE_PATTERNS)]
-    if not any(t in s.lower() for s in handoff for t in _REFERENCE_TARGETS):
+    if not any(p.search(s) for s in handoff for p in _REFERENCE_TARGET_PATTERNS):
         return False
     residue = sum(len(WORD.findall(s)) for s in sentences if s not in handoff)
     return residue <= POINTER_RESIDUE_MAX_WORDS

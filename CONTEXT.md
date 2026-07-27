@@ -41,6 +41,15 @@ all three healthcare names) answer Item 7A by incorporating Item 7 by reference,
 market-risk content is therefore in the KB labelled `Item 7`. Nine of fifteen companies
 have an `Item 7A` Section; all fifteen have market-risk grounding (ADR-0007 amendment).
 
+**Chunk**:
+One unit of retrieval — a slice of a single **Section**, never straddling a Section
+boundary, carrying `ticker`, `filing_type`, `section`, `fiscal_year` and `accession`. Its
+*indexed* text is a provenance header (`AAPL | FY2025 10-K | Item 1A. Risk Factors`)
+followed by the filer's verbatim body, so BM25 can match section and ticker literals on
+every chunk (ADR-0004). Its id is `accession:Item:index`, which is what makes re-ingest
+idempotent.
+_Avoid_: passage; and reserve **context** for what is handed to the LLM, not for a chunk.
+
 **Bucket**:
 A stratum of the evaluation golden set — `semantic`, `exact-identifier`, `tool-augmented`,
 or `multi-hop` — chosen so A/B results are reported per query type.

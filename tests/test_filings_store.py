@@ -6,12 +6,13 @@ idempotency, ADR-0007), not Chroma.
 """
 
 import pytest
+from langchain_chroma import Chroma
 from langchain_core.embeddings import FakeEmbeddings
 
+from finbrief.config import Settings
 from finbrief.ingestion.chunking import chunk_filing
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.retrieval.vectorstore import (
-    FILINGS_COLLECTION,
     build_filings_store,
     chunk_counts_by_ticker,
     delete_superseded,
@@ -128,7 +129,41 @@ def test_an_empty_collection_reports_no_chunk_counts(store):
     assert chunk_counts_by_ticker(store) == {}
 
 
-def test_the_collection_is_named_so_news_and_glossary_can_live_beside_it(store):
+def test_the_collection_is_named_so_news_and_glossary_can_live_beside_it(store, tmp_path):
     # PLAN.md keeps `filings`, `news` and `glossary` as separate collections; a chunk's
-    # provenance is only unambiguous if the filings KB owns its own namespace.
-    assert store._collection.name == FILINGS_COLLECTION
+    # provenance is only unambiguous if the filings KB owns its own namespace. Asserted
+    # behaviourally — a neighbour collection in the same persist directory must not see
+    # the filings chunks — rather than against `store._collection.name`, which is
+    # langchain-chroma internals a library refactor can rename with nothing broken.
+    write_chunks(store, chunk_filing(a_filing()))
+    neighbour = Chroma(
+        collection_name="news",
+        embedding_function=FakeEmbeddings(size=32),
+        persist_directory=str(tmp_path / "chroma"),  # the same directory the fixture uses
+    )
+
+    assert count(store)
+    assert len(neighbour.get(include=[])["ids"]) == 0
+
+
+def test_build_filings_store_falls_back_to_settings_for_both_arguments(monkeypatch, tmp_path):
+    # Production passes neither argument, so this is the only path a real ingest takes —
+    # and every other test here overrides both. A renamed `chroma_dir` or an embeddings
+    # constructor that stopped being consulted would ship green.
+    import finbrief.retrieval.vectorstore as vectorstore
+
+    built = []
+    monkeypatch.setattr(
+        vectorstore,
+        "build_embeddings",
+        lambda settings: built.append(settings) or FakeEmbeddings(size=32),
+    )
+    settings = Settings.from_env(
+        {"OPENROUTER_API_KEY": "key", "FINBRIEF_CHROMA_DIR": str(tmp_path / "from-settings")}
+    )
+
+    store = build_filings_store(settings)
+
+    assert built == [settings], "the one shared embedding model, not a second constructor"
+    write_chunks(store, chunk_filing(a_filing()))
+    assert (tmp_path / "from-settings").exists()

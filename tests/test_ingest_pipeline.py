@@ -122,3 +122,30 @@ def test_eviction_happens_even_when_the_current_filing_is_skipped(store):
 
     assert report.skipped == ("AAPL",)
     assert ingested_accessions(store) == {"0000320193-25-000079"}
+
+
+def test_a_failed_write_leaves_the_previous_year_rather_than_nothing(store, monkeypatch):
+    """Eviction runs after the write, so a paid-API failure cannot empty a company.
+
+    `write_chunks` is where the embedding call happens. With the eviction first, an error
+    on company 8 of 15 left that ticker holding neither its old accession's chunks nor its
+    new ones — a company silently absent from the KB, which is the failure ADR-0007's gate
+    exists to prevent in the first place. Deleting last means the worst interleaved state
+    is a stale year still present, which the next run repairs.
+    """
+    write_chunks(store, chunk_filing(a_filing(accession="0-24-last-year")))
+    before = count(store)
+    assert before
+
+    import finbrief.ingestion.pipeline as pipeline_module
+
+    def refuses_to_embed(*args, **kwargs):
+        raise RuntimeError("embedding API is down")
+
+    monkeypatch.setattr(pipeline_module, "write_chunks", refuses_to_embed)
+
+    with pytest.raises(RuntimeError, match="embedding API"):
+        ingest([a_filing(accession="0-25-this-year")], store=store)
+
+    assert count(store) == before, "last year's chunks are still answerable"
+    assert ingested_accessions(store) == {"0-24-last-year"}

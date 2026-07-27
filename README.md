@@ -18,7 +18,9 @@ business overview, risk factors, current valuation, and recent news — in minut
 - **Python** · **Streamlit** UI · **LangChain / LangGraph** (`create_agent`)
 - **OpenRouter** for LLM access (OpenAI-compatible SDK)
 - **ChromaDB** vector store · hybrid retrieval (BM25 + vectors)
-- Data: SEC EDGAR filings, yfinance, news RSS, ECB/Fed publications
+- Data: SEC EDGAR filings via **edgartools** (structure-anchored section extraction, so
+  there is no hand-rolled primary parser — ADR-0007), yfinance, news RSS, ECB/Fed
+  publications
 
 ## Configuration
 
@@ -60,16 +62,29 @@ Tests are hermetic — no API key, no `.env`, and no network calls — so they r
 
 ### Building the knowledge base
 
+Run these **from the repo root** — the report paths below are relative to the working
+directory.
+
 ```bash
 uv run python scripts/ingest_filings.py                  # the whole Universe → data/chroma
-uv run python scripts/ingest_filings.py --tickers AAPL   # one company
+uv run python scripts/ingest_filings.py --tickers AAPL   # one or more companies
 uv run python scripts/ingest_filings.py --dry-run        # fetch + gate only; no writes,
                                                          # no embedding API, no key needed
 ```
 
 Requires `SEC_EDGAR_USER_AGENT`; writing (non-dry) runs also need `OPENROUTER_API_KEY`
-for embeddings. Re-runs skip filings already ingested (idempotent by accession number)
-and evict a company's superseded fiscal years; `--force` re-embeds after a chunker
-change. Every run rewrites `docs/verification/ingest-report.md` (the machine evidence of
-what the collection holds), and `--section-starts PATH` writes the hand-verification
-checklist ADR-0007 requires, carrying forward ticks for unchanged Sections.
+for embeddings. A ticker outside `config.UNIVERSE` is rejected before anything is fetched
+(exit 2); a gate failure writes no chunks and exits 1. Re-runs skip filings already
+ingested (idempotent by accession number) and evict a company's superseded fiscal years;
+`--force` re-embeds after a chunker change.
+
+Two committed evidence files, both generated:
+
+- `docs/verification/ingest-report.md` — the gate table plus what the collection holds.
+  Rewritten by a **full-Universe** run, pass or fail. A `--tickers` or `--dry-run` run
+  prints its table to the terminal and leaves the file alone, because neither can speak
+  to "all fifteen ingest" and overwriting it would destroy that evidence.
+- `docs/verification/section-starts.md` — ADR-0007's hand-verification checklist, written
+  by `--section-starts PATH`. A re-render carries a tick forward only for a Section whose
+  text is byte-identical to the one that was verified, flags the rest `CHANGED`, and
+  preserves hand-written notes unconditionally.

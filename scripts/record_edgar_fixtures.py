@@ -13,7 +13,13 @@ import gzip
 import json
 from pathlib import Path
 
-from finbrief.ingestion.edgar import configure_edgar, fetch_filing
+from finbrief.ingestion.edgar import (
+    _clean,
+    _from_edgartools,
+    configure_edgar,
+    fetch_filing,
+    latest_10k,
+)
 from finbrief.ingestion.model import Section
 
 # Reads SEC_EDGAR_USER_AGENT from the environment and fails loudly without it, rather than
@@ -47,9 +53,18 @@ path.write_bytes(gzip.compress(json.dumps(as_dict(aapl), indent=1).encode()))
 print(f"{path}  {path.stat().st_size:,} bytes")
 
 # 2. GM's Item 7A — a real Item 7/8 boundary miss, small enough to keep verbatim.
-gm = fetch_filing("GM")
+#
+# Deliberately *not* `fetch_filing("GM")`: `_extract_sections` runs `trim_at_next_item`,
+# and the spill is exactly what that trim removes. Recording the repaired text would give
+# this fixture a clean Section under the name `gm_item_7a_spill`, breaking the two tests
+# that exist to prove the gate catches the miss and the trim fixes it — with a failure
+# whose obvious "fix" is to weaken the assertions. So this reads the same document
+# `fetch_filing` would (`latest_10k`, one definition) and stops before the repairs.
+from edgar import Company  # noqa: E402 - after `configure_edgar`, which sets the identity
+
+gm_10k = latest_10k(Company("GM"))
 sample = {
-    "gm_item_7a_spill": gm.sections[Section.MARKET_RISK],
+    "gm_item_7a_spill": _clean(_from_edgartools(gm_10k.obj(), Section.MARKET_RISK)),
 }
 # 3. The six real incorporation-by-reference pointers.
 for ticker in ["JPM", "BAC", "GS", "JNJ", "LLY", "PFE"]:

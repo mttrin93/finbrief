@@ -19,7 +19,6 @@ from collections.abc import Mapping
 
 from finbrief.config import (
     ConfigError,
-    Settings,
     load_env,
     resolve_sec_edgar_user_agent,
 )
@@ -57,23 +56,23 @@ _NEXT_ITEM: Mapping[Section, str] = {
 _TOC_TAIL = re.compile(r"(\.{2,}|\s)\s*\d{1,4}(\s*[-–]\s*\d{1,4})?\s*$")
 
 
-def configure_edgar(settings: Settings | None = None) -> None:
+def configure_edgar() -> None:
     """Give edgartools the SEC-required contact identity, failing loudly without one.
 
     The SEC rejects unidentified traffic, and `edgartools` would otherwise raise deep in a
     request with a stack trace that says nothing about `.env`. Ingestion is a script a
     human runs, so it can afford to say what is wrong in one line.
 
-    Called bare, it reads `SEC_EDGAR_USER_AGENT` without building the full `Settings`,
-    which hard-requires `OPENROUTER_API_KEY`. A `--dry-run` fetches and gates but embeds
-    nothing, so demanding the paid key would fail on exactly the machine a dry run is
-    for — the same reasoning that keeps `config.resolve_log_level` Settings-independent.
+    Reads `SEC_EDGAR_USER_AGENT` without building the full `Settings`, which hard-requires
+    `OPENROUTER_API_KEY`. A `--dry-run` fetches and gates but embeds nothing, so demanding
+    the paid key would fail on exactly the machine a dry run is for — the same reasoning
+    that keeps `config.resolve_log_level` Settings-independent. There is deliberately no
+    `settings` override: a second way in is a second answer to "which identity", and both
+    callers (`scripts/ingest_filings.py`, `scripts/record_edgar_fixtures.py`) want the
+    Settings-free one.
     """
-    if settings is not None:
-        user_agent = settings.sec_edgar_user_agent
-    else:
-        load_env()
-        user_agent = resolve_sec_edgar_user_agent(os.environ)
+    load_env()
+    user_agent = resolve_sec_edgar_user_agent(os.environ)
     if not user_agent:
         raise ConfigError(
             "SEC_EDGAR_USER_AGENT is not set, and the SEC requires a contact identity "
@@ -117,8 +116,7 @@ def fetch_filing(ticker: str) -> ExtractedFiling:
     # right even when the most recent annual filing is an amendment to an older fiscal
     # year — that company is still a 10-K filer, and `filing` below is still its real
     # latest annual report.
-    tenk_filings = [f for f in company.get_filings(form="10-K") if str(f.form) == "10-K"]
-    filing = max(tenk_filings, key=lambda f: f.filing_date, default=None)
+    filing = latest_10k(company)
     if filing is None:
         # A foreign private issuer has no 10-K to return, and raising here would be the
         # wrong shape of loud: the issue-#3 comment asks the *gate* to catch this, and a
@@ -153,7 +151,7 @@ def fetch_filing(ticker: str) -> ExtractedFiling:
         filing_date=str(filing.filing_date),
         url=str(filing.homepage_url),
     )
-    sections = _extract_sections(filing)
+    sections = _extract_sections(filing, ticker)
 
     log_event(
         logger,
@@ -165,6 +163,20 @@ def fetch_filing(ticker: str) -> ExtractedFiling:
         section_chars={s.value: len(t) for s, t in sections.items()},
     )
     return ExtractedFiling(ref=ref, latest_annual_form=str(annual.form), sections=sections)
+
+
+def latest_10k(company):
+    """The company's most recent filing whose form is *exactly* `10-K`, or `None`.
+
+    Public because `scripts/record_edgar_fixtures.py` needs the same document
+    `fetch_filing` works on in order to record a Section *before* the repairs run — and
+    two answers to "which filing is this company's latest 10-K?" is how a fixture stops
+    describing the filing the code actually reads.
+
+    The exact-form comparison is the load-bearing part; see `fetch_filing`'s trap 2.
+    """
+    exact = [f for f in company.get_filings(form="10-K") if str(f.form) == "10-K"]
+    return max(exact, key=lambda f: f.filing_date, default=None)
 
 
 def _fiscal_year(filing) -> int:
@@ -179,8 +191,13 @@ def _fiscal_year(filing) -> int:
     return int(str(period)[:4])
 
 
-def _extract_sections(filing) -> dict[Section, str]:
-    """The four curated Sections, structure-anchored first and regex-bounded second."""
+def _extract_sections(filing, ticker: str) -> dict[Section, str]:
+    """The four curated Sections, structure-anchored first and regex-bounded second.
+
+    `ticker` is passed in rather than read off the filing: `edgartools` exposes
+    `Filing.company` as the company *name* ("Apple Inc."), and a `ticker` field whose value
+    is sometimes a name cannot be joined to the rest of the run's JSON lines.
+    """
     report = filing.obj()
     full_text: str | None = None
     sections: dict[Section, str] = {}
@@ -196,7 +213,7 @@ def _extract_sections(filing) -> dict[Section, str]:
                     logger,
                     "section_regex_fallback",
                     level=logging.WARNING,
-                    ticker=str(filing.company),
+                    ticker=ticker,
                     accession=str(filing.accession_no),
                     section=section.value,
                     chars=len(text),
@@ -214,7 +231,7 @@ def _extract_sections(filing) -> dict[Section, str]:
                         logger,
                         "section_trimmed",
                         level=logging.WARNING,
-                        ticker=str(filing.company),
+                        ticker=ticker,
                         accession=str(filing.accession_no),
                         section=section.value,
                         chars_before=len(text),
@@ -239,10 +256,17 @@ def trim_to_section_start(text: str, section: Section) -> str:
     Ten other Sections began a line or two early, on a "Table of Contents" or company-name
     running header. Same defect, three orders of magnitude smaller, and the same fix.
 
-    A prefix cut, like every repair here: the filer's own words, never rewritten. And like
-    every repair here it is re-judged afterwards — `gate` asserts
-    `section_starts_at_its_heading` on the result, so a trim that lands nowhere useful
-    fails rather than passing quietly (ADR-0007 amendment, issue #3).
+    A prefix cut, like every repair here: the filer's own words, never rewritten.
+
+    What the gate catches afterwards, precisely: this cuts *to* `section_start`, which is
+    the same offset `section_starts_at_its_heading` measures, so the check can only fail
+    when there was no anchor to cut to at all — a total miss, which then fails loudly
+    instead of passing as an untrimmed Section. It cannot catch a trim that anchored on
+    the *wrong* heading; distinguishing the real heading from a plausible one is the
+    judgement no automated check makes, which is why ADR-0007 requires the
+    hand-verification artifact. A re-render flags any row whose text moved as `CHANGED`
+    and unticks it, so a trim that changes what a human verified costs that human one row
+    (ADR-0007 amendment, issue #3).
     """
     start = section_start(text, section)
     return text[start:] if start > 0 else text
@@ -261,10 +285,16 @@ def trim_at_next_item(text: str, section: Section) -> str:
     both have an intact prefix, so discarding the whole Section would throw away a bank's
     entire MD&A over 3% contamination.
 
-    What keeps this from being the extractor grading its own homework: the result still
-    faces `gate.check_filing`, which applies the same marker check. If a trim misses, the
-    Section fails exactly as it did before this function existed. The repair proposes; the
-    gate disposes.
+    What keeps this from being the extractor grading its own homework, stated honestly:
+    the result still faces `gate.check_filing`'s marker check, and if this function found
+    no marker to cut at, the Section fails there exactly as it did before this function
+    existed. What that ordering does *not* buy is detection of a cut in the wrong place —
+    the cut is at the first marker, so the survivor provably contains none, and
+    `section_stops_before_the_next_item` cannot fire on a text this has already trimmed.
+    An over-eager marker (`"critical audit matter"` is the one an MD&A could plausibly
+    use) therefore truncates silently as far as the gate is concerned. The trim logs, and
+    the hand-verification artifact flags the row `CHANGED` on re-render; those, not the
+    gate, are what catch it.
 
     Always a prefix of the input — never a rewrite, so BM25 still indexes the filer's own
     words (ADR-0004).

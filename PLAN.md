@@ -194,8 +194,9 @@ finbrief/
 │   ├── test_agent.py               # answer() + the OpenRouter binding (Phase 0)
 │   ├── test_embeddings.py          # the one shared embedding model (Phase 0)
 │   ├── test_chunk_token_limit.py   # CHUNK_SIZE_CHARS vs. the embedding window (Phase 0)
-│   ├── test_section_gate.py + 8 more   # seam 6: gate rules, recorded filings, chunker,
-│   │                      # store, pipeline, reports, EDGAR selection, CLI (Phase 1)
+│   ├── test_section_gate.py + 9 more   # seam 6: gate rules, recorded filings, chunker,
+│   │                      # store, pipeline, reports, EDGAR selection, regex fallback,
+│   │                      # verification artifact, CLI (Phase 1)
 │   ├── test_app_smoke.py  # AppTest — page renders, a message reaches the agent seam
 │   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
 │                          # reruns, distinctness across sessions,

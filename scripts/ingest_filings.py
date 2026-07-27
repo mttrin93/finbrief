@@ -28,8 +28,9 @@ from finbrief.ingestion.reporting import (
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.retrieval.vectorstore import build_filings_store, chunk_counts_by_ticker
 
-#: The committed machine evidence of the most recent run — gate table plus what the
-#: collection holds — rewritten on every run, whatever the outcome (issue #3 review).
+#: The committed machine evidence of the most recent *full* run — gate table plus what the
+#: collection holds (issue #3 review). Relative to the working directory, so run this
+#: script from the repo root.
 INGEST_REPORT = Path("docs/verification/ingest-report.md")
 
 
@@ -82,8 +83,12 @@ def _write_section_starts(path: Path, filings) -> None:
 def _write_ingest_report(filings, findings, *, generated, store_counts, **run) -> None:
     """Rewrite the committed machine evidence of this run, whatever its outcome.
 
-    Every run overwrites it — the file is a record of the most recent run, not a log —
-    so the version in git is whatever the last committed run proved.
+    A full run overwrites it — the file is a record of the most recent one, not a log —
+    so the version in git is whatever the last committed run proved. `main` calls this
+    only for a full-Universe, non-dry run: the file's claim is "all fifteen ingest", and
+    a `--tickers AAPL` run would replace the fifteen-row gate table with one row while a
+    `--dry-run` would delete the chunk table outright. Losing the evidence to the two
+    commands most likely to be run casually is not a trade worth making.
     """
     INGEST_REPORT.parent.mkdir(parents=True, exist_ok=True)
     INGEST_REPORT.write_text(
@@ -125,9 +130,15 @@ def main(argv: list[str] | None = None) -> int:
     generated = (
         f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')} · `scripts/ingest_filings.py`"
     )
+    # A partial or dry run has nothing to say about "all fifteen ingest", so it must not
+    # be what the committed file says. It still prints its table above.
+    full_run = args.tickers is None and not args.dry_run
+    if not full_run:
+        print(f"\n(Partial or dry run — {INGEST_REPORT} left as the last full run wrote it.)")
 
     if findings:
-        _write_ingest_report(filings, findings, generated=generated, store_counts=None)
+        if full_run:
+            _write_ingest_report(filings, findings, generated=generated, store_counts=None)
         print(
             f"\nGATE FAILED — {len(findings)} finding(s). Nothing was written (ADR-0007).",
             file=sys.stderr,
@@ -135,21 +146,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.dry_run:
-        _write_ingest_report(filings, findings, generated=generated, store_counts=None)
         print("\nGATE PASSED. --dry-run: nothing written.")
         return 0
 
     settings = get_settings()
     store = build_filings_store(settings)
     report = ingest(filings, store=store, force=args.force)
-    _write_ingest_report(
-        filings,
-        findings,
-        generated=generated,
-        store_counts=chunk_counts_by_ticker(store),
-        written=report.chunks_written,
-        skipped=report.skipped,
-    )
+    if full_run:
+        _write_ingest_report(
+            filings,
+            findings,
+            generated=generated,
+            store_counts=chunk_counts_by_ticker(store),
+            written=report.chunks_written,
+            skipped=report.skipped,
+        )
 
     print(f"\nGATE PASSED. Wrote {report.total_chunks} chunks to '{settings.chroma_dir}'.")
     for ticker, count in report.chunks_written.items():

@@ -2,14 +2,14 @@
 
 Three audiences. `render_gate_table` is read once, on a terminal, by whoever ran
 ingestion. `render_ingest_report` is the committed machine evidence of the most recent
-run — the same table plus what the collection holds, rewritten every run.
-`render_section_starts` is ADR-0007's committed one-time hand-verification artifact: it
-prints the first lines of every extracted Section so a person can confirm the extractor
-landed on the real section rather than a table-of-contents row.
+*full* run — the same table plus what the collection holds. `render_section_starts` is
+ADR-0007's committed hand-verification artifact: it prints the first lines of every
+extracted Section so a person can confirm the extractor landed on the real section rather
+than a table-of-contents row.
 
 The gate cannot make that judgement — it can only prove the text is long, wordy, and
-bounded, all of which a plausible mis-extraction also is. The checklist ships unticked on
-purpose.
+bounded, all of which a plausible mis-extraction also is. The checklist is generated
+unticked on purpose.
 """
 
 from __future__ import annotations
@@ -53,7 +53,11 @@ def render_gate_table(
             text = filing.sections.get(section)
             marker = " FAIL" if (ticker, section) in failed else ""
             if section in referenced:
-                cell = "->Item 7"
+                # The marker belongs here too. The one finding that can attach to a
+                # referenced Section is `pointer_filer_is_recorded` — the excusal firing
+                # for a filer nobody verified — and a bare `->Item 7` cell reads as
+                # "lawful, handled", which is the opposite of what the gate just said.
+                cell = f"->Item 7{marker}"
             elif text:
                 cell = f"{len(text):,}{marker}"
             else:
@@ -67,7 +71,12 @@ def render_gate_table(
             f"{ticker:<7}{'FY' + str(filing.ref.fiscal_year):<9}" + "".join(cells) + annual
         )
 
-    referenced_total = sum(len(incorporated_sections(f)) for f in filings)
+    # Only the ones the gate actually called lawful. A referenced Section that produced a
+    # finding is an unverified excusal, and counting it here would print "lawful, not
+    # ingested" directly above the finding saying it is nothing of the kind.
+    referenced_total = sum(
+        1 for f in filings for s in incorporated_sections(f) if (f.ref.ticker, s) not in failed
+    )
     lines.append("")
     if referenced_total:
         lines.append(
@@ -96,8 +105,9 @@ def render_ingest_report(
 
     The committed counterpart to `render_gate_table`'s terminal print (issue #3 review):
     "all Universe companies ingest" should be checkable from the repo, so
-    `scripts/ingest_filings.py` rewrites `docs/verification/ingest-report.md` with this
-    on every run. `store_counts` is read back from the collection after the run rather
+    `scripts/ingest_filings.py` rewrites `docs/verification/ingest-report.md` with this on
+    every full-Universe run — and only those, since a `--tickers` subset or a `--dry-run`
+    cannot speak to that claim. `store_counts` is read back from the collection rather
     than taken from the run's own writes — an idempotent re-run writes nothing and still
     has to prove what the knowledge base holds. `None` means no store was consulted: a
     dry run, or a failed gate that wrote nothing.
@@ -116,7 +126,9 @@ def render_ingest_report(
         "# Ingest report",
         "",
         "Machine evidence of the most recent ingestion run — rewritten by every",
-        "`scripts/ingest_filings.py` run (issue #3). Chunk counts are read back from the",
+        "full-Universe `scripts/ingest_filings.py` run, and by those only, since a",
+        "`--tickers` subset or a `--dry-run` cannot speak to what the collection holds.",
+        "Chunk counts are read back from the",
         "persisted collection after the run, not taken from the run's own writes, so an",
         "idempotent re-run that writes nothing still shows what the knowledge base holds.",
         "",
@@ -274,7 +286,11 @@ def render_section_starts(
                 continue
 
             excerpt = _excerpt(text)
-            unchanged = bool(was and was.excerpt == excerpt and was.chars in (None, len(text)))
+            # An exact character count, not `chars in (None, len(text))`. A prior row with
+            # no recorded count is a row this renderer did not write — an older format, or
+            # a hand-edit that broke the status line — and "we cannot tell whether it
+            # moved" must resolve to *unticked*, not to a tick nobody re-earned.
+            unchanged = bool(was and was.excerpt == excerpt and was.chars == len(text))
             box = "x" if (unchanged and was and was.ticked) else " "
             changed = " **CHANGED**" if was and not unchanged else ""
             was_chars = (

@@ -61,15 +61,6 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
     skipped: list[str] = []
 
     for filing in filings:
-        evicted = delete_superseded(store, filing.ref.ticker, filing.ref.accession)
-        if evicted:
-            log_event(
-                logger,
-                "superseded_filing_removed",
-                ticker=filing.ref.ticker,
-                kept_accession=filing.ref.accession,
-                chunks_removed=evicted,
-            )
         if filing.ref.accession in already:
             skipped.append(filing.ref.ticker)
             log_event(
@@ -79,20 +70,36 @@ def ingest(filings: Iterable[ExtractedFiling], *, store, force: bool = False) ->
                 accession=filing.ref.accession,
                 reason="already_ingested",
             )
-            continue
-        if force:
-            # Ids embed a chunk index, so re-embedding with a changed chunker would
-            # upsert over the low indices and orphan the high ones. Clear first.
-            delete_accession(store, filing.ref.accession)
-        count = write_chunks(store, chunk_filing(filing))
-        written[filing.ref.ticker] = count
-        log_event(
-            logger,
-            "filing_ingested",
-            ticker=filing.ref.ticker,
-            accession=filing.ref.accession,
-            fiscal_year=filing.ref.fiscal_year,
-            chunks=count,
-        )
+        else:
+            if force:
+                # Ids embed a chunk index, so re-embedding with a changed chunker would
+                # upsert over the low indices and orphan the high ones. Clear first.
+                delete_accession(store, filing.ref.accession)
+            count = write_chunks(store, chunk_filing(filing))
+            written[filing.ref.ticker] = count
+            log_event(
+                logger,
+                "filing_ingested",
+                ticker=filing.ref.ticker,
+                accession=filing.ref.accession,
+                fiscal_year=filing.ref.fiscal_year,
+                chunks=count,
+            )
+
+        # Eviction *after* the write, and the order is load-bearing: `write_chunks` is
+        # where the paid embedding call happens, so an API error on company 8 of 15 with
+        # the eviction first would leave that ticker holding neither its old accession's
+        # chunks nor its new ones — a company silently absent from the KB. Deleting last
+        # means the worst interleaved state is two fiscal years present, which the next
+        # run repairs.
+        evicted = delete_superseded(store, filing.ref.ticker, filing.ref.accession)
+        if evicted:
+            log_event(
+                logger,
+                "superseded_filing_removed",
+                ticker=filing.ref.ticker,
+                kept_accession=filing.ref.accession,
+                chunks_removed=evicted,
+            )
 
     return IngestReport(chunks_written=written, skipped=tuple(skipped))

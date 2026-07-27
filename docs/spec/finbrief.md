@@ -96,8 +96,11 @@ generation level (refusals → graceful UX).
 
 **Knowledge base (ADR-0007).** KB = curated Sections only (Items 1, 1A, 7, 7A) of the latest
 10-K per Universe company, extracted structure-anchored via `edgartools` (bounded regex
-fallback), section-aware chunked with metadata (ticker, section, fiscal year), stored in a
-Chroma `filings` collection. A separate `news` collection holds ingested headlines; a small
+fallback), section-aware chunked with metadata (`ticker`, `filing_type`, `section`,
+`fiscal_year`, `accession` — the accession being both the idempotency key and the filter a
+superseded fiscal year is evicted by), stored in a Chroma `filings` collection. A chunk's
+*indexed* text opens with a provenance header (`AAPL | FY2025 10-K | Item 1A. Risk
+Factors`) so BM25 matches section and ticker literals on every chunk (ADR-0004). A separate `news` collection holds ingested headlines; a small
 `glossary` collection holds financial terms. A **dedicated injection-test collection** is
 isolated from the demo KB. Idempotent by accession id. Phase-1 gate: per company×section
 assert found / non-empty / length-bounded / body≫heading / starts at its own heading /

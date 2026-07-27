@@ -67,6 +67,28 @@ def test_a_referenced_section_renders_as_a_pointer_cell_not_a_count():
     assert "incorporated by reference" in table
 
 
+def test_an_unverified_pointer_cell_carries_the_fail_marker():
+    # The one finding that can attach to a referenced Section is
+    # `pointer_filer_is_recorded` — the excusal firing for a filer nobody hand-verified.
+    # A bare `->Item 7` cell above a summary line calling it "lawful, not ingested" is
+    # the table contradicting the gate that produced it.
+    sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
+    sections[Section.MARKET_RISK] = (
+        "Item 7A. Quantitative and Qualitative Disclosures About Market Risk\n\n"
+        "Refer to the Market Risk Management section of Management's discussion and "
+        "analysis on pages 133-142."
+    )
+    # AAPL is not in `config.ITEM_7A_POINTER_FILERS`, so the excusal is unverified.
+    filing = a_filing("AAPL", sections=sections)
+    findings = check_filing(filing)
+    assert [f.check for f in findings] == ["pointer_filer_is_recorded"]
+
+    table = render_gate_table([filing], findings)
+
+    assert "->Item 7 FAIL" in table
+    assert "lawful, not ingested" not in table, "an unverified excusal is not lawful"
+
+
 def test_a_non_10k_filer_is_flagged_on_its_row():
     filing = a_filing("SAP", form="20-F", sections={})
 

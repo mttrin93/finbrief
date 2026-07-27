@@ -12,6 +12,7 @@ from finbrief.config import (
     _TWENTY_F_FILERS,
     CLUSTERS,
     COMPANIES,
+    ITEM_7A_POINTER_FILERS,
     PEERS,
     TICKERS,
     UNIVERSE,
@@ -85,6 +86,15 @@ def test_the_universe_trips_no_known_20f_filer():
     )
 
 
+def test_every_recorded_pointer_filer_is_in_the_universe():
+    # `ITEM_7A_POINTER_FILERS` is a tripwire, and a typo'd ticker in it is a tripwire that
+    # never trips: it silently stops covering the real filer, whose next pointer then
+    # becomes a `pointer_filer_is_recorded` finding on a live run. The neighbouring
+    # `_TWENTY_F_FILERS` list has this check; this one is the same shape.
+    strays = ITEM_7A_POINTER_FILERS - TICKERS
+    assert not strays, f"{sorted(strays)} are not Universe tickers (ADR-0007 amendment)"
+
+
 # --- Settings -------------------------------------------------------------------------
 
 
@@ -104,6 +114,7 @@ def test_blank_api_key_is_treated_as_missing():
 def test_defaults_match_the_pre_registered_shipping_strategy():
     # ADR-0005: hybrid + translation, fixed before any A/B data exists.
     settings = Settings.from_env(MINIMAL_ENV)
+    assert settings.chroma_dir == "data/chroma"  # ingest and app agree without config
     assert settings.retrieval_strategy is RetrievalStrategy.HYBRID
     assert settings.query_translation_enabled is True
     assert settings.max_sub_queries == 3  # ADR-0004 latency cap

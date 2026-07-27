@@ -101,9 +101,15 @@ def test_real_filing_prose_uses_only_a_small_part_of_the_worst_case_bound(record
     """
     counts = token_counts(recorded_filing)
     worst_case = CHUNK_SIZE_CHARS * MAX_TOKENS_PER_CHAR
+    # The bound the docstring actually claims: near one token per four characters, so
+    # roughly a quarter of `MAX_TOKENS_PER_CHAR`, with headroom for the provenance header
+    # and a filer whose prose runs denser than Apple's. `worst_case // 4` was the earlier
+    # ceiling and it is one token *per character* — it would still pass after a 3.5x
+    # regression in density, which is to say after the margin it guards is gone.
+    claimed = (CHUNK_SIZE_CHARS * 2) // MAX_TOKENS_PER_CHAR
 
-    assert max(counts) < worst_case // 4, (
-        f"real prose is using {max(counts)} of the {worst_case}-token worst case — the "
-        f"margin that makes CHUNK_SIZE_CHARS tunable has narrowed; re-measure before "
-        f"raising it."
+    assert max(counts) < claimed, (
+        f"real prose is using {max(counts)} tokens per chunk against the {claimed} this "
+        f"test claims (and a {worst_case}-token worst case) — the margin that makes "
+        f"CHUNK_SIZE_CHARS tunable has narrowed; re-measure before raising it."
     )

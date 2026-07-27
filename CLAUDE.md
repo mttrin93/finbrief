@@ -2,7 +2,12 @@
 
 Domain-specialised RAG assistant for equity research. The plan lives in `PLAN.md`; the
 Tier-1 spec (user stories and the six testing seams) in `docs/spec/finbrief.md`; domain
-glossary in `CONTEXT.md`; design decisions in `docs/adr/`.
+glossary in `CONTEXT.md`; design decisions in `docs/adr/`. Run evidence lives in
+`docs/verification/`: both files there are **generated**, never hand-authored.
+`ingest-report.md` is rewritten by every full-Universe `scripts/ingest_filings.py` run,
+and `section-starts.md` is ADR-0007's hand-verification checklist — `ingestion/reporting.py`
+re-parses it to carry ticks and hand-written notes forward, so the only hand-edits it
+tolerates are ticking a box and adding a note.
 
 ## Commands
 
@@ -14,6 +19,17 @@ uv run streamlit run app/Home.py
 ```
 
 CI runs exactly the lint and test commands above (`.github/workflows/ci.yml`).
+
+Building the knowledge base is a separate, non-hermetic entry point — the one command that
+reaches the network and spends money. Run it from the repo root; its report paths are
+relative to the working directory.
+
+```bash
+uv run python scripts/ingest_filings.py             # full Universe: EDGAR + paid embeddings
+uv run python scripts/ingest_filings.py --dry-run   # fetch + gate only; no key, no writes
+```
+
+Never invoke either script from a test.
 
 ## Conventions
 
@@ -29,10 +45,12 @@ are recorded, never fetched — refresh them by hand with `scripts/record_edgar_
 
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
-- `config.py` owns every knob, plus `CHUNK_SIZE_CHARS` — never copy the value. The gate
-  thresholds are the deliberate exception: they are assertions, not knobs, and live in
-  `ingestion/gate.py` (same for `CHUNK_OVERLAP_CHARS` in the chunker) — do not move them
-  into `config.py` or make them env-overridable.
+- `config.py` owns every knob, plus `CHUNK_SIZE_CHARS` — never copy the value. The
+  ingestion thresholds are the deliberate exception: they are assertions, not knobs, and
+  live next to the rule they belong to — `ingestion/gate.py`, `ingestion/model.py`
+  (`HEADING_LINE_MAX_CHARS`, `POINTER_MAX_CHARS`, `POINTER_RESIDUE_MAX_WORDS`) and
+  `CHUNK_OVERLAP_CHARS` in the chunker. Do not move them into `config.py` or make them
+  env-overridable; each is calibrated against measured filings and documented where it sits.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
 - `llm.py` is the only chat-model constructor; `retrieval/embeddings.py` the only

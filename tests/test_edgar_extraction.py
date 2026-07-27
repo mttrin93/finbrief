@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from finbrief.config import ConfigError, Settings
+from finbrief.config import ConfigError
 from finbrief.ingestion.edgar import (
     _clean,
     configure_edgar,
@@ -149,6 +149,82 @@ def test_the_regex_fallback_fills_a_section_edgartools_missed(monkeypatch):
     assert "Financial Statements" not in market_risk, "bounded at the next Item"
 
 
+def test_a_section_neither_source_yields_is_simply_absent(monkeypatch):
+    # The input `section_found` is designed for. `report[...]` has nothing and the
+    # document has no Item 7 heading to fall back on, so the Section must be *missing*
+    # from the mapping rather than present and empty — the gate names it either way, but
+    # only one of those is a shape the rest of ingestion can reason about.
+    missing_mda = {k: v for k, v in SECTIONS.items() if k != Section.MDA.value}
+    install_fake_edgar(
+        monkeypatch,
+        [
+            FakeFiling(
+                "10-K",
+                "2025-10-31",
+                sections=missing_mda,
+                text="Item 3. Legal Proceedings\n\nNone.",
+            )
+        ],
+    )
+
+    filing = fetch_filing("AAPL")
+
+    assert Section.MDA not in filing.sections
+    assert "section_found" in {f.check for f in check_filing(filing)}
+
+
+def test_a_filing_with_no_period_of_report_says_which_one(monkeypatch):
+    # `_fiscal_year` is the one place a missing EDGAR field aborts the fetch. The message
+    # has to name the document, because the alternative is a bare `int(None)` traceback
+    # in the middle of a fifteen-company run.
+    undated = FakeFiling("10-K", "2025-10-31", accession="0000000000-25-000123")
+    undated.period_of_report = None
+    install_fake_edgar(monkeypatch, [undated])
+
+    with pytest.raises(LookupError, match="0000000000-25-000123"):
+        fetch_filing("AAPL")
+
+
+# --- The repairs, where they are actually wired (`_extract_sections`) --------------------
+
+
+def test_fetch_applies_both_boundary_repairs_to_a_structure_anchored_section(monkeypatch):
+    # `trim_to_section_start` and `trim_at_next_item` are unit-tested below, but nothing
+    # proved `_extract_sections` *calls* them: every other fixture here already starts at
+    # its heading and carries no Item 8 marker, so deleting the trim loop left the suite
+    # green. This is the JPM and GM defects in miniature, through the real entry point.
+    spilling = dict(SECTIONS)
+    spilling[Section.MDA.value] = (
+        "Table of Contents\n\n"
+        f"Item 7. {Section.MDA.heading}\n\n{BODY}\n\n"
+        "Report of Independent Registered Public Accounting Firm\n\nOpinion follows."
+    )
+    install_fake_edgar(monkeypatch, [FakeFiling("10-K", "2025-10-31", sections=spilling)])
+
+    mda = fetch_filing("AAPL").sections[Section.MDA]
+
+    assert mda.startswith("Item 7."), "the front trim ran"
+    assert "Report of Independent" not in mda, "the end trim ran"
+    assert BODY.strip() in mda, "and neither one ate the section"
+
+
+def test_a_trim_is_logged_against_the_ticker_not_the_company_name(monkeypatch, caplog):
+    # `edgartools` exposes `Filing.company` as the company *name*, so logging that under
+    # the field `ticker` makes the two events that matter most for auditing extraction
+    # unjoinable to the rest of the run's JSON lines.
+    spilling = dict(SECTIONS)
+    heading = f"Item 7. {Section.MDA.heading}"
+    spilling[Section.MDA.value] = f"Table of Contents\n\n{heading}\n\n{BODY}"
+    install_fake_edgar(monkeypatch, [FakeFiling("10-K", "2025-10-31", sections=spilling)])
+
+    with caplog.at_level("WARNING", logger="finbrief.ingestion.edgar"):
+        fetch_filing("AAPL")
+
+    trims = [r for r in caplog.records if getattr(r, "event", "") == "section_trimmed"]
+    assert [r.fields["ticker"] for r in trims] == ["AAPL"]
+    assert trims[0].fields["reason"] == "began before its own heading"
+
+
 # --- The start-boundary repair (the JPM defect, ADR-0007 amendment) ---------------------
 
 
@@ -192,16 +268,7 @@ def test_clean_of_nothing_is_nothing():
 # --- The SEC-required identity ----------------------------------------------------------
 
 
-def test_configure_edgar_fails_loudly_without_an_identity():
-    settings = Settings.from_env({"OPENROUTER_API_KEY": "key"})
-
-    with pytest.raises(ConfigError) as excinfo:
-        configure_edgar(settings)
-
-    assert "SEC_EDGAR_USER_AGENT" in str(excinfo.value)
-
-
-def test_configure_edgar_called_bare_needs_no_openrouter_key():
+def test_configure_edgar_needs_no_openrouter_key_to_fail_about_the_identity():
     # The hermetic env has neither variable set. The failure must be about the EDGAR
     # identity — a dry run owns no OpenRouter key, and `Settings.from_env` would demand
     # one before ever reaching the identity check.
