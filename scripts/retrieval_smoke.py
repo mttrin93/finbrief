@@ -23,8 +23,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from finbrief.agent.agent import BASELINE_STRATEGY
-from finbrief.config import get_settings
+from finbrief.config import RetrievalStrategy, get_settings
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.retrieval.retrieve import retrieve
 from finbrief.retrieval.smoke import (
@@ -39,11 +38,22 @@ from finbrief.retrieval.vectorstore import build_filings_store, holds_any_chunks
 #: directory, so run this script from the repo root — same convention as the ingest report.
 SMOKE_REPORT = Path("docs/verification/retrieval-smoke.md")
 
-# The strategy under check is the one the app ships (`agent.BASELINE_STRATEGY`), imported
-# rather than restated: a smoke check that ran a strategy the app does not is checking
-# nothing the demo depends on. It is not `settings.retrieval_strategy` for the reason that
-# constant exists — the configured default is the pre-registered `hybrid` (ADR-0005), which
-# `retrieve()` refuses until Phase 4. Phase 4 turns this into a `--strategy` flag.
+#: The configuration this check runs, pinned here rather than read from `Settings`.
+#:
+#: **Deliberately the plain vector path, not the shipped `hybrid + translation`.** This is a
+#: wiring check with one question — "is retrieval reading the collection we think ingest
+#: wrote, embedded by the model that wrote it?" — and every part of the shipped configuration
+#: it adds is a part that can absorb the failure it exists to catch. Translation would put a
+#: paid *chat* call in front of it and make the queries non-verbatim; BM25 matches lexically
+#: and would find the right filing even if the embedding model had drifted, which is precisely
+#: the drift this script is here to notice. It also keeps every run's report comparable with
+#: the ones already committed.
+#:
+#: Held at T3's value across Phase 4 for those reasons, and the report names it, so no reader
+#: can mistake these distances for the shipping default's numbers. The strategy comparison is
+#: ADR-0002's golden set and the T10 A/B (#11), never this file.
+SMOKE_STRATEGY = RetrievalStrategy.VECTOR
+SMOKE_TRANSLATION = False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -77,14 +87,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    print(f"Retrieving {len(SMOKE_QUERIES)} smoke queries · {BASELINE_STRATEGY} · k={k}\n")
+    print(f"Retrieving {len(SMOKE_QUERIES)} smoke queries · {SMOKE_STRATEGY} · k={k}\n")
     checks = tuple(
         SmokeCheck(
             query=query,
             # No `settings=`: `retrieve()` reads it only to resolve a missing `k` or `store`,
             # and both are supplied here, so passing it would imply a configuration path
             # that cannot be taken.
-            contexts=retrieve(query.question, strategy=BASELINE_STRATEGY, k=k, store=store),
+            contexts=retrieve(
+                query.question,
+                strategy=SMOKE_STRATEGY,
+                translate=SMOKE_TRANSLATION,
+                k=k,
+                store=store,
+            ).contexts,
         )
         for query in SMOKE_QUERIES
     )
@@ -97,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         generated=(
             f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')} · `scripts/retrieval_smoke.py`"
         ),
-        strategy=BASELINE_STRATEGY,
+        strategy=SMOKE_STRATEGY,
+        translate=SMOKE_TRANSLATION,
         k=k,
         embedding_model=settings.embedding_model,
     )

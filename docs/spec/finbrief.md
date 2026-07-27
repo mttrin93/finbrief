@@ -50,7 +50,7 @@ evaluated (RAGAs + per-bucket A/B), so the quality claims are measured, not asse
 20. As an analyst, I want a fresh browser session to start a clean conversation, so that a new analysis isn't polluted by an old one.
 21. As an analyst, I want invalid inputs (unknown tickers, over-long queries) handled gracefully with a clear message, so that mistakes don't crash the app.
 22. As an analyst, I want transient data-source failures (a flaky price API) handled with a cached fallback and a banner, so that the app degrades gracefully rather than erroring.
-23. As the developer, I want retrieval exposed as a deterministic `retrieve(question, strategy, k)` function, so that I can evaluate it independently of the agent's nondeterministic tool loop.
+23. As the developer, I want retrieval exposed as a `retrieve(question, strategy, k)` function — deterministic apart from the sub-query planner's one chat completion (ADR-0004 §9) — so that I can evaluate it independently of the agent's nondeterministic tool loop.
 24. As the developer, I want a stratified golden set (semantic, exact-identifier, tool-augmented, multi-hop) with source-separated ground truth, so that my evaluation numbers are defensible and not circular.
 25. As the developer, I want RAGAs metrics reported per bucket, so that I can see where retrieval is strong or weak by query type.
 26. As the developer, I want an A/B comparison of vector vs. hybrid × ±translation reported per bucket, so that I can show *which* strategy wins *where* and why.
@@ -66,17 +66,25 @@ evaluated (RAGAs + per-bucket A/B), so the quality claims are measured, not asse
 
 ## Implementation Decisions
 
-**Retrieval engine (ADR-0003, 0004).** A standalone deterministic component
-`retrieve(question, strategy, k) → tuple[Context, ...]` runs query translation and hybrid
-search internally, selected by a `strategy` config flag (temperature 0, fixed `k` in eval
-mode). Translation only *adds*: the original query is always retained as a variant, plus up
-to 3 sub-queries (capped for latency). All variants run through **both** BM25 and vector;
-candidate lists are fused with Reciprocal Rank Fusion, deduplicated by chunk id, truncated
-to top-k. Per-chunk provenance (variant × retriever × RRF contribution) is recorded. It
-returns one sequence rather than the `(contexts, scores)` pair this spec first wrote, because
-each `Context` carries its own `distance` (Chroma L2 — lower is nearer, not a normalised
-similarity) and 1-based `rank`: two parallel lists desynchronise the moment a caller sorts,
-filters or dedups one of them, which is precisely what RRF fusion does (ADR-0003 amendment).
+**Retrieval engine (ADR-0003, 0004).** A standalone component
+`retrieve(question, strategy, translate, k) → Retrieval` runs query translation and hybrid
+search internally, selected by two flags the *caller* names (temperature 0, fixed `k` in eval
+mode). Deterministic apart from one step — the sub-query planner's chat completion — so the
+`−translation` arms of the A/B are exact and the `+translation` arms are reproducible only up
+to its sampling (ADR-0004 §9, which also carries the T10 harness design that closes the gap).
+Translation only *adds*: the original query is always retained as variant 0, plus at most one
+deterministic ticker-form variant and up to 3 sub-queries (capped for latency) — **1 + ≤1 + ≤3
+= 5 variants, ten candidate lists under hybrid** (ADR-0004 amendment). All variants run through
+**both** BM25 and vector; candidate lists are fused with Reciprocal Rank Fusion, deduplicated by
+chunk id, truncated to top-k. Per-chunk provenance (variant × retriever × rank × RRF
+contribution × that list's own vector distance) is recorded. It returns a `Retrieval` — the
+contexts *plus the variants it ran* — rather than the `(contexts, scores)` pair this spec first
+wrote or the bare sequence the T3 amendment narrowed that to: each `Context` carries its own
+`distance` (Chroma L2 — lower is nearer, not a normalised similarity) and 1-based `rank`,
+because two parallel lists desynchronise the moment a caller sorts, filters or dedups one of
+them, which is precisely what RRF fusion does (ADR-0003 amendment); and the variants live on the
+retrieval rather than on any chunk because a sub-query that surfaced **nothing** is a fact no
+chunk's provenance can carry, and the RAG-viz panel has to show it (ADR-0004 amendment §1).
 The same function is wrapped as the `search_filings` agent tool, whose description instructs the
 agent to pass the user question verbatim (the tool owns optimization) to avoid double
 translation.
@@ -143,10 +151,10 @@ built once under `@st.cache_resource` (SQLite `check_same_thread=False`).
 Good tests assert **external behavior at the highest seam**, not implementation details.
 Six seams (confirmed):
 
-1. **`retrieve(question, strategy, k)`** — all retrieval-quality behavior: RRF fusion,
-   symmetric translation+hybrid composition, provenance, per-bucket metrics. The eval harness
-   (RAGAs, A/B, precision/recall) drives this exact seam, so measured and shipped retrieval
-   are one code path — no separate eval rig.
+1. **`retrieve(question, strategy, translate, k)`** — all retrieval-quality behavior: RRF
+   fusion, symmetric translation+hybrid composition, provenance, per-bucket metrics. The eval
+   harness (RAGAs, A/B, precision/recall) drives this exact seam, so measured and shipped
+   retrieval are one code path — no separate eval rig.
 2. **Agent entrypoint** (`answer(question, thread_id)`) — tool-selection and combined-query
    orchestration. Runs the **real agent against a small fixture collection** (not the full
    index) with **external tool data mocked**; `retrieve()` real.
@@ -155,8 +163,11 @@ Six seams (confirmed):
    start-over, toggles, panels render. **The agent is stubbed entirely — no LLM calls.**
    Lands as `test_app_state.py` in Phase 3. `test_app_smoke.py` covers rendering: the
    answer, the sources panel and its survival across reruns, the disclaimer, the
-   grounding-scope disclosure, the configured-vs-ran strategy caption, and the banner an
-   un-ingested collection earns.
+   grounding-scope disclosure, the *How I answered* RAG-viz panel (the variants a search ran,
+   each chunk's variant × retriever × RRF contribution, and a variant that surfaced nothing),
+   and the banner an un-ingested collection earns. Phase 4 deleted the configured-vs-ran
+   strategy caption this seam used to cover: the configured strategy is now what answers, so
+   the sidebar names one configuration and the gap it explained no longer exists.
 4. **Security gate** — normalize/regex tested as **pure functions**; the classifier layer via
    **mocked responses in unit runs**, live only in the cached security-suite evals. Indirect
    injection asserted against the dedicated test collection (obeys nothing / no prompt leak);

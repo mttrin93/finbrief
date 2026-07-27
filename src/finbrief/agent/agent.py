@@ -40,24 +40,15 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from finbrief.agent.citations import citation_register
-from finbrief.config import RetrievalStrategy, Settings, get_settings
+from finbrief.config import Settings, get_settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
-from finbrief.retrieval.retrieve import Context
+from finbrief.retrieval.query_translation import added_variants
+from finbrief.retrieval.retrieve import Context, Retrieval
 from finbrief.tools.search_filings import TOOL_NAME, build_search_filings, search_results
 
 logger = logging.getLogger(__name__)
-
-#: The strategy the shipped path runs in Phase 2, and the reason it is a constant here
-#: rather than `settings.retrieval_strategy`: `config.DEFAULT_STRATEGY` is already `hybrid`,
-#: pre-registered before any A/B data exists (ADR-0005), and hybrid does not exist until
-#: Phase 4 (`retrieve` raises for it, deliberately). Honouring the setting today would make
-#: the app's first question fail; ignoring it silently would let the sidebar advertise a
-#: strategy that never ran. So the baseline is named, and the UI reports it *next to* the
-#: configured value rather than in place of it. Phase 4 deletes this constant and reads the
-#: setting.
-BASELINE_STRATEGY = RetrievalStrategy.VECTOR
 
 #: The agent loop's ceiling, in LangGraph super-steps: model call, tool node, model call…
 #: A loop guard, not a knob — which is why it sits next to the loop it guards rather than in
@@ -97,10 +88,31 @@ def _one_tool_call_at_a_time(
 
 @dataclass(frozen=True, slots=True)
 class Search:
-    """One `search_filings` call the agent made, and what it returned."""
+    """One `search_filings` call the agent made, and what it returned.
+
+    `query` is what the *model* asked for; `variants` is what `retrieve()` actually ran, which
+    under translation is that query plus its sub-queries (ADR-0004 — `variants[0]` is always the
+    query itself). Both are kept because the RAG-viz panel's whole subject is the difference,
+    and because a sub-query that surfaced no chunk is invisible in `contexts`.
+    """
 
     query: str
     contexts: tuple[Context, ...]
+    variants: tuple[str, ...] = ()
+    translated: bool = False
+    #: Whether the sub-query planner ran, as opposed to translation merely being on — see
+    #: `Retrieval.planned`. The panel needs both facts to describe an empty planner result.
+    planned: bool = False
+
+    @property
+    def ticker_form(self) -> str | None:
+        """The deterministic ticker-form variant this search ran, if any (ADR-0004 amdt)."""
+        return added_variants(self.variants)[0]
+
+    @property
+    def sub_queries(self) -> tuple[str, ...]:
+        """What the *planner* added to this search — the ticker form excluded."""
+        return added_variants(self.variants)[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +185,7 @@ def build_agent(
     settings: Settings | None = None,
     store: Chroma | None = None,
     checkpointer: SqliteSaver | None = None,
+    translation_model: BaseChatModel | None = None,
 ) -> CompiledStateGraph:
     """Build the agent: one model, the tools it may call, and its memory.
 
@@ -181,19 +194,36 @@ def build_agent(
     nothing (ADR-0008). Users are isolated by `thread_id` on the shared instance, not by
     building one agent each.
 
+    **The retrieval configuration comes from `Settings`** — `retrieval_strategy` and
+    `query_translation_enabled`, named here and passed down explicitly. Until Phase 4 this was a
+    `BASELINE_STRATEGY` constant, because `config.DEFAULT_STRATEGY` was the pre-registered
+    `hybrid` (ADR-0005) and `retrieve()` refused it; now that it exists, the app runs what is
+    configured and the sidebar states what ran without a caption explaining the gap (ADR-0003
+    amendment §3 said Phase 4 would delete that constant, and this is it). Which means
+    `settings` is genuinely required now, rather than resolved only on a missing collaborator: a
+    fully-injected build still needs to know which of the four configurations it is.
+
     Every collaborator is injectable so the suite can drive the real loop hermetically: a
     scripted chat model, a fixture collection with a fake embedding, a throwaway checkpoint
-    file. Settings are resolved only when something is actually missing, so a fully injected
-    build needs no API key (`tests/conftest.py` guarantees there isn't one).
+    file. A `Settings` built with `from_env({...})` needs no real API key
+    (`tests/conftest.py` guarantees there isn't one).
     """
-    if model is None or checkpointer is None:
-        settings = settings or get_settings()
+    settings = settings or get_settings()
     return create_agent(
         model=model if model is not None else build_chat_model(settings),
         # One tool in T4. `get_stock_data`, `calculate_ratios` and `get_recent_news` join it
         # in T5 (#9), which is when the tool-*selection* this loop exists for starts mattering.
         tools=[
-            build_search_filings(strategy=BASELINE_STRATEGY, store=store, settings=settings)
+            build_search_filings(
+                strategy=settings.retrieval_strategy,
+                translate=settings.query_translation_enabled,
+                store=store,
+                settings=settings,
+                # The planner's model, when one is needed. Injected here rather than left to
+                # `retrieve()` so a hermetic test can script the decomposition without the
+                # agent's own scripted model being consumed by it.
+                translation_model=translation_model,
+            )
         ],
         system_prompt=AGENT_SYSTEM_PROMPT,
         # Two lines under the same invariant — an `[n]` names one chunk for a whole
@@ -308,10 +338,18 @@ def _searches_in(messages: list[AnyMessage]) -> tuple[Search, ...]:
         for call in message.tool_calls
         if call["name"] == TOOL_NAME
     }
-    return tuple(
-        Search(
-            query=queries.get(message.tool_call_id, ""),
-            contexts=tuple(Context.from_payload(payload) for payload in payloads),
+    searches: list[Search] = []
+    for message, artifact in search_results(messages):
+        # `Retrieval` is the one authority on the artifact's shape (`retrieve.py`), so the
+        # decoding happens there rather than in a second reader here.
+        retrieval = Retrieval.from_payload(artifact)
+        searches.append(
+            Search(
+                query=queries.get(message.tool_call_id, ""),
+                contexts=retrieval.contexts,
+                variants=retrieval.variants,
+                translated=retrieval.translated,
+                planned=retrieval.planned,
+            )
         )
-        for message, payloads in search_results(messages)
-    )
+    return tuple(searches)

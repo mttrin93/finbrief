@@ -211,11 +211,14 @@ def test_the_five_queries_cover_the_kb_shapes_a_reader_would_doubt():
 
 
 def render(checks, **kwargs) -> str:
+    # `setdefault` rather than a keyword default, so a test can override the pinned
+    # configuration the same way it overrides any other argument.
+    kwargs.setdefault("strategy", RetrievalStrategy.VECTOR)
+    kwargs.setdefault("translate", False)
+    kwargs.setdefault("k", 5)
     return render_smoke_report(
         checks,
         generated="2026-07-27 12:00 UTC · `scripts/retrieval_smoke.py`",
-        strategy=RetrievalStrategy.VECTOR,
-        k=5,
         embedding_model="openai/text-embedding-3-small",
         **kwargs,
     )
@@ -240,6 +243,15 @@ def test_the_report_records_the_run_that_produced_it():
     assert "`vector`" in report
 
 
+def test_the_report_names_both_retrieval_switches_and_not_just_the_strategy():
+    # `scripts/retrieval_smoke.py` pins this check to `vector` with translation *off* and
+    # claims the report says so, precisely so nobody reads these distances as the shipping
+    # default's (`hybrid + translation`). Naming the strategy alone stated half the
+    # configuration, which is the misreading the claim exists to prevent (issue #6 review).
+    assert "query translation **off**" in render([a_check()])
+    assert "query translation **on**" in render([a_check()], translate=True)
+
+
 def test_the_report_tallies_the_checks_and_counts_the_control_separately():
     report = render(
         [a_check(), a_check(contexts=(a_context(1, ticker="F"),)), a_check(query=CONTROL)]
@@ -257,14 +269,18 @@ def test_the_report_shows_each_querys_expectation_top_hit_and_distance_band():
     assert "0.6200" in report or "0.62" in report
 
 
-def test_the_report_defers_the_distance_floor_to_the_phase_4_7_evidence():
+def test_the_report_defers_the_distance_floor_to_the_phase_7_evidence():
     # Constraint 2 from the ticket: the bands are calibration data for a floor that is
     # chosen with the A/B evidence, not here — and the code that would use it says so too.
+    # Phase 7, not "Phase 4 and Phase 7": Phase 4 shipped the strategy and deliberately
+    # produced no A/B or RAGAs numbers (ADR-0004 amendment §7), so a report still promising
+    # its evidence names a phase that has already closed without any (issue #6 review).
     report = render([a_check(), a_check(query=CONTROL)])
 
     assert "calibration" in report.lower()
     assert "NO_CONTEXT_FALLBACK" in report
-    assert "Phase 4" in report and "Phase 7" in report
+    assert "Phase 7" in report
+    assert "evidence from Phase 4" not in report
 
 
 def test_the_report_lists_every_retrieved_chunk_so_a_reader_can_check_it():

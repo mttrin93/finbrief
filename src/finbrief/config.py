@@ -61,6 +61,21 @@ class Company:
     ticker: str
     name: str
     cluster: PeerCluster
+    #: The shortened forms of `name` an analyst actually types, for the query-side entity
+    #: normalisation in `retrieval/query_translation.py` (ADR-0004 amendment, T6). `name`
+    #: itself is always matched, so these are only what it is *abbreviated* to.
+    #:
+    #: **Explicit data, not derived**, and the derivation was tried first: taking the leading
+    #: word of each legal name produces `The` for Goldman Sachs (a token in 89.5% of the
+    #: collection's chunks), `General` for GM (15 filers), `Bank` for BAC (10 filers), and
+    #: `Amazon.com` for AMZN (which matches nothing, since the corpus tokenizes it as two
+    #: terms). A heuristic that wrong on 4 of 15 members is not a heuristic.
+    #:
+    #: **Legal-name shortenings only** — deliberately not brands or subsidiaries (`Google`,
+    #: `Facebook`). Resolving a brand to its filer is entity resolution, which the agent
+    #: already does against the conversation (ADR-0003 amendment §1), and doing it here too
+    #: would be a second resolver with no evaluation of its own.
+    aliases: tuple[str, ...] = ()
 
 
 #: The Universe: fixed at ingest time, curated as same-sector peer clusters so it can
@@ -71,21 +86,26 @@ class Company:
 #: 20-F filer here would silently produce zero Sections at ingest. `test_config.py` guards
 #: this; ADR-0007 records it as a stated limitation.
 UNIVERSE: tuple[Company, ...] = (
-    Company("AAPL", "Apple Inc.", PeerCluster.BIG_TECH),
-    Company("MSFT", "Microsoft Corporation", PeerCluster.BIG_TECH),
-    Company("NVDA", "NVIDIA Corporation", PeerCluster.BIG_TECH),
-    Company("AMZN", "Amazon.com, Inc.", PeerCluster.BIG_TECH),
-    Company("GOOGL", "Alphabet Inc.", PeerCluster.BIG_TECH),
-    Company("META", "Meta Platforms, Inc.", PeerCluster.BIG_TECH),
-    Company("TSLA", "Tesla, Inc.", PeerCluster.AUTOS),
-    Company("F", "Ford Motor Company", PeerCluster.AUTOS),
-    Company("GM", "General Motors Company", PeerCluster.AUTOS),
-    Company("JPM", "JPMorgan Chase & Co.", PeerCluster.BANKS),
-    Company("BAC", "Bank of America Corporation", PeerCluster.BANKS),
-    Company("GS", "The Goldman Sachs Group, Inc.", PeerCluster.BANKS),
-    Company("JNJ", "Johnson & Johnson", PeerCluster.HEALTHCARE),
-    Company("LLY", "Eli Lilly and Company", PeerCluster.HEALTHCARE),
-    Company("PFE", "Pfizer Inc.", PeerCluster.HEALTHCARE),
+    Company("AAPL", "Apple Inc.", PeerCluster.BIG_TECH, ("Apple",)),
+    Company("MSFT", "Microsoft Corporation", PeerCluster.BIG_TECH, ("Microsoft",)),
+    Company("NVDA", "NVIDIA Corporation", PeerCluster.BIG_TECH, ("NVIDIA",)),
+    Company("AMZN", "Amazon.com, Inc.", PeerCluster.BIG_TECH, ("Amazon.com", "Amazon")),
+    Company("GOOGL", "Alphabet Inc.", PeerCluster.BIG_TECH, ("Alphabet",)),
+    Company("META", "Meta Platforms, Inc.", PeerCluster.BIG_TECH, ("Meta Platforms", "Meta")),
+    Company("TSLA", "Tesla, Inc.", PeerCluster.AUTOS, ("Tesla",)),
+    Company("F", "Ford Motor Company", PeerCluster.AUTOS, ("Ford Motor", "Ford")),
+    Company("GM", "General Motors Company", PeerCluster.AUTOS, ("General Motors",)),
+    Company("JPM", "JPMorgan Chase & Co.", PeerCluster.BANKS, ("JPMorgan Chase", "JPMorgan")),
+    Company("BAC", "Bank of America Corporation", PeerCluster.BANKS, ("Bank of America",)),
+    Company(
+        "GS",
+        "The Goldman Sachs Group, Inc.",
+        PeerCluster.BANKS,
+        ("Goldman Sachs Group", "Goldman Sachs", "Goldman"),
+    ),
+    Company("JNJ", "Johnson & Johnson", PeerCluster.HEALTHCARE, ("J&J",)),
+    Company("LLY", "Eli Lilly and Company", PeerCluster.HEALTHCARE, ("Eli Lilly", "Lilly")),
+    Company("PFE", "Pfizer Inc.", PeerCluster.HEALTHCARE, ("Pfizer",)),
 )
 
 #: Foreign private issuers file a 20-F, not a 10-K, so they cannot supply the Sections
@@ -167,6 +187,50 @@ TICKERS: frozenset[str] = frozenset(COMPANIES)
 #: hand-typed copy of it is wrong the moment a filer starts or stops handing the Item off.
 ITEM_7A_SECTION_FILERS: frozenset[str] = TICKERS - ITEM_7A_POINTER_FILERS
 
+#: The fewest characters a ticker must have to be worth adding to a lexical query
+#: (`retrieval/query_translation.py`'s entity normalisation, ADR-0004 amendment).
+#:
+#: **Two, and `F` is why.** Measured against the ingested collection: the token `f` appears in
+#: 534 of 5,842 chunks (9.1%) and in chunks belonging to **five** filers — F, GM, GS, JPM, PFE —
+#: because a single letter is also a footnote marker, a table label and a unit. `ford` appears
+#: in 232 chunks (4.0%) belonging to **one**. So for Ford the company *name* is already the
+#: sharper lexical identifier and the ticker would dilute it, which is the opposite of what
+#: normalisation is for. Excluding it costs nothing precisely because the original is retained.
+#:
+#: Stated from the principle rather than tuned to the number: a one-character term is not an
+#: identifier in any lexical index. The measurement corroborates it; a second single-letter
+#: ticker joining the Universe would be excluded for the same reason without re-measuring.
+#:
+#: **What it suppresses, and what that costs — measured** (ADR-0004 amendment §8).
+#: `normalised()` is the only reader of the map below and returns either the whole rewritten
+#: query or `None`, so a filtered-out ticker means **no variant at all** — both retrievers lose
+#: it, not just BM25. For Ford the cost is zero to negative: `Ford debt` retrieves 5/5 Ford
+#: under vector search while the suppressed `F debt` retrieves 3/5 (two BAC chunks intrude, at
+#: worse distances), and BM25's top-5 is identical either way.
+#:
+#: The real variable is how well a filer's **name** covers its own chunks: `ford` is a token in
+#: 232 of Ford's 499 chunks and 0 elsewhere, against `tesla`'s 33 of 280. Ford has the
+#: best-covered name in the Universe bar META, so it does not need normalisation and its
+#: ticker is a poor embedding token — both facts point the same way. This constant is a
+#: first-principles proxy for that, and it would be the *wrong* proxy for a future member with
+#: a short ticker and a poorly-covered name.
+MIN_LEXICAL_TICKER_CHARS = 2
+
+#: Lower-cased company name form -> ticker, for query-side entity normalisation. Derived from
+#: `UNIVERSE` so a 16th company is normalisable the moment it is declared, and *filtered* by
+#: `MIN_LEXICAL_TICKER_CHARS` so a ticker that would be lexical noise is never substituted in.
+#:
+#: A company excluded here is not un-searchable: the retained original still carries whatever
+#: the analyst typed (ADR-0004 — translation only ever adds).
+TICKER_BY_COMPANY_NAME: Mapping[str, str] = MappingProxyType(
+    {
+        form.lower(): company.ticker
+        for company in UNIVERSE
+        if len(company.ticker) >= MIN_LEXICAL_TICKER_CHARS
+        for form in (company.name, *company.aliases)
+    }
+)
+
 #: peer cluster -> its tickers. The one place the grouping is computed: `_build_peers` and
 #: the UI's Universe panel both read it rather than re-deriving it from `UNIVERSE`.
 CLUSTERS: Mapping[PeerCluster, tuple[str, ...]] = _build_clusters(UNIVERSE)
@@ -193,6 +257,20 @@ class RetrievalStrategy(StrEnum):
 #: Pre-registered shipping default (ADR-0005), fixed before any A/B data exists.
 DEFAULT_STRATEGY = RetrievalStrategy.HYBRID
 DEFAULT_TRANSLATION_ENABLED = True
+
+#: Reciprocal Rank Fusion's rank-smoothing constant: a candidate list's vote for the chunk it
+#: ranks `r`th is `1 / (RRF_K + r)` (`retrieval/hybrid.py`).
+#:
+#: **60 is the published default, stated and not tuned** — Cormack, Clarke & Buettcher (2009),
+#: who introduced RRF and report it as insensitive over a wide range. Deliberately *not* a
+#: `Settings` field, on the same reasoning as `CHUNK_SIZE_CHARS` below and for one extra one:
+#: ADR-0005 pre-registers the shipping default before any A/B data exists so that the winner
+#: cannot be picked after seeing the numbers, and a fusion constant somebody could sweep is
+#: exactly the back door into that. A `hybrid` result obtained at the published constant is a
+#: prediction that survived a test; one obtained at the best of several `RRF_K` values is a
+#: number about the sweep. If it is ever changed, it is changed here, in one commit, with the
+#: A/B re-run — never per environment.
+RRF_K = 60
 
 #: Maximum characters per chunk — the PLAN.md baseline for section-aware chunking
 #: (RecursiveCharacterTextSplitter, 1000 chars with a 200-char overlap; the overlap

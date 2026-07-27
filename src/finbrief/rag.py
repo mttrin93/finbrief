@@ -59,10 +59,12 @@ def answer_question(
     question: str,
     *,
     strategy: RetrievalStrategy = RetrievalStrategy.VECTOR,
+    translate: bool = False,
     k: int | None = None,
     store: Chroma | None = None,
     settings: Settings | None = None,
     model: BaseChatModel | None = None,
+    translation_model: BaseChatModel | None = None,
 ) -> GroundedAnswer:
     """Answer `question` from the knowledge base, with inline citations.
 
@@ -71,7 +73,14 @@ def answer_question(
 
     The question reaches `retrieve()` verbatim — no rewriting here. Query translation lives
     *inside* the retrieval engine (ADR-0004), so a caller that pre-translated would
-    translate twice, and the measured chain and the shipped chain would part ways.
+    translate twice, and the measured chain and the shipped chain would part ways. `translate`
+    switches that engine-side step on; it is one of the four configurations the A/B compares
+    (ADR-0002), and this chain is the seam it compares them through.
+
+    `translation_model` is separate from `model` for the same reason `llm.py` sits at the
+    package root: the planner and the answerer are two different prompts and could be two
+    different (differently priced) models. Both are injectable for tests; production passes
+    neither and `retrieve()` builds what it needs.
 
     Raises whatever the model client raises; the caller renders the failure (Phase 5 adds
     the tiered handling).
@@ -82,7 +91,15 @@ def answer_question(
     # string, so `answer_question(q, strategy="vector")` used to retrieve, pay for a
     # generation, and *then* die on `strategy.value` in the log line below (issue #5 review).
     strategy = RetrievalStrategy(strategy)
-    contexts = retrieve(question, strategy=strategy, k=k, store=store, settings=settings)
+    contexts = retrieve(
+        question,
+        strategy=strategy,
+        translate=translate,
+        k=k,
+        store=store,
+        settings=settings,
+        model=translation_model,
+    ).contexts
     if not contexts:
         # Emptiness, not irrelevance — a populated collection always returns `k`. The
         # relevance floor that would widen this branch is deferred to the Phase 4/7 A/B
@@ -105,6 +122,7 @@ def answer_question(
         logger,
         "rag_answer",
         strategy=strategy.value,
+        translation=translate,
         # `k` is deliberately absent: it is a *request*, and this layer may be holding
         # `None` for "whatever `settings.retrieval_k` says". The `retrieval` event logs the
         # resolved value, so reporting it again here could only disagree with it.

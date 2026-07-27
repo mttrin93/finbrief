@@ -84,7 +84,7 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 
 | Task | Priority | Implementation |
 |---|---|---|
-| Hybrid search | P1 | `EnsembleRetriever`: BM25 (exact tickers, "Item 1A", ratio names) + Chroma vector search; motivated by course Part 2 (exact-identifier problem) |
+| Hybrid search | P1 | `rank_bm25` (`BM25Okapi`) over the collection's indexed text (exact tickers, "Item 1A", ratio names) + Chroma vector search, fused by hand-written RRF (`config.RRF_K = 60`); motivated by course Part 2 (exact-identifier problem). **Not `EnsembleRetriever`**: its blend needs comparable scores, and an L2 distance and a corpus-relative BM25 score are not (ADR-0004, `retrieval/hybrid.py`) |
 | RAG evaluation (RAGAs) | P1 | Golden dataset of ~15–20 Q/A over the universe; all four metrics (faithfulness, answer relevancy, context precision, context recall); results table in README; target faithfulness ≥ 0.8 |
 | A/B testing of RAG strategies | P1 | Config-switchable strategies (vector-only vs. hybrid; w/ vs. w/o query translation); run RAGAs on each; comparison table = the A/B result |
 | Automated KB updates | P2 | Scheduled ingestion script (cron/GitHub Action) pulling newest filings from EDGAR into Chroma; idempotent by accession number |
@@ -145,9 +145,12 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 - **Separate Chroma collections** (`filings`, `news`, `glossary`) with metadata
   filters (ticker, section, year) → enables scoped retrieval and better context
   precision.
-- **Retrieval engine vs. agent tool** (ADR-0003): `retrieve(question, strategy, k)` is a
-  standalone deterministic component (translation + hybrid inside, config-flagged) called
-  *directly* by the eval harness; the same function is wrapped as the `search_filings`
+- **Retrieval engine vs. agent tool** (ADR-0003): `retrieve(question, strategy, translate, k)
+  → Retrieval` is a standalone component (translation + hybrid inside) called
+  *directly* by the eval harness — deterministic apart from the sub-query planner's one chat
+  completion (ADR-0004 §9), and with both switches **named by the caller** rather than read
+  from config inside, so no number is reported against a configuration nobody selected. The
+  same function is wrapped as the `search_filings`
   tool for the `create_agent` loop. Headline RAGAs/A-B measure the chain; the tool-calling
   eval measures the agent's selection layer. Divergence between agent-issued and original
   queries is logged and reported, not assumed away.
@@ -275,10 +278,11 @@ retrieval chain and landed with it — ticket T3, #5)
 
 **Phase 2 — Baseline RAG (P0, ~3 h)** — ✅ **done** (`t3-baseline-rag`, #5)
 - Vector-only retrieval chain, source citations, sources panel in UI. `retrieve()` is the
-  deterministic seam ADR-0003 asks for and is **vector-only by design**: `hybrid` raises
-  rather than serving vector results under a hybrid label, because `DEFAULT_STRATEGY` is
-  the pre-registered `hybrid` (ADR-0005) and Phase 4 is where it becomes true. The sidebar
-  names the gap between the configured strategy and the one that answered.
+  deterministic seam ADR-0003 asks for and was **vector-only by design at the time**: `hybrid`
+  raised rather than serving vector results under a hybrid label, because `DEFAULT_STRATEGY`
+  is the pre-registered `hybrid` (ADR-0005) and Phase 4 is where it became true. The sidebar
+  named the gap between the configured strategy and the one that answered. Phase 4 closed
+  both — see its entry below (T6, #6).
 - Domain system prompt + disclaimer. The grounding-scope disclosure (user story 18) is
   derived from `config`, not typed, and the disclaimer is rendered *beside* the answer
   rather than requested from the model.
@@ -308,13 +312,31 @@ retrieval chain and landed with it — ticket T3, #5)
   instance of the exact-identifier weakness ADR-0004 predicts hybrid + BM25 fixes, and a
   candidate golden-set case for #4).
 
-**Phase 4 — Advanced RAG (Tier-1, ~4 h)** *(see ADR-0004)*
-- Query translation (rewrite + decompose): original query always retained as a variant,
-  translation only ever *adds* (≤3 sub-queries, capped for latency). UI visualization.
-- Hybrid search: all variants run through BOTH BM25 and vector; RRF fusion over all
-  candidate lists; dedup by chunk id; top-k. One symmetric code path.
-- Per-chunk provenance logged (which variant × which retriever surfaced it, RRF
-  contribution) → feeds the RAG-viz panel and the "why hybrid wins" A/B analysis.
+**Phase 4 — Advanced RAG (Tier-1, ~4 h)** — ✅ **done** (`t6-hybrid-translation`, #6)
+*(see ADR-0004 and its T6 amendment)*
+- Query translation and hybrid search compose inside `retrieve()` as **one symmetric
+  pipeline**: `variants = (question,) + normalised + sub-queries`, `retrievers = (vector,) +
+  bm25 if hybrid`, every variant through every retriever, RRF (`RRF_K = 60`, stated not
+  tuned), dedup by chunk id, top-k. `vector` without translation is that pipeline with one
+  candidate list in it and returns *exactly* what T3 returned — the A/B's baseline is
+  unmoved, and a test compares it against `nearest_chunks` directly.
+- `retrieve()` returns a `Retrieval` (contexts + variants + `translated`), because the
+  RAG-viz panel must show a sub-query that surfaced **nothing** and no chunk can report that.
+  Per-chunk provenance (`Surfaced`: variant × retriever × rank × RRF contribution) travels on
+  the `Context` through the tool artifact and the checkpoint. The panel renders it; the
+  `retrieval` log line carries the variant *index* rather than its text, since a variant is
+  derived from a user question and those lines are kept.
+- `agent.BASELINE_STRATEGY` deleted, per ADR-0003 §3: the app reads
+  `settings.retrieval_strategy` / `query_translation_enabled`, so the pre-registered default
+  actually ships and the sidebar names one configuration rather than two with a gap caption.
+- **A pre-registered hypothesis failed here, and that is the phase's main finding.** #6
+  predicted BM25 on the retained original would move a `TSLA` Item 7 chunk from rank 5 to
+  rank 1; measured, `hybrid` alone moved it to *absent*. Root cause: the provenance header
+  carries the **ticker** (`tsla`: 280 of 5,842 chunks) and an analyst types the **name**
+  (`tesla`: 34, body mentions only), so BM25 recovered the filer and lost the topic. Fixed by
+  deterministic query-side entity normalisation (a `config` lookup, adding a ticker-form
+  variant), after which the chunk reaches rank 1. Full four-state ranking on #6; hypotheses
+  revised in ADR-0004's amendment and re-pre-registered in ADR-0005's.
 
 **Phase 5 — Guardrails + validation (Tier-1, ~3 h)** *(see ADR-0006)*
 - Advice-refusal policy; input validation (ticker whitelist, length caps, sanitization)
@@ -356,17 +378,25 @@ retrieval chain and landed with it — ticket T3, #5)
   with section citations; candidate Q/A drafted by a *different* model than the answering
   pipeline, then hand-verified against the primary source (breaks circularity).
 - RAGAs all four metrics, reported **per bucket**. A/B matrix: vector vs. hybrid ×
-  ±query translation (reads Phase-6 logs). Pre-registered hypotheses: hybrid > vector on
-  exact-identifier; translation wins on multi-hop; both tie on semantic (a predicted tie
-  confirms the harness works, not a failure).
+  ±query translation (reads Phase-6 logs). Pre-registered hypotheses **as revised by ADR-0004's
+  T6 amendment §6/§7**, which supersede the original list here (hybrid > vector on
+  exact-identifier; translation wins on multi-hop; both tie on semantic): `+translation` is
+  positive on exact-identifier *via entity normalisation*, `hybrid` alone may be **negative**
+  there, and hybrid's marginal contribution over `vector + translation` is expected to be
+  **small**. Both lists predate any A/B data; a predicted tie still confirms the harness works
+  rather than being a failure.
 - Injection/guardrail cases are NOT in the RAGAs set (faithfulness against a refusal is
   undefined) — they live in the Phase-5 security suite as pass/fail, reported alongside.
 - Shipping default **pre-registered now** = hybrid + translation (ADR-0005), on the
-  dominance prediction. Falsification (directional — no tight numeric margin, given ~6
+  dominance prediction. **Two triggers, both fixed before the data exists.** (a) The
+  translation falsification clause (directional — no tight numeric margin, given ~6
   Q/bucket): if translation is worse on *both* context precision and recall within any
   bucket, default drops to hybrid-only and the contradiction is a README finding;
-  per-question spread reported alongside. Dominance judged within ≤1.5s p50 added latency
-  from translation (measured from Phase-6 logs).
+  per-question spread reported alongside. (b) The strategy-axis re-examination trigger
+  (ADR-0005 amendment §4): if `hybrid − vector` at equal translation is within per-question
+  spread on *every* bucket, the dominance argument is re-argued rather than defended and
+  `vector + translation` becomes a live candidate. Dominance judged within ≤1.5s p50 added
+  latency from translation (measured from Phase-6 logs).
 - Tool-calling evaluation (Part 4 pattern); results tables → README.
 
 > **── Tier-1 gate ──** Everything above must be finished, evaluated, and
@@ -434,6 +464,23 @@ faithfulness vs.
 useful-but-uncontexted knowledge trade-off (Part 3's Einstein example); yfinance as an
 unofficial API in a "production" story; universe fixed at ingest time; no re-ranking stage
 in Tier-1 (promoted to Tier-2 #2 per ADR-0010 — if built, evaluated as a third A/B axis).
+
+**The provenance header carries the ticker, not the company name** (T6, #6 — ADR-0004
+amendment §6). `AAPL | FY2025 10-K | Item 1A. Risk Factors` gives BM25 the ticker and the
+Section but not the name, which is the form a question uses: `tsla` is a token in 280 of the
+collection's 5,842 chunks (all of TSLA's, via the header) and `tesla` in 34 (body mentions
+only, because a filer writes "we"). That mismatch is why hybrid search *alone* made #6's
+`Tesla debt` case worse rather than better, and it is worth stating as a limitation because
+the fix taken was on the **query** side — deterministic entity normalisation adding a
+ticker-form variant — rather than on the index side. Carrying both forms in the header
+(`AAPL | Apple Inc. | FY2025 10-K | …`) is the index-side fix and was **deliberately not
+taken**: the header is inside `chunking.content_hash`, so it re-embeds all 5,842 chunks, and
+a re-embed invalidates every distance recorded on #5, #6 and #11 — including the committed
+`retrieval-smoke.md` band and the before/after this finding rests on. The query-side fix gets
+the same result for this bucket at no spend, which is why it went first; if a re-ingest ever
+happens for another reason, this is the change to make with it. A middle option exists and
+was not needed: enrich only the BM25 document text at index-build time, leaving the
+embeddings untouched.
 
 **Citation validity is persona-dependent** (T3, #5). The grounding half of the contract is
 structural: `Context.rank` is assigned once in `retrieve()` and read only by

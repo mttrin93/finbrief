@@ -22,14 +22,15 @@ import pytest
 from finbrief.config import RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
 from finbrief.prompts import EMPTY_SEARCH_RESULT, SEARCH_FILINGS_DESCRIPTION
-from finbrief.retrieval.retrieve import Context
-from finbrief.tools.search_filings import TOOL_NAME, build_search_filings
+from finbrief.retrieval.retrieve import Context, Retrieval
+from finbrief.tools.search_filings import TOOL_NAME, build_search_filings, search_results
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"})
 
 
 def a_search_tool(store, **kwargs):
     kwargs.setdefault("strategy", RetrievalStrategy.VECTOR)
+    kwargs.setdefault("translate", False)
     return build_search_filings(store=store, settings=SETTINGS, **kwargs)
 
 
@@ -46,7 +47,7 @@ def search(tool, query: str):
 
 def retrieved(message) -> tuple[Context, ...]:
     """The chunks the tool returned, as the UI rebuilds them from the artifact."""
-    return tuple(Context.from_payload(payload) for payload in message.artifact)
+    return Retrieval.from_payload(message.artifact).contexts
 
 
 def test_the_tool_retrieves_for_the_query_it_is_given(filings_store):
@@ -72,10 +73,11 @@ def test_the_artifact_is_json_safe_because_the_checkpointer_serialises_it(filing
 
     message = search(tool, "supply chain risk")
 
-    assert json.loads(json.dumps(message.artifact)) == list(message.artifact)
+    assert json.loads(json.dumps(message.artifact)) == message.artifact
     # And a round trip through that form is lossless, since the panel renders what comes out.
-    rebuilt = retrieved(message)
-    assert tuple(context.as_payload() for context in rebuilt) == message.artifact
+    # Asserted on the whole retrieval, not just its chunks: the query variants cross the same
+    # boundary now, and a panel that lost them on the first checkpoint read would show nothing.
+    assert Retrieval.from_payload(message.artifact).as_payload() == message.artifact
 
 
 def test_the_query_reaches_the_engine_unchanged_under_the_shipped_strategy(
@@ -90,7 +92,7 @@ def test_the_query_reaches_the_engine_unchanged_under_the_shipped_strategy(
 
     def fake_retrieve(question, **kwargs):
         calls.append({"question": question, **kwargs})
-        return ()
+        return Retrieval(contexts=(), variants=(question,), translated=False)
 
     monkeypatch.setattr(module, "retrieve", fake_retrieve)
     tool = a_search_tool(filings_store, strategy=RetrievalStrategy.VECTOR)
@@ -101,9 +103,11 @@ def test_the_query_reaches_the_engine_unchanged_under_the_shipped_strategy(
         {
             "question": "  Is Tesla in trouble?  ",
             "strategy": RetrievalStrategy.VECTOR,
+            "translate": False,
             "k": None,
             "store": filings_store,
             "settings": SETTINGS,
+            "model": None,
         }
     ]
 
@@ -125,8 +129,8 @@ def test_the_description_instructs_the_agent_to_pass_the_question_verbatim(filin
 
 
 def test_the_tool_never_asks_the_model_for_anything_but_the_query(filings_store):
-    # `strategy`, `k` and the store are the wrapper's business. A model that could set them
-    # could ask for a strategy that was never measured.
+    # `strategy`, `translate`, `k` and the store are the wrapper's business. A model that could
+    # set them could ask for a configuration that was never measured.
     tool = a_search_tool(filings_store)
 
     assert list(tool.args) == ["query"]
@@ -159,7 +163,10 @@ def test_an_empty_collection_is_reported_as_a_setup_problem_not_as_out_of_scope(
 
     message = search(tool, "supply chain risk")
 
-    assert message.artifact == ()
+    assert retrieved(message) == ()
+    # The variants still travel, because a search that found nothing is exactly the case where
+    # a reader wants the RAG-viz panel to show what was actually asked.
+    assert message.artifact["variants"] == ["supply chain risk"]
     # The wording is `prompts.py`'s to own — `test_prompts.py` asserts it names the cause.
     # What belongs here is that the empty case reaches the model as that text at all,
     # rather than as an empty `<sources>` block it would answer around.
@@ -179,3 +186,71 @@ def test_every_retrieved_chunk_keeps_its_provenance_for_the_sources_panel(
     for context in retrieved(message):
         assert context.chunk_id and context.body
         assert context.citation.startswith("AAPL 10-K FY")
+
+
+# --------------------------------------------------------------------------------------
+# What the artifact carries, and what a reader of it must tolerate
+# --------------------------------------------------------------------------------------
+
+
+def test_the_artifact_carries_the_query_variants_not_only_the_chunks(filings_store):
+    # ADR-0004's provenance has to reach the RAG-viz panel, and "how was my query translated"
+    # (user story 5) is a fact about the *retrieval* — a sub-query that surfaced no chunk cannot
+    # be recovered from any chunk's provenance, and it is the interesting negative datum.
+    tool = a_search_tool(filings_store)
+
+    message = search(tool, "supply chain risk")
+
+    assert message.artifact["variants"] == ["supply chain risk"]
+    assert message.artifact["translated"] is False
+    assert message.artifact["chunks"], "and the chunks, as before"
+
+
+def test_hybrid_provenance_survives_the_tool_boundary(filings_store):
+    # The panel renders per-chunk provenance off the artifact, so it has to cross a serialised
+    # boundary intact — this is the assertion that would fail if `Surfaced` were left to a
+    # library's inference instead of `as_payload`.
+    tool = a_search_tool(filings_store, strategy=RetrievalStrategy.HYBRID)
+
+    message = search(tool, "AAPL Item 1A supply chain")
+
+    for context in retrieved(message):
+        assert context.provenance, "every returned chunk was surfaced by something"
+        assert context.fused_score == sum(row.contribution for row in context.provenance)
+    assert any("bm25" in [r.retriever.value for r in c.provenance] for c in retrieved(message))
+
+
+def test_a_reply_written_in_the_t4_artifact_shape_is_still_readable(filings_store):
+    # A live conversation's checkpoint outlives a deploy, so a thread can hold replies written
+    # when the artifact was a bare list of chunk payloads. Such a reply must come back as a
+    # retrieval with no variants — which is all the RAG-viz panel needs to render nothing for it
+    # — rather than raising on the first rerun after the deploy.
+    from langchain_core.messages import ToolMessage
+
+    tool = a_search_tool(filings_store)
+    current = search(tool, "supply chain risk")
+    old_shape = ToolMessage(
+        content=current.content,
+        artifact=current.artifact["chunks"],
+        name=TOOL_NAME,
+        tool_call_id="call-1",
+    )
+
+    ((_, artifact),) = search_results([old_shape])
+
+    assert artifact["variants"] == []
+    assert artifact["translated"] is False
+    assert len(artifact["chunks"]) == 5
+
+
+def test_a_reply_whose_artifact_did_not_survive_at_all_is_still_a_reply(filings_store):
+    # A failed call carries no artifact. It is still evidence the knowledge base was consulted,
+    # which is a different fact from "the answer is not grounded" — and only one of them means
+    # somebody has to re-run a paid ingest.
+    from langchain_core.messages import ToolMessage
+
+    ((_, artifact),) = search_results(
+        [ToolMessage(content="boom", name=TOOL_NAME, tool_call_id="call-1", status="error")]
+    )
+
+    assert artifact == {"chunks": [], "variants": [], "translated": False, "planned": False}

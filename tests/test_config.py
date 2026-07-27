@@ -14,7 +14,9 @@ from finbrief.config import (
     COMPANIES,
     ITEM_7A_POINTER_FILERS,
     ITEM_7A_SECTION_FILERS,
+    MIN_LEXICAL_TICKER_CHARS,
     PEERS,
+    TICKER_BY_COMPANY_NAME,
     TICKERS,
     UNIVERSE,
     ConfigError,
@@ -244,3 +246,58 @@ def test_the_log_level_error_lists_only_levels_it_accepts():
 
 def test_a_blank_log_level_falls_back_to_info():
     assert resolve_log_level({"LOG_LEVEL": "   "}) == logging.INFO
+
+
+# --------------------------------------------------------------------------------------
+# Query-side entity normalisation (ADR-0004 amendment, T6)
+# --------------------------------------------------------------------------------------
+
+
+def test_every_universe_company_declares_a_form_an_analyst_would_actually_type():
+    # `retrieval/query_translation.py` substitutes a name for its ticker, and it can only do
+    # that for forms declared here. A company whose only declared form is its legal name
+    # ("The Goldman Sachs Group, Inc.") is one nobody's question will ever match.
+    for company in UNIVERSE:
+        assert company.aliases, f"{company.ticker} has no shortened name form"
+        assert all(alias.strip() == alias and alias for alias in company.aliases)
+
+
+def test_no_name_form_is_claimed_by_two_companies():
+    # An ambiguous form would silently resolve a question about one filer into a query about
+    # another — the worst failure this feature can have, and one no downstream test would catch,
+    # since the substituted query still retrieves *something*.
+    claimed: dict[str, str] = {}
+    for company in UNIVERSE:
+        for form in (company.name, *company.aliases):
+            key = form.lower()
+            assert key not in claimed or claimed[key] == company.ticker, (
+                f"{form!r} is claimed by both {claimed.get(key)} and {company.ticker}"
+            )
+            claimed[key] = company.ticker
+
+
+def test_a_single_character_ticker_is_left_out_of_the_normalisation_map():
+    # Ford, and the reason is measured: `f` is a token in 534 of the ingested collection's 5,842
+    # chunks across five filers (a single letter is also a footnote marker and a table label),
+    # while `ford` is in 232 across one. Substituting the ticker would make the query *less*
+    # discriminating. The name still works, because the original query is always retained.
+    assert "F" in TICKERS
+    assert "F" not in TICKER_BY_COMPANY_NAME.values()
+    assert "ford" not in TICKER_BY_COMPANY_NAME
+    assert min(len(t) for t in TICKER_BY_COMPANY_NAME.values()) >= MIN_LEXICAL_TICKER_CHARS
+
+
+def test_the_normalisation_map_only_ever_yields_universe_tickers():
+    # It is derived from `UNIVERSE`, so this is the guard that it stays derived: a hand-added
+    # entry pointing at a ticker the KB does not hold would make BM25 search for a filer that
+    # is not in the collection.
+    assert set(TICKER_BY_COMPANY_NAME.values()) <= TICKERS
+    assert all(form == form.lower() for form in TICKER_BY_COMPANY_NAME)
+
+
+def test_every_normalisable_company_can_be_reached_by_its_legal_name_too():
+    # The legal name is what a filing calls the filer, so it is the form a question quoting a
+    # filing uses. It is included automatically rather than repeated in `aliases`.
+    for company in UNIVERSE:
+        if len(company.ticker) >= MIN_LEXICAL_TICKER_CHARS:
+            assert TICKER_BY_COMPANY_NAME[company.name.lower()] == company.ticker

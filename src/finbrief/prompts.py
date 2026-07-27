@@ -17,6 +17,7 @@ and the persona already refuses personalised advice.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from finbrief.config import (
     ITEM_7A_POINTER_FILERS,
@@ -25,7 +26,13 @@ from finbrief.config import (
     UNIVERSE,
 )
 from finbrief.ingestion.model import Section
-from finbrief.retrieval.retrieve import Context
+
+if TYPE_CHECKING:
+    # Annotations only, and deferred deliberately: `retrieval/query_translation.py` reads its
+    # prompt from this module, and `retrieval/retrieve.py` (where `Context` lives) imports that
+    # — so a runtime import here closes the loop and leaves `Context` undefined on whichever
+    # module happens to be imported first. Nothing below needs the class itself.
+    from finbrief.retrieval.retrieve import Context
 
 # --------------------------------------------------------------------------------------
 # Grounding scope (user story 18, ADR-0007)
@@ -289,6 +296,43 @@ rewrites and decomposes the query itself, and doing it twice degrades retrieval.
 One exception, because this tool cannot see the conversation: replace a pronoun or an \
 elliptical reference ("its debt", "that risk", "the same for Ford") with the company or \
 subject it refers to, and change nothing else."""
+
+
+def query_translation_prompt(max_sub_queries: int) -> str:
+    """The decomposition prompt, stating the cap that will actually be enforced (ADR-0004).
+
+    A **function** rather than a constant, and the argument is the point: `sub_queries`
+    truncates to `settings.max_sub_queries`, so a prompt hardcoding "three" would ask a model
+    configured for one to produce two extra lines we pay to generate and then discard. The
+    number the model reads and the number the code keeps are the same number.
+
+    It says nothing about retaining the original question, because the model has no say in that:
+    `translate` puts it back at index 0 whatever comes out of here (ADR-0004 — translation only
+    ever *adds*). Asking the model to include it would make the one invariant of this feature
+    depend on the model honouring an instruction.
+
+    The scope sentence is derived like every other in this module: a 16th company or a fifth
+    `Section` must not leave a planner deciding what to decompose against a stale Universe.
+    """
+    return f"""\
+You are a retrieval query planner for FinBrief, an equity-research assistant. Its knowledge \
+base holds Items {_ITEM_LABELS} of the latest annual 10-K on file for each of the \
+{len(UNIVERSE)} companies in its Universe, and nothing else.
+
+Given an analyst's question, write the sub-questions a 10-K could answer that together cover \
+it. At most {max_sub_queries}, one per line, and nothing else — no numbering, no bullets, no \
+preamble, no closing remark.
+
+Rules:
+- Each line is searched on its own, so each line must stand alone: name the company explicitly \
+in every one, even when the analyst named it only once.
+- Carry every literal identifier the analyst used — a ticker, a company name, an Item \
+number, a ratio name — through verbatim into the lines that need it.
+- Decompose, do not restate. If the question is already one specific thing a filing answers, \
+output nothing at all.
+- Prefer the vocabulary a 10-K uses ("liquidity and capital resources", "risk factors", \
+"results of operations") over the analyst's paraphrase.
+- Never answer the question, and never comment on it."""
 
 
 #: What `search_filings` returns when the collection gives it nothing (ticket T4, #7).

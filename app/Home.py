@@ -31,10 +31,18 @@ import uuid
 
 import streamlit as st
 
-from finbrief.agent.agent import BASELINE_STRATEGY, answer, build_agent
-from finbrief.config import CLUSTERS, PEERS, UNIVERSE, ConfigError, get_settings
+from finbrief.agent.agent import Search, answer, build_agent
+from finbrief.config import (
+    CLUSTERS,
+    PEERS,
+    UNIVERSE,
+    ConfigError,
+    RetrievalStrategy,
+    get_settings,
+)
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.prompts import DISCLAIMER, GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
@@ -105,24 +113,23 @@ with st.sidebar:
         st.markdown(f"- {detail}")
 
     st.subheader("Configuration")
+    # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
+    # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
+    # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so a
+    # second line would be a gap that no longer exists — and the way this panel stays honest is
+    # that `agent.build_agent` reads these same two settings (nothing here restates them).
     st.markdown(
         f"**Model** `{settings.chat_model}`  \n"
-        f"**Strategy** `{BASELINE_STRATEGY}`  \n"
+        f"**Strategy** `{settings.retrieval_strategy}"
+        f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
         f"**Top-k** `{settings.retrieval_k}`"
     )
-    # Never let the panel advertise a configuration that did not run: `hybrid +
-    # translation` is the pre-registered shipping default (ADR-0005) and arrives in Phase 4.
-    # Translation is checked as well as strategy, because the two switches move
-    # independently: `retrieve()` tells an operator to set
-    # `FINBRIEF_RETRIEVAL_STRATEGY=vector`, and doing exactly that leaves
-    # `FINBRIEF_QUERY_TRANSLATION` at its default `True` — so gating on the strategy alone
-    # left the one configuration we recommend as the only one that ran silently.
-    if settings.retrieval_strategy != BASELINE_STRATEGY or settings.query_translation_enabled:
-        st.caption(
-            f"Configured strategy `{settings.retrieval_strategy}"
-            f"{' + translation' if settings.query_translation_enabled else ''}` "
-            f"lands in Phase 4. Answers below ran `{BASELINE_STRATEGY}`."
-        )
+    st.caption(
+        "Every answer's *How I answered* panel shows the queries that ran and which "
+        "retriever surfaced each chunk (ADR-0004)."
+        if settings.retrieval_strategy is RetrievalStrategy.HYBRID
+        else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
+    )
 
     st.subheader("Universe")
     st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
@@ -153,6 +160,164 @@ def as_markdown(text: str) -> str:
     this persona has no reason to emit.
     """
     return text.replace("$", r"\$")
+
+
+def distance_label(distance: float | None) -> str:
+    """`distance 0.7421`, or what to say when there is no distance to state.
+
+    Under `hybrid` a chunk BM25 recovered is one vector search did not return, so it has no
+    distance — which is the ADR-0004 case worth naming rather than papering over. Printing a
+    stand-in would put a number in the panel that no measurement produced, and `distance None`
+    reads as a bug.
+    """
+    return "no vector distance" if distance is None else f"distance {distance:.4f}"
+
+
+def retriever_label(context: Context) -> str:
+    """`vector + BM25` — which retrievers found this chunk, for the sources panel's caption.
+
+    The shortest answer to the question ADR-0004's exact-identifier prediction turns on, put
+    where a reader is already looking at the citation.
+    """
+    # `Retriever` is a closed two-member enum, so this is a casing fix and not a lookup with a
+    # fallback: a dict `.get` here had a `"vector": "vector"` entry and a default branch nothing
+    # could reach. The empty case *is* reachable — a reply checkpointed before Phase 4 carries
+    # no provenance at all.
+    found = ["BM25" if r is Retriever.BM25 else r.value for r in context.retrievers]
+    return " + ".join(found) if found else "provenance not recorded"
+
+
+def variant_labels(search: Search) -> dict[str, str]:
+    """Each variant this search ran, mapped to what to call it in the panel.
+
+    Three kinds, named apart because they have different causes and the T6 finding is about
+    which one does the work (ADR-0004 amendment): the analyst's own words, the deterministic
+    ticker form `config` supplied, and the planner's sub-queries. Calling the ticker form
+    "sub-query 1" would credit a model for a lookup.
+
+    A label rather than the query text, because the texts are listed once above the table and
+    repeating a whole question inside a Markdown table cell would wrap badly and — worse — break
+    the table outright on a query containing a pipe.
+    """
+    labels = {search.variants[0]: "original"} if search.variants else {}
+    if search.ticker_form is not None:
+        labels[search.ticker_form] = "ticker form"
+    for number, sub_query in enumerate(search.sub_queries, start=1):
+        labels[sub_query] = f"sub-query {number}"
+    return labels
+
+
+def barren_variants(search: Search) -> tuple[str, ...]:
+    """The variants this search ran that no returned chunk credits — ADR-0004 §1's datum.
+
+    A variant that surfaced nothing is the whole reason `retrieve()` returns a `Retrieval`
+    rather than a bare sequence of contexts: it is a fact about the retrieval that no chunk's
+    provenance can carry. The panel listed such a variant among the queries but said nothing
+    about it, leaving a reader to diff that list against every table to notice — which is the
+    datum being on screen without being reported (issue #6 review).
+
+    **Empty when no provenance was recorded at all**, rather than "every variant was barren".
+    A reply checkpointed before Phase 4, or a search the collection had nothing for, has no rows
+    to credit a variant with — and "this query found nothing" is a different claim from "we
+    cannot say what this query found". The empty-collection case has its own banner in
+    `render_sources`.
+    """
+    if not any(context.provenance for context in search.contexts):
+        return ()
+    credited = {row.variant for context in search.contexts for row in context.provenance}
+    return tuple(variant for variant in search.variants if variant not in credited)
+
+
+def render_how_i_answered(searches: tuple[Search, ...]) -> None:
+    """The RAG-visualization panel (user story 5, ADR-0004): what ran, and what it surfaced.
+
+    Original query → sub-queries → each retrieved chunk with its RRF score and the per-chunk
+    provenance ADR-0004 asks for: which variant × which retriever surfaced it, at what rank, for
+    what contribution. This is the surface that makes "*why* hybrid wins" checkable rather than
+    asserted — and the one place a reader can see a sub-query that surfaced nothing at all,
+    which no chunk's provenance can report.
+
+    Rendered from the turn's own `Search` objects, never re-retrieved: the numbers here have to
+    be the numbers behind the answer's `[n]` markers, and a second retrieval is a second chance
+    to disagree with them.
+
+    Nothing is rendered for a turn that did not search, or for replies whose provenance did not
+    survive a checkpoint written by an older shape — an empty panel promising an explanation is
+    worse than no panel.
+    """
+    explicable = [
+        search
+        for search in searches
+        if search.variants or any(c.provenance for c in search.contexts)
+    ]
+    if not explicable:
+        return
+    with st.expander(":material/account_tree: How I answered"):
+        for number, search in enumerate(explicable, start=1):
+            if len(explicable) > 1:
+                st.markdown(f"**Search {number}**")
+            labels = variant_labels(search)
+            st.markdown(f"**Queries this search ran** ({len(search.variants)})")
+            for index, variant in enumerate(search.variants, start=1):
+                # `.get`, because a variant a checkpointed reply carries may predate the label
+                # map that would name it — a missing label is a cosmetic loss, not a KeyError.
+                label = labels.get(variant, "query")
+                st.markdown(f"{index}. `{label}` — {as_markdown(variant)}")
+            if search.ticker_form is not None:
+                st.caption(
+                    "The ticker form is added deterministically from the Universe, not by a "
+                    "model: a chunk's header carries `TSLA`, so a lexical search for *Tesla* "
+                    "would miss most of the filer (ADR-0004 amendment)."
+                )
+            if not search.translated:
+                st.caption("Query translation was off, so only the question itself was run.")
+            elif not search.planned:
+                # Distinguished from the caption below, because the causes are different and
+                # only one of them is the model's: at `FINBRIEF_MAX_SUB_QUERIES=0` translation
+                # is on and the planner is never invoked, so crediting the emptiness to a
+                # question that "was already specific" describes a chat call that never
+                # happened — in the one cell ADR-0004 §6 uses to isolate what the planner
+                # contributes (issue #6 review).
+                st.caption(
+                    "The query planner is switched off (`FINBRIEF_MAX_SUB_QUERIES=0`), so no "
+                    "sub-query was asked for — only the question and, where one applies, its "
+                    "ticker form were run."
+                )
+            elif not search.sub_queries:
+                st.caption(
+                    "The query planner added nothing — the question was already one specific "
+                    "thing a filing answers, so no sub-query was retrieved."
+                )
+            for context in search.contexts:
+                st.markdown(
+                    f"**[{context.rank}] {context.citation}** · RRF "
+                    f"{context.fused_score:.6f} · {distance_label(context.distance)}"
+                )
+                if not context.provenance:
+                    st.caption("Provenance was not recorded for this chunk.")
+                    continue
+                rows = "\n".join(
+                    f"| {labels.get(row.variant, 'query')} | {row.retriever.value} "
+                    f"| {row.rank} | {row.contribution:.6f} "
+                    # This row's own distance, not the chunk's nearest — which is what makes
+                    # ADR-0004 §7's "the recovery is embedding-side" readable off one turn: the
+                    # same chunk at two distances under two surface forms. An em dash for BM25,
+                    # which has no distance of its own (§3).
+                    f"| {'—' if row.distance is None else f'{row.distance:.4f}'} |"
+                    for row in context.provenance
+                )
+                st.markdown(
+                    "| query | retriever | rank | RRF contribution | distance |\n"
+                    "|---|---|---:|---:|---:|\n" + rows
+                )
+            if barren := barren_variants(search):
+                named = ", ".join(f"`{labels.get(variant, 'query')}`" for variant in barren)
+                st.caption(
+                    f"Surfaced no chunk in the top-{len(search.contexts)}: {named}. Each ran "
+                    "through every retriever this strategy uses; nothing they found survived "
+                    "fusion. Translation only ever *adds*, so a variant that contributes "
+                    "nothing costs a retrieval round and changes no ranking (ADR-0004)."
+                )
 
 
 def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
@@ -190,7 +355,10 @@ def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
     with st.expander(f":material/description: Sources ({len(contexts)})"):
         for context in contexts:
             st.markdown(f"**[{context.rank}] {context.citation}**")
-            st.caption(f"`{context.chunk_id}` · distance {context.distance:.4f}")
+            st.caption(
+                f"`{context.chunk_id}` · {distance_label(context.distance)} · "
+                f"{retriever_label(context)}"
+            )
             # `st.text`, not a Markdown blockquote: the body is the filer's own words, and
             # this is the surface a reader checks a citation against, so it must render
             # character-identical. `st.markdown` does not — it parses `$…$` as KaTeX, so
@@ -207,19 +375,27 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(as_markdown(message["content"]))
         if message["role"] == "assistant":
-            # `.get` returning `None`, not `()`, because a live session's transcript
-            # outlives a code reload: rows written by an older shape would otherwise
-            # `KeyError` on the first rerun after a deploy
-            # (`test_a_transcript_row_from_an_older_shape_replays`). The two absences are
-            # different facts and only one is a setup problem — "this row predates
-            # contexts" must not raise `render_sources`' empty-collection banner over an
-            # answer that was grounded when it was written. That the current shape *does*
-            # carry its contexts across a rerun — the regression this tolerance could
-            # otherwise hide — is `test_the_sources_panel_survives_the_next_turn`.
-            if (contexts := message.get("contexts")) is not None:
-                # `searched` defaults to True so a row written before the agent existed
-                # replays exactly as it did: back then contexts were always retrieved, so an
-                # empty tuple in an old row really does mean the collection was empty.
+            # `.get` returning `None`, not a default, because a live session's transcript
+            # outlives a code reload: rows written by an older shape are still in
+            # `session_state` on the first rerun after a deploy and must replay rather than
+            # `KeyError` the page (`test_a_transcript_row_from_an_older_shape_replays`). The
+            # absences are different facts and only one is a setup problem — "this row predates
+            # the current shape" must not raise `render_sources`' empty-collection banner over
+            # an answer that was grounded when it was written. That the current shape *does*
+            # carry its sources across a rerun — the regression this tolerance could otherwise
+            # hide — is `test_the_sources_panel_survives_the_next_turn`.
+            if (turn := message.get("turn")) is not None:
+                # `AgentTurn` is asked for both facts rather than the row carrying them
+                # separately: it is the one authority on "which chunks, in which order" and on
+                # "was the knowledge base consulted at all", and a row that stored its own copy
+                # could disagree with the panel below it.
+                render_sources(turn.contexts, searched=turn.searched)
+                render_how_i_answered(turn.searches)
+            elif (contexts := message.get("contexts")) is not None:
+                # The T4 row shape, kept readable for the same one-rerun window. `searched`
+                # defaults to True because before the agent existed contexts were always
+                # retrieved, so an empty tuple in such a row really does mean an empty
+                # collection.
                 render_sources(contexts, searched=message.get("searched", True))
             st.caption(DISCLAIMER)
 
@@ -242,15 +418,17 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
         else:
             st.markdown(as_markdown(reply.text))
             render_sources(reply.contexts, searched=reply.searched)
+            render_how_i_answered(reply.searches)
             st.caption(DISCLAIMER)
             st.session_state.messages.append(
                 {
                     "role": "assistant",
                     "content": reply.text,
-                    "contexts": reply.contexts,
-                    # Kept so a replayed turn can tell "answered from the conversation" from
-                    # "the collection returned nothing" — the two look identical without it,
-                    # and only one of them is a setup problem.
-                    "searched": reply.searched,
+                    # The whole turn, because the panels need three facts about it and one of
+                    # them — the query variants each search ran — belongs to the search rather
+                    # than to any chunk. Display data, not memory: the checkpointer remains the
+                    # agent's memory of record (ADR-0008), and nothing here is ever read back
+                    # into a conversation.
+                    "turn": reply,
                 }
             )

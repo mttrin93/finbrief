@@ -8,11 +8,16 @@ need retrieval interleaved with finance-tool calls.
 
 **Decision.** Separate the retrieval *engine* from the agent's *use* of it.
 
-- **`retrieve(question, strategy, k) → (contexts, scores)`** — a standalone deterministic
-  component with query translation + hybrid search *inside it*, selected by a config flag.
-  Run at temperature 0 with fixed `k` in eval mode. The eval harness calls this **directly**,
+- **`retrieve(question, strategy, k) → (contexts, scores)`** — a standalone component with
+  query translation + hybrid search *inside it*, selected by a config flag. Run at
+  temperature 0 with fixed `k` in eval mode. The eval harness calls this **directly**,
   question by question, to produce clean RAGAs/A-B triples. **This is what the headline
   numbers measure.**
+  **Deterministic except for the sub-query planner** — the `±translation` arms run one chat
+  completion, so they are reproducible only up to its temperature-0 sampling while the
+  `−translation` arms are exact. This ADR first wrote "deterministic" flat; ADR-0004 §9 records
+  the split, why temperature 0 is not a guarantee, and the T10 harness design that makes all
+  four arms reproducible anyway (issue #6 review).
 - **`search_filings`** — the same `retrieve()` wrapped as one tool the agent can call
   alongside `get_stock_data` / `get_recent_news`. This is what ships and what makes the
   combined demo queries work. It calls `retrieve()` with the **default** strategy — the
@@ -65,6 +70,14 @@ strategy that never ran is worse than a missing number. The app does not read th
 either: `agent.BASELINE_STRATEGY = vector` is what runs, and the sidebar states it *beside*
 the configured value rather than in place of it, so the UI cannot advertise the unmeasured
 default. Phase 4 deletes that constant and reads the setting.
+
+**Closed by T6 (issue #6).** All three sentences above are now history: `retrieve()` implements
+`hybrid` and takes `translate` as a second caller-named switch, `BASELINE_STRATEGY` is deleted,
+`build_agent` reads `settings.retrieval_strategy` / `settings.query_translation_enabled`, and
+the sidebar names **one** configuration because the configured one is what answers. What
+survives from this section is the rule it was written to protect — a number is never reported
+against a configuration nobody selected — which is now enforced by the switches being arguments
+with conservative defaults rather than values read from config inside the engine.
 
 **Also true of the implementation, and not visible in the signature.**
 

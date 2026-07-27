@@ -14,10 +14,21 @@ business overview, risk factors, current valuation, and recent news — in minut
 > Universe companies, fetched from EDGAR, gated, chunked, and persisted (see *Building the
 > knowledge base* below).
 >
-> Retrieval is **vector-only**, deliberately: the pre-registered shipping default is
-> `hybrid + translation` (ADR-0005) and it arrives in Phase 4, so until then the app's
-> sidebar states both what is configured and what actually ran rather than letting a
-> configured strategy be read as a measured one. The finance and news tools, and the
+> Retrieval is **hybrid + query translation**, the pre-registered shipping default (ADR-0005),
+> and the sidebar now names one configuration because the configured one is what answers.
+> One symmetric pipeline: the analyst's question is always retained as a query variant,
+> translation only ever *adds* to it — a deterministic **ticker form** when a Universe company
+> is named by name (a `config` lookup, not a model) plus up to three planner sub-queries, so
+> 1 + ≤1 + ≤3 = five variants and ten candidate lists under hybrid — every variant runs through
+> both BM25 and vector, and the
+> candidate lists are fused with Reciprocal Rank Fusion (`k = 60`, the published default,
+> stated and not tuned), deduplicated by chunk id and truncated to top-k. Every answer that
+> searched the filings carries
+> a **"How I answered"** panel showing the queries that ran and, per chunk, which variant ×
+> which retriever surfaced it and what it contributed to the fused score — so *why* a chunk
+> was retrieved is checkable on the turn itself, not only in an aggregate table. Building it
+> falsified a pre-registered hypothesis, which is written up in ADR-0004's T6 amendment and on
+> [issue #6](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/6). The finance and news tools, and the
 > security gate, are the phases that follow — so the agent has one tool today, and the
 > tool-*selection* it exists for starts mattering when there are four. The three files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
@@ -116,15 +127,18 @@ the environment, so the app and the evaluation harness read the same switches (A
   (`FinBrief your-email@example.com`). `FINBRIEF_CHROMA_DIR` (default `data/chroma`) is
   where the persisted collections live — ingest and app must agree on it, and
   `FINBRIEF_CHECKPOINT_DB` (default `data/checkpoints.sqlite`) is where conversations go.
-- Retrieval switches. `FINBRIEF_RETRIEVAL_K` is read by the answer path today.
-  `FINBRIEF_RETRIEVAL_STRATEGY` and `FINBRIEF_QUERY_TRANSLATION` resolve from the
-  environment but are deliberately **not** honoured by it yet: their defaults are the
-  pre-registered shipping configuration — hybrid + translation, fixed before any A/B data
-  exists (ADR-0005) — and serving vector results under a hybrid label would report a
-  strategy that never ran, so `retrieve()` raises on `hybrid` and the sidebar names the gap
-  between what is configured and what answered. Phase 4 implements it and closes the gap.
-  `FINBRIEF_MAX_SUB_QUERIES` is capped at 3, a ceiling rather than a default (ADR-0004's
-  latency budget).
+- Retrieval switches, and all three are honoured. `FINBRIEF_RETRIEVAL_STRATEGY`
+  (`vector` / `hybrid`) and `FINBRIEF_QUERY_TRANSLATION` move independently, because they are
+  the two axes of the A/B (ADR-0002); their defaults are the pre-registered shipping
+  configuration, hybrid + translation, fixed before any A/B data existed (ADR-0005). The
+  sidebar states what is running and the *How I answered* panel shows what it did.
+  `FINBRIEF_RETRIEVAL_K` is top-k **after** fusion, and is also how deep each candidate list
+  is fetched. `FINBRIEF_MAX_SUB_QUERIES` is capped at 3, a ceiling rather than a default
+  (ADR-0004's latency budget); at `0` the query planner is skipped entirely and translation
+  reduces to the deterministic ticker-form variant, which is a useful configuration in its own
+  right — it is the cell that isolates what the planner contributes. `RRF_K` is deliberately
+  **not** an environment variable: a fusion constant somebody could sweep per environment is a
+  back door into the pre-registration ADR-0005 exists to protect.
 - `finbrief.*` logs one JSON object per line to stderr at `LOG_LEVEL` (default `INFO`);
   the Phase-7 A/B and security-gate analyses read those lines back.
 
@@ -189,6 +203,16 @@ because a query embedded by a different model retrieves noise with no error. It 
 check, not an evaluation**: five hand-written queries, no buckets, no ground truth, no
 baseline, so no number it prints may be cited as a retrieval-quality claim. ADR-0002's
 stratified golden set with per-bucket RAGAs (ticket T9) is the measurement artifact of record.
+
+It runs plain `vector` with translation **off** — deliberately *not* the shipping default, and
+the report names both switches so nobody reads its distances as `hybrid + translation`'s. The
+check asks one question ("is retrieval reading the collection ingest wrote, embedded by the
+model that wrote it?"), and every part of the shipped configuration would absorb the failure it
+exists to catch: BM25 matches lexically and would find the right filing even after an embedding
+model drifted, which is precisely the drift being watched for, and translation would put a paid
+*chat* call in front of it and make the queries non-verbatim. Holding it at T3's configuration
+also keeps every run comparable with the reports already committed. Strategy comparison is the
+golden set and the T10 A/B ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this script.
 
 Three committed evidence files, all generated:
 

@@ -10,6 +10,7 @@ apart with no error to show for it.
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from functools import lru_cache
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -55,6 +56,45 @@ def build_filings_store(
         persist_directory=(
             persist_directory if persist_directory is not None else settings.chroma_dir
         ),
+    )
+
+
+@lru_cache(maxsize=1)
+def default_filings_store(settings: Settings) -> Chroma:
+    """The `filings` collection the application reads, opened once per process.
+
+    `build_filings_store` stays the constructor; this is the *shared handle* on it, and it
+    exists because Phase 4's BM25 index is built from the collection's whole contents and
+    cached against the store that holds them (`retrieval/hybrid.py`). Opened afresh on every
+    query — which is what `retrieve()` used to do — that cache would miss every time and
+    rebuild a 5,800-chunk lexical index for one question.
+
+    Cached on `Settings`, which is a frozen dataclass and therefore hashable, so a harness that
+    points an injected `Settings` at a throwaway index gets its own handle rather than the
+    application's (ADR-0002). Tests inject a store and never reach this.
+    """
+    return build_filings_store(settings)
+
+
+def all_chunks(store: Chroma) -> tuple[Document, ...]:
+    """Every chunk in the collection, as indexed — the corpus BM25 needs (ADR-0004).
+
+    The read side of this module's rule, like `nearest_chunks`: BM25 scores *text*, so it needs
+    the whole corpus rather than a neighbourhood of it, and this is where that read happens.
+    `retrieval/hybrid.py` turns the result into an index and caches it; nothing calls this per
+    query.
+
+    `page_content` is the chunk's **indexed** text, provenance header included — which is the
+    point (`ingestion/chunking.py`: the header is there so BM25 can match a ticker and a
+    Section literal on every chunk of a Section). Order is Chroma's and is not relied on:
+    fusion ranks by score and breaks ties on chunk id.
+    """
+    held = store.get(include=["documents", "metadatas"])
+    return tuple(
+        Document(id=chunk_id, page_content=text or "", metadata=dict(metadata or {}))
+        for chunk_id, text, metadata in zip(
+            held["ids"], held["documents"] or (), held["metadatas"] or (), strict=True
+        )
     )
 
 
