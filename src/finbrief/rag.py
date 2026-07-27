@@ -72,6 +72,10 @@ def answer_question(
     started = time.perf_counter()
     contexts = retrieve(question, strategy=strategy, k=k, store=store, settings=settings)
     if not contexts:
+        # Emptiness, not irrelevance — a populated collection always returns `k`. The
+        # relevance floor that would widen this branch is deferred to the Phase 4/7 A/B
+        # evidence on purpose; see `prompts.NO_CONTEXT_FALLBACK` for why, and
+        # `docs/verification/retrieval-smoke.md` for the distances it would be chosen from.
         text = NO_CONTEXT_FALLBACK
     else:
         chat = model if model is not None else build_chat_model()

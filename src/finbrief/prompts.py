@@ -86,6 +86,21 @@ DISCLAIMER = (
 #: The retrieval-level fallback (spec §Tools, tiered error handling). Returned *instead of*
 #: a generation, because a model handed no contexts answers from its weights — which is the
 #: ungrounded guess this project exists to avoid.
+#:
+#: **Its reach is narrower than it looks, deliberately.** A non-empty Chroma always returns
+#: `k` chunks, so "nothing retrieved" means an empty or fully filtered collection — never
+#: "nothing relevant". An out-of-KB question therefore reaches the model with `k` far-away
+#: contexts and is refused by `SYSTEM_PROMPT`'s grounding rule instead, which the smoke
+#: check's control query demonstrates: `docs/verification/retrieval-smoke.md` records the
+#: out-of-KB control at 1.0700–1.1681 against 0.5391–0.9559 across four in-KB queries.
+#:
+#: A **distance floor** would make this tier fire on relevance rather than on emptiness, and
+#: is deliberately **not implemented in T3**: the threshold has to be chosen against the
+#: per-bucket A/B and RAGAs evidence from Phase 4 and Phase 7 (ADR-0002, ADR-0005), not
+#: against one run of five queries — whose own numbers argue the point, since the gap
+#: between the worst in-KB hit and the best out-of-KB one is about 0.11 on a scale where a
+#: single query's band already spans 0.14. The smoke report's distance table is the
+#: calibration input for that decision, and nothing more.
 NO_CONTEXT_FALLBACK = (
     "I could not find anything in the filings I have to ground an answer to that. "
     f"{GROUNDING_SCOPE} Try naming a company in the Universe, or asking about its "

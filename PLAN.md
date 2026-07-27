@@ -239,8 +239,10 @@ retrieval chain and land there)
   the fifteen real filings demanded: starts-at-its-own-heading, stops-before-the-next-
   Item, the-filer-files-10-Ks, and the recorded-pointer-filer cross-check on the Item 7A
   incorporation-by-reference excusal — ADR-0007 amendment.)*
-- Smoke test: top-k retrieval sanity checks for 5 hand-written queries — **not done**;
-  lands with Phase 2.
+- Smoke test: top-k retrieval sanity checks for 5 hand-written queries — **done in Phase 2**
+  (ticket T3, #5) as `scripts/retrieval_smoke.py`, evidence in
+  `docs/verification/retrieval-smoke.md`. A wiring check on `retrieve()`, explicitly not an
+  evaluation: ADR-0002's golden set (T9, #4) remains the measurement artifact of record.
 - The committed evidence under `docs/verification/` is the last full run's and predates the
   post-run extractor, chunker and checklist-format fixes. Re-running ingestion re-renders
   both files and re-embeds all fifteen once; ADR-0007's *Outcome* records row by row what

@@ -3,9 +3,12 @@
 Domain-specialised RAG assistant for equity research. The plan lives in `PLAN.md`; the
 Tier-1 spec (user stories and the six testing seams) in `docs/spec/finbrief.md`; domain
 glossary in `CONTEXT.md`; design decisions in `docs/adr/`. Run evidence lives in
-`docs/verification/`: both files there are **generated**, never hand-authored.
-`ingest-report.md` is rewritten by every full-Universe `scripts/ingest_filings.py` run,
-and `section-starts.md` is ADR-0007's hand-verification checklist — `ingestion/reporting.py`
+`docs/verification/`: every file there is **generated**, never hand-authored.
+`ingest-report.md` is rewritten by every full-Universe `scripts/ingest_filings.py` run;
+`retrieval-smoke.md` by every `scripts/retrieval_smoke.py` run (a wiring check on
+`retrieve()` — *not* an evaluation, and nothing in it may be cited as a quality claim; the
+measurement artifact of record is ADR-0002's golden set, ticket T9/#4); and
+`section-starts.md` is ADR-0007's hand-verification checklist — `ingestion/reporting.py`
 re-parses it to carry ticks and hand-written notes forward, so the only hand-edits it
 tolerates are ticking a box and adding a note.
 
@@ -27,9 +30,10 @@ relative to the working directory.
 ```bash
 uv run python scripts/ingest_filings.py             # full Universe: EDGAR + paid embeddings
 uv run python scripts/ingest_filings.py --dry-run   # fetch + gate only; no key, no writes
+uv run python scripts/retrieval_smoke.py            # 5 sanity queries over the ingested KB
 ```
 
-Never invoke either script from a test.
+Never invoke any of these from a test.
 
 ## Conventions
 
