@@ -200,6 +200,20 @@ ITEM_7A_SECTION_FILERS: frozenset[str] = TICKERS - ITEM_7A_POINTER_FILERS
 #: Stated from the principle rather than tuned to the number: a one-character term is not an
 #: identifier in any lexical index. The measurement corroborates it; a second single-letter
 #: ticker joining the Universe would be excluded for the same reason without re-measuring.
+#:
+#: **What it suppresses, and what that costs — measured** (ADR-0004 amendment §8).
+#: `normalised()` is the only reader of the map below and returns either the whole rewritten
+#: query or `None`, so a filtered-out ticker means **no variant at all** — both retrievers lose
+#: it, not just BM25. For Ford the cost is zero to negative: `Ford debt` retrieves 5/5 Ford
+#: under vector search while the suppressed `F debt` retrieves 3/5 (two BAC chunks intrude, at
+#: worse distances), and BM25's top-5 is identical either way.
+#:
+#: The real variable is how well a filer's **name** covers its own chunks: `ford` is a token in
+#: 232 of Ford's 499 chunks and 0 elsewhere, against `tesla`'s 33 of 280. Ford has the
+#: best-covered name in the Universe bar META, so it does not need normalisation and its
+#: ticker is a poor embedding token — both facts point the same way. This constant is a
+#: first-principles proxy for that, and it would be the *wrong* proxy for a future member with
+#: a short ticker and a poorly-covered name.
 MIN_LEXICAL_TICKER_CHARS = 2
 
 #: Lower-cased company name form -> ticker, for query-side entity normalisation. Derived from

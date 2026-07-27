@@ -162,3 +162,87 @@ Query-side normalisation gets the same result for this bucket at no re-ingest an
 is why it went first. A further fallback exists and was **not** needed: enrich only the BM25
 document text with the company name at index-build time, leaving the embeddings untouched. If a
 re-ingest happens for another reason, carrying both in the header is the change to make with it.
+
+---
+
+### 7. Pre-registered, still pre-data: hybrid's marginal contribution on `exact-identifier` is expected to be **small**
+
+§6's ablation is the reason, and it says something this ADR did not anticipate. Written before any
+golden set (T9, #4) or per-bucket matrix (T10, #11) exists, so it is a prediction and not a reading
+of results.
+
+**What the ablation showed.** On the #6 case, `vector + normalisation` — with **no BM25 at all** —
+already puts the target chunk at **rank 1**. Adding BM25 (`hybrid + normalisation`) leaves it at
+rank 1 with a higher fused score; adding BM25 *and* the planner (the shipping default) puts it at
+**rank 2**. So on the one case that has been root-caused end to end, the direction of hybrid's
+marginal contribution to *target-chunk rank* is **zero to slightly negative**, while its
+contribution to *filer-level precision* is positive (3/5 → 5/5 TSLA).
+
+**Why, mechanically.** The recovery is embedding-side. The ticker form ranks the chunk 5th under
+**vector** search too (distance 0.6778 against the original's 1.0406), because the provenance
+header's ticker moves the embedding as well as the lexical index. RRF then promotes it on
+**agreement** — two independent vector votes from two surface forms beat four single votes. BM25
+supplies one vote of three. Its role in the fix is *redundancy*, not recovery.
+
+**Pre-registered predictions.**
+
+- **`hybrid + translation` − `vector + translation` on `exact-identifier` is small**, and may be
+  ≤ 0 on the rank of the ground-truth chunk while positive on the share of retrieved chunks
+  belonging to the right filer. This supersedes the implicit assumption behind
+  `hybrid > vector-only on exact-identifier` — that claim survives *at equal translation off*
+  (§6 state 2 aside) but is not where the bucket's win comes from.
+- **BM25's value is conditional on normalisation being present.** Without it, §6 measured BM25 as
+  actively harmful on this bucket. So the two are not independent axes in the way ADR-0002's
+  matrix draws them, and the interaction is worth reporting as such.
+- **Falsifiable as written:** if T10 finds `hybrid − vector` at equal translation to be a clear
+  per-bucket gain on `exact-identifier`, this prediction is wrong and §6's mechanism story is
+  incomplete. That is a better outcome for the ADR than for this paragraph.
+
+**One case, one query, `k=5`.** The generality is #4's to establish, and `exact-identifier` is the
+bucket hybrid was supposed to earn its place in — so if the margin is small *there*, the question
+of whether the BM25 arm earns its complexity anywhere becomes live, given this ADR already predicts
+ties on `semantic` and credits `multi-hop` to translation.
+
+**A cost asymmetry that belongs in the same paragraph, so the re-examination is argued honestly.**
+BM25 adds **no network round trip and no spend** — the index is built once per process from
+`all_chunks`, and a query costs a scoring pass over the corpus per variant. That is local CPU, not
+API latency, so ADR-0005's ≤1.5s p50 budget is a weak instrument against it. If hybrid turns out
+not to earn its place, the stronger argument will be **complexity without measurable gain** — one
+more component, one more thing to explain, one more axis in the matrix — rather than latency. Both
+should be measured; only one is likely to bite.
+
+---
+
+### 8. What `MIN_LEXICAL_TICKER_CHARS` actually suppresses, measured
+
+A guard with a stated cost, and the cost was checked rather than assumed (review question, T6).
+
+**It suppresses the variant entirely — both retrievers, not only BM25 scoring.** `normalised()` is
+the only reader of `config.TICKER_BY_COMPANY_NAME` and it either rewrites the whole query or returns
+`None`; a filtered-out ticker means no variant is constructed, so there is nothing for *either*
+retriever to run. Since §6 establishes the mechanism is embedding-side, that matters: dropping the
+variant costs the vector gain too, not just a lexical one, which is a real tension with this ADR's
+symmetric composition.
+
+**Measured for Ford, the only affected filer, and the cost is zero to negative.**
+
+| query | retriever | result |
+|---|---|---|
+| `Ford debt` | vector | **5/5 F**, first `F` Item 7 at rank 2, distances 0.7753–0.9248 |
+| `F debt` (the suppressed variant, forced by hand) | vector | **3/5 F** — two `BAC` Item 7 chunks intrude; distances *worse* (0.8779–1.0338) |
+| `Ford debt` vs `F debt` | BM25 | identical top-5, all `F` — BM25 loses nothing either way |
+
+And Ford is not a weak spot to begin with: `Ford debt` under `hybrid` with translation **off**
+already returns 5/5 `F` with `F` Item 7 at **rank 1**, and with translation on the distances fall to
+0.5141. The guard is therefore aligned with the data rather than a compromise against it.
+
+**The underlying variable is not ticker length — it is how well a filer's own name covers its own
+chunks.** Ford's is the best in the Universe bar one: `ford` is a token in **232 of its 499 chunks
+(46%) and in 0 chunks elsewhere**. Tesla's `tesla` is in **33 of 280 (12%)** and leaks to NVDA.
+Ford does not need normalisation, and its ticker is a poor embedding token; both facts point the
+same way. `MIN_LEXICAL_TICKER_CHARS` is a first-principles proxy for that — a one-character term is
+not an identifier in any index — and it happens to select correctly here. **If a future Universe
+member had a short ticker *and* a poorly-covered name, the proxy would be wrong for it**, and the
+right fix would be to state the rule as name-coverage rather than length. Recorded so the next
+reader knows which of the two the constant is really standing in for. The per-filer coverage table
+is on #4, where it constrains golden-set sampling.

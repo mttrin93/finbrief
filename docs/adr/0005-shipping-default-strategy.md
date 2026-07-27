@@ -57,3 +57,26 @@ is now 1 original + at most 1 normalised + at most `max_sub_queries` (ADR-0004 a
 normalised variant costs a retrieval round and never a chat round, which is the half of the ≤1.5s
 p50 budget that matters least — but it is two more candidate lists under hybrid, and T10 measures
 the added p50 from the Phase-6 logs rather than assuming it.
+
+**4. A pre-registered re-examination trigger for the dominance argument.** ADR-0004 amendment §7
+predicts, still pre-data, that hybrid's marginal contribution over `vector + translation` on
+`exact-identifier` is **small** — the ablation puts `vector + normalisation` at rank 1 on the #6
+case, with the shipping default one place behind at rank 2 while carrying better filer precision.
+Since `exact-identifier` is the bucket hybrid exists to win, that makes the dominance claim behind
+this ADR's default thinner than it looked when it was written.
+
+So the trigger, fixed now: **if T10 (#11) finds `hybrid − vector` at equal translation to be within
+per-question spread on every bucket, the dominance argument is re-argued in this ADR rather than
+defended, and `vector + translation` becomes a live candidate for the shipping default.** This is
+deliberately *not* an extension of the falsification clause above, which is about translation and
+fires on a two-sided quality test; this one is about the strategy axis and fires on an *absence* of
+gain. Recording it before the numbers exist is the whole point — a default kept because its
+marginal component was never separately measured is the same p-hacking failure in a different
+direction.
+
+Two honest qualifications. The observed direction rests on **one case** (`n=1`, one query, `k=5`);
+#4's per-bucket numbers are what can settle it. And the cost side is weaker than it appears: BM25
+adds no network round trip and no spend, only local CPU, so the ≤1.5s p50 budget above is a poor
+instrument against it — if hybrid fails to earn its place, the argument will be **complexity without
+measurable gain**, not latency, and this ADR should say so rather than reach for the budget it
+already has.
