@@ -243,6 +243,7 @@ class Settings:
     alphavantage_enabled: bool
     sec_edgar_user_agent: str
     chroma_dir: str
+    checkpoint_db: str
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -276,6 +277,11 @@ class Settings:
             # harness builds throwaway indexes; the default keeps ingest and app pointed
             # at the same directory without configuration.
             chroma_dir=_string(env, "FINBRIEF_CHROMA_DIR", "data/chroma"),
+            # The agent's memory of record (ADR-0008): a SQLite file, overridable for the
+            # same reason `chroma_dir` is — a deployment's writable path is not the repo's.
+            # Ephemeral by design on Streamlit Community Cloud; conversations are not durable
+            # data, and losing them costs a conversation rather than the knowledge base.
+            checkpoint_db=_string(env, "FINBRIEF_CHECKPOINT_DB", "data/checkpoints.sqlite"),
         )
 
 
