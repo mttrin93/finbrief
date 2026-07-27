@@ -203,9 +203,24 @@ class Retrieval:
         return self.variants[0] if self.variants else ""
 
     @property
-    def sub_queries(self) -> tuple[str, ...]:
-        """What translation added, if anything. Empty when it was off, or added nothing."""
+    def added(self) -> tuple[str, ...]:
+        """Every variant translation added. Empty when it was off, or added nothing."""
         return self.variants[1:]
+
+    @property
+    def ticker_form(self) -> str | None:
+        """The deterministic ticker-form variant, if a Universe company was named.
+
+        Reported apart from `sub_queries` because the two additions have different causes and
+        the T6 amendment's finding is about which one earns the exact-identifier bucket — see
+        `query_translation.added_variants`.
+        """
+        return query_translation.added_variants(self.variants)[0]
+
+    @property
+    def sub_queries(self) -> tuple[str, ...]:
+        """What the *planner* added — the ticker form excluded."""
+        return query_translation.added_variants(self.variants)[1]
 
     def as_payload(self) -> dict[str, Any]:
         """This retrieval as JSON-safe primitives — `search_filings`' artifact shape.

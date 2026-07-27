@@ -33,6 +33,13 @@ SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test", "FINBRIEF_RETRIEV
 
 QUESTION = "What are the risks to Apple's supply chain?"
 
+#: `QUESTION` names a Universe company, so translating it also adds a deterministic ticker-form
+#: variant (ADR-0004 amendment). This is what that comes out as, written once.
+QUESTION_AS_TICKER = "What are the risks to AAPL's supply chain?"
+
+#: And a question naming nobody, for the assertions that are about the *planner* alone.
+NO_COMPANY = "What is the outlook for margins?"
+
 VECTOR = RetrievalStrategy.VECTOR
 HYBRID = RetrievalStrategy.HYBRID
 
@@ -180,10 +187,15 @@ def test_the_original_question_is_always_the_first_variant(filings_store):
     assert plain.variants == (QUESTION,)
     assert translated.variants[0] == QUESTION
     assert translated.question == QUESTION
+    # Two kinds of addition, reported apart: `config`'s deterministic ticker form and the
+    # planner's sub-queries. Collapsing them would credit a model for a lookup, and the T6
+    # amendment's finding is about which of the two earns the exact-identifier bucket.
+    assert translated.ticker_form == QUESTION_AS_TICKER
     assert translated.sub_queries == (
         "Apple supplier concentration",
         "Apple manufacturing risk",
     )
+    assert translated.added == (QUESTION_AS_TICKER, *translated.sub_queries)
 
 
 def test_translation_reports_that_it_ran_even_when_it_added_nothing(filings_store):
@@ -191,7 +203,7 @@ def test_translation_reports_that_it_ran_even_when_it_added_nothing(filings_stor
     # and "translation ran and the model offered nothing usable" are different things, and only
     # the second one is worth a second look in the RAG-viz panel.
     result = retrieve(
-        QUESTION,
+        NO_COMPANY,
         strategy=VECTOR,
         translate=True,
         k=3,
@@ -200,15 +212,15 @@ def test_translation_reports_that_it_ran_even_when_it_added_nothing(filings_stor
         model=a_translator(""),
     )
 
-    assert result.variants == (QUESTION,)
+    assert result.variants == (NO_COMPANY,), "no planner output, and no company to normalise"
     assert result.translated is True
     assert retrieve(QUESTION, strategy=VECTOR, k=3, store=filings_store).translated is False
 
 
 def test_every_variant_runs_through_every_retriever_the_strategy_names(filings_store):
     # The symmetric composition, read back off the provenance: two variants × two retrievers is
-    # four candidate lists, and ADR-0004 wants all four. An asymmetric shortcut — sub-queries
-    # through vector only, say — would leave a variant × retriever pair unrepresented here.
+    # every variant × every retriever, and ADR-0004 wants all of them. An asymmetric shortcut —
+    # sub-queries through vector only, say — would leave a pair unrepresented here.
     result = retrieve(
         "Apple supply chain and competition",
         strategy=HYBRID,
@@ -219,16 +231,16 @@ def test_every_variant_runs_through_every_retriever_the_strategy_names(filings_s
         model=a_translator("Apple competition risk"),
     )
 
+    assert len(result.variants) == 3, "original, its ticker form, one sub-query"
     surfaced = {
         (row.variant, row.retriever)
         for context in result.contexts
         for row in context.provenance
     }
     assert surfaced == {
-        ("Apple supply chain and competition", Retriever.VECTOR),
-        ("Apple supply chain and competition", Retriever.BM25),
-        ("Apple competition risk", Retriever.VECTOR),
-        ("Apple competition risk", Retriever.BM25),
+        (variant, retriever)
+        for variant in result.variants
+        for retriever in (Retriever.VECTOR, Retriever.BM25)
     }
 
 
@@ -274,18 +286,26 @@ def test_a_chunk_ranks_by_its_fused_score_and_the_score_is_its_provenance_summed
         assert all(row.contribution == 1 / (RRF_K + row.rank) for row in context.provenance)
 
 
-def test_a_chunk_only_bm25_found_reports_no_distance(filings_store):
-    # A query with no vector signal at all — the fake embedding's vocabulary contains none of
-    # these terms, so every chunk is equidistant — but plenty of lexical signal. Whatever BM25
-    # pulls up that vector search did not return has no distance to report, and must say so
-    # rather than print a number no measurement produced.
-    result = retrieve("0000320193-25-000079", strategy=HYBRID, k=3, store=filings_store)
+def test_a_chunks_distance_is_present_exactly_when_a_vector_search_returned_it(filings_store):
+    # A chunk BM25 recovered that vector search ranked outside `k` has no distance, and must say
+    # so rather than print a number no measurement produced — the exact-identifier case ADR-0004
+    # is built on. Asserted as a biconditional over whatever came back, rather than by staging
+    # a lexical-only hit: a first version used a query whose every term is outside the fake
+    # embedding's vocabulary, which makes the query vector all zeros, every chunk *exactly*
+    # equidistant, and the vector top-k a matter of HNSW traversal order — so it passed or
+    # failed by which index build ran. `test_hybrid.py` stages the lexical-only case
+    # deterministically against hand-built candidate lists, which is where it belongs.
+    result = retrieve(
+        "AAPL Item 1A supply chain risk", strategy=HYBRID, k=5, store=filings_store
+    )
 
-    lexical_only = [
-        context for context in result.contexts if Retriever.VECTOR not in context.retrievers
-    ]
-    assert lexical_only, "the accession is a lexical-only signal in this fixture"
-    assert all(context.distance is None for context in lexical_only)
+    assert result.contexts
+    for context in result.contexts:
+        found_by_vector = Retriever.VECTOR in context.retrievers
+        assert (context.distance is not None) is found_by_vector, context.chunk_id
+    assert any(Retriever.BM25 in c.retrievers for c in result.contexts), (
+        "and BM25 did contribute, so the biconditional above is not vacuous"
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -359,6 +379,9 @@ def test_translating_reads_the_sub_query_cap_from_configuration(monkeypatch, fil
     )
 
     assert result.sub_queries == ("one",)
+    # And the cap governs the *planner* only: the deterministic ticker form is not a sub-query
+    # and is not rationed against a budget it does not spend (no chat call).
+    assert result.ticker_form == QUESTION_AS_TICKER
 
 
 def test_retrieval_logs_what_it_returned_without_logging_the_filing_text(filings_store, caplog):
@@ -395,13 +418,13 @@ def test_the_log_line_carries_provenance_by_variant_index_never_by_query_text(
 
     (record,) = [r for r in caplog.records if getattr(r, "event", None) == "retrieval"]
     assert record.fields["translation"] is True
-    assert record.fields["variants"] == 2
-    assert record.fields["candidate_lists"] == 4, "two variants × two retrievers"
+    assert record.fields["variants"] == 3, "original, its ticker form, one sub-query"
+    assert record.fields["candidate_lists"] == 6, "three variants × two retrievers"
     assert record.fields["rrf_k"] == RRF_K
     assert record.fields["fused_candidates"] >= record.fields["hits"]
     surfaced = record.fields["provenance"][0]["surfaced"]
     assert surfaced, "the top chunk records which list surfaced it"
-    assert all(row["variant"] in (0, 1) for row in surfaced)
+    assert all(row["variant"] in (0, 1, 2) for row in surfaced)
     assert all(row["retriever"] in ("vector", "bm25") for row in surfaced)
     assert "supply chain" not in str(record.fields)
     assert "supplier concentration" not in str(record.fields)

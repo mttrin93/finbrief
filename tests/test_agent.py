@@ -389,9 +389,15 @@ def test_the_shipped_path_runs_the_configuration_it_is_configured_with(tmp_path,
 
     (search,) = turn.searches
     assert search.translated is True
-    assert search.variants == ("Apple supply chain risk", "Apple supplier concentration")
+    assert search.variants == (
+        "Apple supply chain risk",
+        "AAPL supply chain risk",  # config's deterministic ticker form (ADR-0004 amendment)
+        "Apple supplier concentration",  # the planner's one sub-query, at the configured cap
+    )
+    assert search.ticker_form == "AAPL supply chain risk"
+    assert search.sub_queries == ("Apple supplier concentration",)
     retrievers = {row.retriever.value for c in turn.contexts for row in c.provenance}
-    assert retrievers == {"vector", "bm25"}, "hybrid ran both retrievers over both variants"
+    assert retrievers == {"vector", "bm25"}, "hybrid ran both retrievers over every variant"
 
 
 def test_the_configured_strategy_is_read_once_and_not_restated_by_the_tool():

@@ -183,19 +183,24 @@ def retriever_label(context: Context) -> str:
     return " + ".join(found) if found else "provenance not recorded"
 
 
-def variant_label(search: Search, variant: str) -> str:
-    """`original` or `sub-query 2` — a provenance row's query, by its place in the retrieval.
+def variant_labels(search: Search) -> dict[str, str]:
+    """Each variant this search ran, mapped to what to call it in the panel.
+
+    Three kinds, named apart because they have different causes and the T6 finding is about
+    which one does the work (ADR-0004 amendment): the analyst's own words, the deterministic
+    ticker form `config` supplied, and the planner's sub-queries. Calling the ticker form
+    "sub-query 1" would credit a model for a lookup.
 
     A label rather than the query text, because the texts are listed once above the table and
     repeating a whole question inside a Markdown table cell would wrap badly and — worse — break
-    the table outright on a query containing a pipe. A variant this search does not know about
-    (a reply checkpointed before variants were carried) falls back to naming the retriever's
-    input, which is still true.
+    the table outright on a query containing a pipe.
     """
-    if variant not in search.variants:
-        return "query"
-    index = search.variants.index(variant)
-    return "original" if index == 0 else f"sub-query {index}"
+    labels = {search.variants[0]: "original"} if search.variants else {}
+    if search.ticker_form is not None:
+        labels[search.ticker_form] = "ticker form"
+    for number, sub_query in enumerate(search.sub_queries, start=1):
+        labels[sub_query] = f"sub-query {number}"
+    return labels
 
 
 def render_how_i_answered(searches: tuple[Search, ...]) -> None:
@@ -226,14 +231,23 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
         for number, search in enumerate(explicable, start=1):
             if len(explicable) > 1:
                 st.markdown(f"**Search {number}**")
+            labels = variant_labels(search)
             st.markdown(f"**Queries this search ran** ({len(search.variants)})")
-            for index, variant in enumerate(search.variants):
-                label = "original" if index == 0 else f"sub-query {index}"
-                st.markdown(f"{index + 1}. `{label}` — {as_markdown(variant)}")
+            for index, variant in enumerate(search.variants, start=1):
+                # `.get`, because a variant a checkpointed reply carries may predate the label
+                # map that would name it — a missing label is a cosmetic loss, not a KeyError.
+                label = labels.get(variant, "query")
+                st.markdown(f"{index}. `{label}` — {as_markdown(variant)}")
+            if search.ticker_form is not None:
+                st.caption(
+                    "The ticker form is added deterministically from the Universe, not by a "
+                    "model: a chunk's header carries `TSLA`, so a lexical search for *Tesla* "
+                    "would miss most of the filer (ADR-0004 amendment)."
+                )
             if search.translated and not search.sub_queries:
                 st.caption(
-                    "Query translation ran and added nothing — the question was already one "
-                    "specific thing a filing answers, so retrieval ran on it alone."
+                    "The query planner added nothing — the question was already one specific "
+                    "thing a filing answers, so no sub-query was retrieved."
                 )
             elif not search.translated:
                 st.caption("Query translation was off, so only the question itself was run.")
@@ -246,7 +260,7 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                     st.caption("Provenance was not recorded for this chunk.")
                     continue
                 rows = "\n".join(
-                    f"| {variant_label(search, row.variant)} | {row.retriever.value} "
+                    f"| {labels.get(row.variant, 'query')} | {row.retriever.value} "
                     f"| {row.rank} | {row.contribution:.6f} |"
                     for row in context.provenance
                 )

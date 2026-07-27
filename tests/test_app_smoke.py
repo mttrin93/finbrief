@@ -589,3 +589,48 @@ def test_a_reply_whose_provenance_did_not_survive_renders_no_panel(app, monkeypa
     assert not app.exception
     assert sources_panel(app.chat_message[1]) is not None
     assert how_i_answered(app.chat_message[1]) is None
+
+
+def test_the_panel_names_the_ticker_form_apart_from_the_planners_sub_queries(app, monkeypatch):
+    # The T6 finding depends on telling the two additions apart (ADR-0004 amendment): one is a
+    # deterministic lookup in the Universe, the other is a model's paraphrase. Labelling the
+    # ticker form "sub-query 1" would credit the planner for a lookup — and the panel is where a
+    # reviewer decides which of the two earned the exact-identifier win.
+    variants = ("Tesla debt", "TSLA debt", "Tesla liquidity and capital resources")
+    stub_answer(
+        monkeypatch,
+        AgentTurn(
+            text="Tesla reports $8.18 billion of indebtedness [1].",
+            searches=(
+                Search(
+                    query=variants[0],
+                    contexts=(
+                        a_context(
+                            1,
+                            provenance=(
+                                Surfaced(
+                                    variant=variants[1],
+                                    retriever=Retriever.BM25,
+                                    rank=1,
+                                    contribution=1 / 61,
+                                ),
+                            ),
+                        ),
+                    ),
+                    variants=variants,
+                    translated=True,
+                ),
+            ),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("Tesla debt").run()
+
+    assistant = app.chat_message[1]
+    text = " ".join(md.value for md in how_i_answered(assistant).markdown)
+    assert "`original`" in text and "`ticker form`" in text and "`sub-query 1`" in text
+    assert "| ticker form | bm25 | 1 |" in text, "and the table names it too"
+    # And the panel says *why* a ticker form exists, since it is the least obvious of the three.
+    captions = " ".join(c.value for c in how_i_answered(assistant).caption)
+    assert "deterministically" in captions

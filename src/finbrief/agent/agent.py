@@ -44,6 +44,7 @@ from finbrief.config import Settings, get_settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
+from finbrief.retrieval.query_translation import added_variants
 from finbrief.retrieval.retrieve import Context, Retrieval
 from finbrief.tools.search_filings import TOOL_NAME, build_search_filings, search_results
 
@@ -101,9 +102,14 @@ class Search:
     translated: bool = False
 
     @property
+    def ticker_form(self) -> str | None:
+        """The deterministic ticker-form variant this search ran, if any (ADR-0004 amdt)."""
+        return added_variants(self.variants)[0]
+
+    @property
     def sub_queries(self) -> tuple[str, ...]:
-        """What translation added to this search, if anything."""
-        return self.variants[1:]
+        """What the *planner* added to this search — the ticker form excluded."""
+        return added_variants(self.variants)[1]
 
 
 @dataclass(frozen=True, slots=True)
