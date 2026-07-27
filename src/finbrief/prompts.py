@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from finbrief.config import ITEM_7A_POINTER_FILERS, UNIVERSE
+from finbrief.config import ITEM_7A_POINTER_FILERS, TICKERS, UNIVERSE
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context
 
@@ -30,11 +30,19 @@ from finbrief.retrieval.retrieve import Context
 #: reference — the denominator the disclosure quotes.
 _SECTION_SLOTS = len(UNIVERSE) * len(Section)
 
-#: The pairs actually chunked. Each of the six pointer filers answers Item 7A with a
-#: sentence directing the reader to Item 7, which passes the gate and is deliberately not
-#: chunked (ADR-0007 amendment §4) — so their market-risk content is in the KB, labelled
-#: `Item 7`. `docs/verification/ingest-report.md` is the evidence: 54 of 60.
-_SECTIONS_IN_KB = _SECTION_SLOTS - len(ITEM_7A_POINTER_FILERS)
+#: The pointer filers that are actually *in* the Universe. Intersected rather than counted
+#: directly because `ITEM_7A_POINTER_FILERS` is a hand-maintained tripwire and the Universe
+#: is the authority on who has Sections at all: a filer left in the set after leaving the
+#: Universe would silently subtract a pair that was never in the denominator.
+_POINTER_FILERS_IN_UNIVERSE = ITEM_7A_POINTER_FILERS & TICKERS
+
+#: The pairs actually chunked. Each pointer filer answers Item 7A with a sentence directing
+#: the reader to Item 7, which passes the gate and is deliberately not chunked (ADR-0007
+#: amendment §4) — so their market-risk content is in the KB, labelled `Item 7`.
+#: `docs/verification/ingest-report.md` is the evidence, cross-checked against this
+#: arithmetic by `test_prompts.py` rather than read at startup: the app must render its
+#: scope without a generated artifact on disk.
+_SECTIONS_IN_KB = _SECTION_SLOTS - len(_POINTER_FILERS_IN_UNIVERSE)
 
 _ITEMS = ", ".join(f"{section.value} ({section.heading})" for section in Section)
 
@@ -53,16 +61,18 @@ GROUNDING_SCOPE = (
     f"{_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs."
 )
 
-#: What the headline sentence leaves out, for the UI's scope panel and the README. Each
-#: line is a limitation a reader could otherwise mistake for a grounded answer.
+#: What the headline sentence leaves out, for the UI's scope panel and the README — whose
+#: prose cannot import these, so `tests/test_grounding_scope.py` binds its copy to them.
+#: Each line is a limitation a reader could otherwise mistake for a grounded answer.
 GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
     f"**In scope:** {_ITEMS}.",
     (
-        f"**Item 7A by reference:** {', '.join(sorted(ITEM_7A_POINTER_FILERS))} answer Item 7A "
-        f"by incorporating Item 7, so their market-risk disclosure is in the knowledge base "
-        f"labelled `Item 7` — not `Item 7A` ({_SECTIONS_IN_KB} of {_SECTION_SLOTS} Sections). "
-        f"All {len(UNIVERSE)} companies have market-risk grounding; "
-        f"{len(UNIVERSE) - len(ITEM_7A_POINTER_FILERS)} have an `Item 7A` Section."
+        f"**Item 7A by reference:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer "
+        f"Item 7A by incorporating Item 7, so their market-risk disclosure is in the "
+        f"knowledge base labelled `Item 7` — not `Item 7A` ({_SECTIONS_IN_KB} of "
+        f"{_SECTION_SLOTS} Sections). All {len(UNIVERSE)} companies have market-risk "
+        f"grounding; {len(UNIVERSE) - len(_POINTER_FILERS_IN_UNIVERSE)} have an "
+        f"`Item 7A` Section."
     ),
     (
         "**Out of scope:** every other Item of the 10-K, 10-Qs, proxies, earnings calls, "
