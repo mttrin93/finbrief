@@ -10,7 +10,7 @@ verified.
 import re
 
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
-from finbrief.ingestion.reporting import render_section_starts
+from finbrief.ingestion.reporting import checklist_tickers, render_section_starts
 
 BODY = "The Company designs and sells devices to customers worldwide. " * 40
 
@@ -73,6 +73,57 @@ def test_a_verifiers_own_notes_survive_a_rerender():
     rerendered = render_section_starts([a_filing(mda_prefix="x\n\n")], verified)
 
     assert note in rerendered
+
+
+def test_a_note_written_under_the_excerpt_survives_a_rerender():
+    # Where a verifier writes matters to nobody but the parser, and the parser read only as
+    # far as the excerpt fence — so a note written under the excerpt it comments on, which
+    # is the natural place to write after reading one, was dropped without a word. The
+    # contract is unconditional: this function must never be the reason a finding
+    # disappears (issue #3 review).
+    verified = tick_everything(render_section_starts([a_filing()]))
+    note = "**Finding (hand-verification):** the excerpt above stops mid-table."
+    below_the_excerpt = verified.replace("```\n", f"```\n\n{note}\n", 1)
+    assert below_the_excerpt != verified, "the fixture must actually place a note"
+
+    rerendered = render_section_starts([a_filing()], below_the_excerpt)
+
+    assert note in rerendered
+    item_1 = rerendered.split("### Item 1A.")[0]
+    assert note in item_1, "and under the row it was written for"
+    assert rerendered.count(note) == 1
+
+
+def test_the_excerpt_is_never_carried_forward_as_if_it_were_a_note():
+    # The guard on the fix above: strip the fence too eagerly and the generated excerpt
+    # comes back as a hand-written note, duplicated on every re-render.
+    verified = tick_everything(render_section_starts([a_filing()]))
+
+    rerendered = render_section_starts([a_filing()], verified)
+
+    assert rerendered == verified, "a re-render of unchanged text reproduces the file"
+
+
+def test_a_checklist_reports_which_companies_it_holds_rows_for():
+    # What `scripts/ingest_filings.py` asks before re-rendering: a subset run must not be
+    # allowed to delete the rows of companies it never fetched.
+    filing = a_filing()
+    msft = ExtractedFiling(
+        ref=FilingRef(
+            ticker="MSFT",
+            form="10-K",
+            accession="0000789019-25-000118",
+            fiscal_year=2025,
+            filing_date="2025-07-30",
+        ),
+        latest_annual_form="10-K",
+        sections=filing.sections,
+    )
+
+    rendered = render_section_starts([filing, msft])
+
+    assert checklist_tickers(rendered) == frozenset({"AAPL", "MSFT"})
+    assert checklist_tickers(render_section_starts([filing])) == frozenset({"AAPL"})
 
 
 def test_a_changed_row_reports_what_it_used_to_be():

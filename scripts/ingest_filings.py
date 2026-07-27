@@ -21,6 +21,7 @@ from finbrief.ingestion.edgar import configure_edgar, fetch_filing
 from finbrief.ingestion.gate import check_filing
 from finbrief.ingestion.pipeline import ingest
 from finbrief.ingestion.reporting import (
+    checklist_tickers,
     render_gate_table,
     render_ingest_report,
     render_section_starts,
@@ -50,7 +51,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Re-embed filings already in the collection (after a chunker change).",
+        help="Re-embed every filing (after an embedding-model change; text changes "
+        "are detected on their own).",
     )
     parser.add_argument(
         "--section-starts",
@@ -68,8 +70,28 @@ def _write_section_starts(path: Path, filings) -> None:
     tick whenever the Section is byte-identical to the one that was verified, so fixing a
     boundary on one company costs the reviewer exactly the rows that moved rather than all
     sixty. Hand-written notes are carried through unconditionally.
+
+    That carry-forward only reaches companies *this run fetched*, so a subset run is
+    refused rather than written: `--tickers JPM --section-starts docs/verification/…` is the
+    natural command while iterating on one company's boundary, and it would replace a
+    sixty-row artifact with four rows, deleting fifty-six hand-earned ticks and every note
+    attached to them (issue #3 review). The same protection `_write_ingest_report` gets, for
+    the file where the loss is not recoverable by re-running anything.
+
+    A `--dry-run` is deliberately still allowed to write: the checklist is made of fetch and
+    gate output only, so a dry run is the cheap, key-free way to regenerate it.
     """
     previous = path.read_text(encoding="utf-8") if path.exists() else None
+    if previous:
+        absent = sorted(checklist_tickers(previous) - {filing.ref.ticker for filing in filings})
+        if absent:
+            print(
+                f"\n{path} holds hand-verified rows for {', '.join(absent)}, which this run "
+                f"did not fetch, and a re-render would delete them. Left untouched — re-run "
+                f"without --tickers, or point --section-starts at a new path.",
+                file=sys.stderr,
+            )
+            return
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = render_section_starts(filings, previous)
     path.write_text(rendered, encoding="utf-8")

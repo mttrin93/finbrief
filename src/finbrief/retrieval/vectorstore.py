@@ -9,7 +9,7 @@ apart with no error to show for it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
@@ -74,15 +74,23 @@ def write_chunks(store: Chroma, chunks: Sequence[Chunk]) -> int:
     return len(chunks)
 
 
-def delete_accession(store: Chroma, accession: str) -> None:
-    """Remove every chunk of one filing.
+def delete_orphaned_chunks(store: Chroma, accession: str, keep_ids: Collection[str]) -> int:
+    """Remove chunks of one filing that the ids just written no longer include.
 
-    Needed before a re-embed, because ids carry a chunk *index*: a chunker that produces
-    fewer chunks than last time upserts over `…:Item 1:0-19` and leaves `…:Item 1:20-24`
-    behind, orphaned and still retrievable. Deleting first makes `--force` mean what it
-    says.
+    A re-embed needs this because ids carry a chunk *index*: text that now splits into
+    fewer chunks upserts over `…:Item 1:0-19` and leaves `…:Item 1:20-24` behind, orphaned,
+    still retrievable, belonging to a version of the Section that no longer exists.
+
+    Pruning *after* the write rather than clearing first, for the reason `delete_superseded`
+    runs last too: `write_chunks` is where the paid embedding call happens, and a run that
+    deleted first would answer an API error by leaving the company with nothing at all.
+    Upsert-then-prune means the worst interleaved state is the version we already had.
     """
-    store.delete(where={"accession": accession})
+    held = store.get(where={"accession": accession}, include=[])["ids"]
+    orphans = [chunk_id for chunk_id in held if chunk_id not in keep_ids]
+    if orphans:
+        store.delete(ids=orphans)
+    return len(orphans)
 
 
 def delete_superseded(store: Chroma, ticker: str, accession: str) -> int:
@@ -120,15 +128,22 @@ def chunk_counts_by_ticker(store: Chroma) -> dict[str, int]:
     return counts
 
 
-def ingested_accessions(store: Chroma) -> set[str]:
-    """Every accession number already in the collection.
+def content_hashes_by_accession(store: Chroma) -> dict[str, set[str]]:
+    """What the collection holds, keyed by filing: accession -> its chunks' content hashes.
 
-    Lets a re-run skip a filing it already holds *before* paying for its embeddings.
-    `write_chunks` would keep the collection correct either way; this keeps it cheap.
+    Lets a re-run skip a filing it already holds *before* paying for its embeddings — and,
+    because the value is `chunking.content_hash` rather than just the accession's presence,
+    tell that case apart from a filing whose extraction has changed since it was written
+    (`pipeline.ingest`). A set because a run interrupted mid-write can leave two.
+
+    A chunk from before the hash existed reports `""`, which matches nothing a run would
+    write, so such a filing is re-ingested rather than trusted — the conservative answer,
+    and the one the currently committed knowledge base needs.
     """
     stored = store.get(include=["metadatas"])
-    return {
-        metadata["accession"]
-        for metadata in stored["metadatas"] or ()
-        if metadata.get("accession")
-    }
+    holdings: dict[str, set[str]] = {}
+    for metadata in stored["metadatas"] or ():
+        accession = metadata.get("accession")
+        if accession:
+            holdings.setdefault(accession, set()).add(str(metadata.get("content_hash", "")))
+    return holdings

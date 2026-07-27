@@ -309,6 +309,16 @@ def section_start(text: str, section: Section) -> int:
     The Item label first, because it is unambiguous. The title only when there is no label
     at all: `Business` is too common a word to trust ahead of `Item 1.`, and across the
     whole Universe the fallback is reached exactly once, for JPM's Item 7.
+
+    What that ordering costs, stated because `edgar.trim_to_section_start` acts on the
+    answer: the label is taken wherever it appears, so a text that does *not* open with its
+    own label — the case the title fallback exists for — anchors on any later line that
+    begins `Item 7`, a cross-reference sentence included, and the trim then discards
+    everything before it. The gate cannot see it, since it measures this same offset and the
+    offset is 0 afterwards; the `section_trimmed` WARNING and ADR-0007's hand-verification
+    excerpt are what catch it. Preferring whichever anchor comes *first* is not the fix —
+    a running header carrying the Section's own title is precisely what eleven rows were
+    trimmed off, and an earliest-anchor rule would re-admit every one of them.
     """
     label = item_heading(section.item).search(text)
     if label:

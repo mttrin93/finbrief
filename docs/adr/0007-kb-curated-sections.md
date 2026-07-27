@@ -167,6 +167,15 @@ label is absent entirely. That ordering is load-bearing: `Business` is too commo
 to trust ahead of `Item 1.`. Across all fifteen filings the fallback is reached exactly
 once — JPM's Item 7, which prints no `Item 7` label anywhere.
 
+*What the ordering costs.* The label is taken wherever it appears, so a Section that does
+not open with its own label — the case the fallback exists for — anchors on any later line
+beginning `Item 7`, a cross-reference sentence included, and the trim then discards
+everything before it, invisibly to the gate (§3). Preferring whichever anchor comes *first*
+is not the fix: a running header carrying the Section's own title is exactly what those ten
+rows were trimmed off, and an earliest-anchor rule re-admits every one of them. So this
+stays a **stated limitation**, resting on the `section_trimmed` WARNING and the artifact —
+which is the same division of labour §3 sets out, not a new exception to it.
+
 Result: JPM Item 7 400,310 → 394,858 characters, now **pp. 46–161**.
 
 **6. JPM's Item 7 runs one page past its cross-reference. Deliberate.**
@@ -197,7 +206,47 @@ none of which distinguishes the real Item 1A from a plausible mis-extraction tha
 all six. Only a person reading the excerpts against EDGAR closes that gap, which is why
 the boxes are generated unticked.
 
+**A subset run may not re-render the artifact.** `render_section_starts` emits rows for the
+filings it is handed and no others, so `--tickers JPM --section-starts docs/verification/…`
+— the natural command while iterating on one company — would replace sixty rows with four,
+deleting fifty-six ticks and every note attached to them. The carry-forward cannot save
+what the run never fetched, so `scripts/ingest_filings.py` refuses the write and says so,
+the same protection the ingest report already had. A `--dry-run` is still allowed: the
+checklist is made of fetch and gate output only, so a dry run is the cheap way to
+regenerate it. Notes are read from anywhere inside a row, above or below the excerpt — the
+first version read only as far as the excerpt fence, which silently dropped a note written
+under the excerpt it commented on.
+
+**7. Idempotency is keyed on the accession *and* the extracted text.**
+The accession number answers "is this the same document?", and a re-run needs the answer to
+"is what we hold what this run would write?". §5 proved those are different questions: it
+moved eleven Sections' boundaries without a single accession changing. An accession-only
+skip therefore reported `skipped (already ingested)` over chunks built from pre-repair text
+while the artifact attested to the repaired text — the knowledge base and its evidence
+disagreeing, with `--force` the only cure and nothing to suggest it was needed.
+
+So every chunk carries a `content_hash` (`chunking.content_hash`) over the Section texts
+that were chunked, the provenance header, and the splitter's parameters, and a filing is
+skipped only when the collection holds exactly that hash. A chunk-size change now
+re-ingests on its own; a change to the *embedding model* still needs `--force`, since it
+leaves no trace in the text. The re-write upserts first and prunes the orphans afterwards
+rather than clearing first — same reason the superseded-year eviction runs last: a paid-API
+failure must not be able to empty a company.
+
 **Outcome.** Hand-verified at 60/60 and committed ticked. Amendment §5 above records the
 one row that failed and the rule it bought. The file in the repo predates the fixes in
 §4's cut 2 and the fallback change in §3; the next full run will re-render it, and every
-row whose text those changed will come back `CHANGED` and unticked for another look.
+row whose text those changed will come back `CHANGED` and unticked for another look. Two
+further re-checks are expected there and are format, not text: the six pointer rows predate
+the character count on referenced rows, and "we cannot tell whether it moved" resolves to
+unticked by design. That run also re-embeds all fifteen filings once — pre-§7 chunks carry
+no `content_hash`, so the conservative answer is to rebuild them — which is the cost of
+knowing the KB matches the artifact rather than assuming it.
+
+The committed `docs/verification/ingest-report.md` is the evidence that §7 describes a real
+defect and not a hypothetical one: its gate table carries the *post*-repair character counts
+while all fifteen of its rows read `skipped (already ingested)`, so the 5,842 chunks it
+attests to include eleven Sections of pre-repair text. It also still carries the preamble
+from before `render_ingest_report` became full-Universe-only. Both files under
+`docs/verification/` are generated, never hand-authored, so they stay as the last run left
+them until the next full run replaces them.

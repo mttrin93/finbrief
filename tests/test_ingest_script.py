@@ -204,6 +204,48 @@ def test_section_starts_writes_the_checklist_where_it_was_asked_to(monkeypatch, 
     assert checklist.count("- [ ]") == len(Section)
 
 
+def test_a_subset_run_refuses_to_delete_the_other_companies_verified_rows(
+    monkeypatch, tmp_path, capsys
+):
+    """`--tickers JPM --section-starts docs/verification/…` must not truncate the artifact.
+
+    `render_section_starts` emits rows for the filings it is handed and no others, and the
+    carry-forward cannot save what the run never fetched — so a one-company re-render of a
+    sixty-row checklist deletes fifty-six hand-earned ticks and every note attached to them.
+    That is the one loss the artifact's whole design exists to prevent, and it was reachable
+    from the command most likely to be run while iterating on one company (ADR-0007 §7).
+    """
+    script = load_script()
+    wire_for_a_dry_run(script, monkeypatch, tmp_path, lambda ticker: a_filing(ticker))
+    script.main(["--dry-run", "--section-starts", "c.md"])
+    full = (tmp_path / "c.md").read_text(encoding="utf-8")
+    verified = full.replace("- [ ]", "- [x]").replace(
+        "```text", "**Finding:** check pp.46-160.\n\n```text", 1
+    )
+    (tmp_path / "c.md").write_text(verified, encoding="utf-8")
+
+    assert script.main(["--tickers", "AAPL", "--dry-run", "--section-starts", "c.md"]) == 0
+
+    assert (tmp_path / "c.md").read_text(encoding="utf-8") == verified
+    assert "did not fetch" in capsys.readouterr().err
+
+
+def test_a_full_run_may_still_re_render_the_committed_checklist(monkeypatch, tmp_path):
+    # The guard is about coverage, not about writing: a full run — dry or not — is exactly
+    # who is allowed to rewrite the artifact, and the ticks it carries forward.
+    script = load_script()
+    wire_for_a_dry_run(script, monkeypatch, tmp_path, lambda ticker: a_filing(ticker))
+    script.main(["--dry-run", "--section-starts", "c.md"])
+    verified = (tmp_path / "c.md").read_text(encoding="utf-8").replace("- [ ]", "- [x]")
+    (tmp_path / "c.md").write_text(verified, encoding="utf-8")
+
+    assert script.main(["--dry-run", "--section-starts", "c.md"]) == 0
+
+    rerendered = (tmp_path / "c.md").read_text(encoding="utf-8")
+    assert rerendered.count("- [x]") == len(UNIVERSE) * len(Section)
+    assert "**CHANGED**" not in rerendered
+
+
 @pytest.mark.parametrize("flag", ["--dry-run", "--force"])
 def test_the_checklist_is_written_even_when_the_gate_fails(monkeypatch, tmp_path, flag):
     # The checklist is the human's to-do list, and a gate failure is precisely when

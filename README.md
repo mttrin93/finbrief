@@ -74,9 +74,11 @@ uv run python scripts/ingest_filings.py --dry-run        # fetch + gate only; no
 
 Requires `SEC_EDGAR_USER_AGENT`; writing (non-dry) runs also need `OPENROUTER_API_KEY`
 for embeddings. A ticker outside `config.UNIVERSE` is rejected before anything is fetched
-(exit 2); a gate failure writes no chunks and exits 1. Re-runs skip filings already
-ingested (idempotent by accession number) and evict a company's superseded fiscal years;
-`--force` re-embeds after a chunker change.
+(exit 2); a gate failure writes no chunks and exits 1. Re-runs skip a filing only when the
+collection already holds *that extraction* of it — the accession and the content hash both
+match (ADR-0007 §7) — and evict a company's superseded fiscal years. So an extractor or
+chunk-size change re-ingests on its own; `--force` is for a change to the embedding model,
+which leaves no trace in the text to notice.
 
 Two committed evidence files, both generated:
 
@@ -87,4 +89,6 @@ Two committed evidence files, both generated:
 - `docs/verification/section-starts.md` — ADR-0007's hand-verification checklist, written
   by `--section-starts PATH`. A re-render carries a tick forward only for a Section whose
   text is byte-identical to the one that was verified, flags the rest `CHANGED`, and
-  preserves hand-written notes unconditionally.
+  preserves hand-written notes unconditionally, wherever in the row they were written. A
+  `--tickers` run is refused rather than written, since it can only re-render the companies
+  it fetched and the rest of the file would be deleted outright.

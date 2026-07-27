@@ -10,13 +10,14 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import FakeEmbeddings
 
 from finbrief.config import Settings
-from finbrief.ingestion.chunking import chunk_filing
+from finbrief.ingestion.chunking import chunk_filing, content_hash
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.retrieval.vectorstore import (
     build_filings_store,
     chunk_counts_by_ticker,
+    content_hashes_by_accession,
+    delete_orphaned_chunks,
     delete_superseded,
-    ingested_accessions,
     write_chunks,
 )
 
@@ -50,6 +51,10 @@ def count(store) -> int:
     return len(store.get(include=[])["ids"])
 
 
+def accessions(store) -> set[str]:
+    return set(content_hashes_by_accession(store))
+
+
 def test_writing_a_filing_stores_every_chunk_with_its_metadata(store):
     chunks = chunk_filing(a_filing())
 
@@ -80,11 +85,11 @@ def test_a_second_company_adds_to_the_collection_rather_than_replacing_it(store)
     write_chunks(store, chunk_filing(a_filing(ticker="MSFT", accession="0000789019-25-000118")))
 
     assert count(store) > apple_chunks
-    assert ingested_accessions(store) == {"0000320193-25-000079", "0000789019-25-000118"}
+    assert accessions(store) == {"0000320193-25-000079", "0000789019-25-000118"}
 
 
-def test_an_empty_collection_reports_no_ingested_accessions(store):
-    assert ingested_accessions(store) == set()
+def test_an_empty_collection_reports_nothing_ingested(store):
+    assert content_hashes_by_accession(store) == {}
 
 
 def test_writing_no_chunks_is_a_no_op(store):
@@ -102,7 +107,7 @@ def test_delete_superseded_removes_only_the_tickers_other_accessions(store):
     removed = delete_superseded(store, "AAPL", "0-25-new")
 
     assert removed > 0
-    assert ingested_accessions(store) == {"0-25-new", "0-25-msft"}
+    assert accessions(store) == {"0-25-new", "0-25-msft"}
 
 
 def test_delete_superseded_is_a_no_op_when_the_ticker_holds_one_filing(store):
@@ -110,6 +115,63 @@ def test_delete_superseded_is_a_no_op_when_the_ticker_holds_one_filing(store):
     before = count(store)
 
     assert delete_superseded(store, "AAPL", "0000320193-25-000079") == 0
+    assert count(store) == before
+
+
+def test_the_store_reports_the_content_hash_its_chunks_were_written_with(store):
+    # What makes the skip decision correct rather than merely cheap: the accession says
+    # which document, the hash says which *version of the extraction* of it.
+    filing = a_filing()
+    write_chunks(store, chunk_filing(filing))
+
+    assert content_hashes_by_accession(store) == {
+        "0000320193-25-000079": {content_hash(filing)}
+    }
+
+
+def test_a_chunk_written_before_the_hash_existed_matches_no_run(store):
+    # The committed KB is exactly this: chunks with no `content_hash` in their metadata.
+    # They must not be mistaken for a match, or the stale rows they came from survive.
+    chunks = chunk_filing(a_filing())
+    store.add_texts(
+        texts=[c.text for c in chunks],
+        metadatas=[
+            {k: v for k, v in c.metadata.items() if k != "content_hash"} for c in chunks
+        ],
+        ids=[c.id for c in chunks],
+    )
+
+    assert content_hashes_by_accession(store) == {"0000320193-25-000079": {""}}
+
+
+def test_pruning_removes_the_chunks_a_rewrite_no_longer_covers(store):
+    # Ids embed a chunk index, so text that now splits into fewer chunks upserts over the
+    # low indices and strands the high ones — still retrievable, belonging to a version of
+    # the Section that no longer exists.
+    write_chunks(store, chunk_filing(a_filing()))
+    shorter = a_filing()
+    kept = chunk_filing(
+        type(shorter)(
+            ref=shorter.ref,
+            latest_annual_form="10-K",
+            sections={s: f"{s.value}. {s.heading}\n\nA short body." for s in Section},
+        )
+    )
+    write_chunks(store, kept)
+
+    removed = delete_orphaned_chunks(store, "0000320193-25-000079", {c.id for c in kept})
+
+    assert removed > 0
+    assert count(store) == len(kept)
+
+
+def test_pruning_keeps_another_filings_chunks_and_reports_nothing_removed(store):
+    write_chunks(store, chunk_filing(a_filing(ticker="MSFT", accession="0-25-msft")))
+    chunks = chunk_filing(a_filing())
+    write_chunks(store, chunks)
+    before = count(store)
+
+    assert delete_orphaned_chunks(store, "0000320193-25-000079", {c.id for c in chunks}) == 0
     assert count(store) == before
 
 

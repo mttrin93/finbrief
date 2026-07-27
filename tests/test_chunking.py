@@ -6,7 +6,7 @@ stability, are behavior rather than bookkeeping.
 """
 
 from finbrief.config import CHUNK_SIZE_CHARS
-from finbrief.ingestion.chunking import CHUNK_OVERLAP_CHARS, chunk_filing
+from finbrief.ingestion.chunking import CHUNK_OVERLAP_CHARS, chunk_filing, content_hash
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 
 PARAGRAPH = (
@@ -32,7 +32,9 @@ def a_filing(*, ticker: str = "AAPL", accession: str = "0000320193-25-000079", s
 
 
 def test_every_chunk_carries_the_metadata_the_golden_set_cites():
-    chunks = chunk_filing(a_filing())
+    filing = a_filing()
+
+    chunks = chunk_filing(filing)
 
     assert chunks
     for chunk in chunks:
@@ -42,7 +44,25 @@ def test_every_chunk_carries_the_metadata_the_golden_set_cites():
             "section": chunk.section.value,
             "fiscal_year": 2025,
             "accession": "0000320193-25-000079",
+            # Not for retrieval: it is how a re-run tells this filing from a later
+            # extraction of the same filing (ADR-0007 §7).
+            "content_hash": content_hash(filing),
         }
+
+
+def test_the_content_hash_tracks_the_text_and_not_the_accession():
+    # The whole point of it. An extractor fix moves a Section's boundary without EDGAR
+    # re-publishing anything, so the accession cannot answer "is this what we stored?".
+    filing = a_filing()
+    moved = a_filing(
+        sections={
+            s: f"{s.value}. {s.heading}\n\nTable of Contents\n\n{PARAGRAPH * 40}"
+            for s in Section
+        }
+    )
+
+    assert content_hash(moved) != content_hash(filing)
+    assert content_hash(a_filing()) == content_hash(filing), "and is stable across runs"
 
 
 def test_metadata_values_are_all_chroma_primitives():

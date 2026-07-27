@@ -10,13 +10,13 @@ check it.
 import pytest
 from langchain_core.embeddings import FakeEmbeddings
 
-from finbrief.ingestion.chunking import chunk_filing
+from finbrief.ingestion.chunking import chunk_filing, content_hash
 from finbrief.ingestion.gate import SectionGateError
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.ingestion.pipeline import ingest
 from finbrief.retrieval.vectorstore import (
     build_filings_store,
-    ingested_accessions,
+    content_hashes_by_accession,
     write_chunks,
 )
 
@@ -52,6 +52,10 @@ def count(store) -> int:
     return len(store.get(include=[])["ids"])
 
 
+def accessions(store) -> set[str]:
+    return set(content_hashes_by_accession(store))
+
+
 def test_a_single_failing_company_stops_the_whole_run_writing(store):
     # The good company is first, so a pipeline that gated per-filing instead of up front
     # would already have written it by the time the bad one raised.
@@ -84,6 +88,74 @@ def test_a_second_run_skips_what_is_already_ingested(store):
     assert report.chunks_written == {}
 
 
+def test_a_rerun_after_an_extractor_fix_rewrites_the_same_accession(store):
+    """The skip is keyed on the text as well as the accession — because a fix moved text.
+
+    Commit `a0614de` moved eleven Sections' boundaries without a single accession changing.
+    An accession-only skip therefore left the KB holding chunks of pre-repair text while
+    the run reported `skipped (already ingested)` and the verification artifact attested to
+    the repaired text: the knowledge base and its own evidence disagreeing, with `--force`
+    the only cure and nothing to say it was needed (ADR-0007 §7).
+    """
+    ingest([a_filing()], store=store)
+    # The JPM shape in miniature: same accession, same company, a boundary that moved.
+    repaired = a_filing(
+        sections={
+            s: f"{s.value}. {s.heading}\n\nThe repaired opening line. {BODY}" for s in Section
+        }
+    )
+
+    report = ingest([repaired], store=store)
+
+    assert report.skipped == ()
+    assert report.chunks_written == {"AAPL": count(store)}
+    assert content_hashes_by_accession(store) == {
+        "0000320193-25-000079": {content_hash(repaired)}
+    }
+    stored = store.get(where={"section": "Item 1"}, include=["documents"])
+    assert any("The repaired opening line." in document for document in stored["documents"])
+
+
+def test_a_rewrite_leaves_no_chunk_of_the_version_it_replaced(store):
+    # Same accession, shorter text: the chunk count falls, so the ids the old text needed
+    # and the new one does not must go — orphans are as retrievable as anything else.
+    ingest([a_filing()], store=store)
+    before = count(store)
+    # Still wordy enough for the gate — Item 7's twelve-word heading needs 240 — and short
+    # enough to need fewer chunks than the text already in the store.
+    shorter = "The Company designs and sells devices to customers worldwide. " * 28
+    shrunk = a_filing(sections={s: f"{s.value}. {s.heading}\n\n{shorter}" for s in Section})
+
+    report = ingest([shrunk], store=store)
+
+    assert count(store) < before
+    assert report.chunks_written == {"AAPL": count(store)}
+    assert content_hashes_by_accession(store) == {
+        "0000320193-25-000079": {content_hash(shrunk)}
+    }
+
+
+def test_a_failed_rewrite_leaves_the_version_already_in_the_store(store, monkeypatch):
+    # Pruning runs *after* the write for the same reason the eviction does: clearing the
+    # accession first would answer a paid-API error by emptying the company outright.
+    ingest([a_filing()], store=store)
+    before = count(store)
+
+    import finbrief.ingestion.pipeline as pipeline_module
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_chunks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embedding API is down")),
+    )
+    moved = a_filing(sections={s: f"{s.value}. {s.heading}\n\nx\n\n{BODY}" for s in Section})
+
+    with pytest.raises(RuntimeError, match="embedding API"):
+        ingest([moved], store=store)
+
+    assert count(store) == before, "the version we had is still answerable"
+
+
 def test_force_re_embeds_without_leaving_orphaned_chunks(store):
     # Ids embed a chunk index, so a chunker that produces *fewer* chunks would upsert over
     # the low indices and strand the high ones — still in the collection, still
@@ -97,7 +169,7 @@ def test_force_re_embeds_without_leaving_orphaned_chunks(store):
 
     assert report.chunks_written == {"AAPL": count(store)}
     assert count(store) < before, "the chunks the shorter text no longer needs are gone"
-    assert ingested_accessions(store) == {"0000320193-25-000079"}
+    assert accessions(store) == {"0000320193-25-000079"}
 
 
 def test_a_new_fiscal_years_filing_supersedes_the_old_one(store):
@@ -109,7 +181,7 @@ def test_a_new_fiscal_years_filing_supersedes_the_old_one(store):
 
     ingest([a_filing(accession="0000320193-25-000079")], store=store)
 
-    assert ingested_accessions(store) == {"0000320193-25-000079"}
+    assert accessions(store) == {"0000320193-25-000079"}
 
 
 def test_eviction_happens_even_when_the_current_filing_is_skipped(store):
@@ -121,7 +193,7 @@ def test_eviction_happens_even_when_the_current_filing_is_skipped(store):
     report = ingest([a_filing(accession="0000320193-25-000079")], store=store)
 
     assert report.skipped == ("AAPL",)
-    assert ingested_accessions(store) == {"0000320193-25-000079"}
+    assert accessions(store) == {"0000320193-25-000079"}
 
 
 def test_a_failed_write_leaves_the_previous_year_rather_than_nothing(store, monkeypatch):
@@ -148,4 +220,4 @@ def test_a_failed_write_leaves_the_previous_year_rather_than_nothing(store, monk
         ingest([a_filing(accession="0-25-this-year")], store=store)
 
     assert count(store) == before, "last year's chunks are still answerable"
-    assert ingested_accessions(store) == {"0-24-last-year"}
+    assert accessions(store) == {"0-24-last-year"}
