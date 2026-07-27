@@ -288,7 +288,13 @@ def retrieve(
     if translate:
         variants = query_translation.translate(
             question,
-            model=model if model is not None else build_chat_model(settings),
+            # `temperature=0.0` is named here rather than inherited from `build_chat_model`'s
+            # default, because this is the seam that depends on it: ADR-0003 calls `retrieve()`
+            # the deterministic component the headline numbers measure, and the planner is the
+            # one sampled step inside it (see ADR-0004 §9 for exactly how far that reaches). A
+            # default is a reasonable thing for a shared constructor to change; a measurement
+            # premise is not something to leave resting on one (issue #6 review).
+            model=model if model is not None else build_chat_model(settings, temperature=0.0),
             max_sub_queries=settings.max_sub_queries,
         )
     else:

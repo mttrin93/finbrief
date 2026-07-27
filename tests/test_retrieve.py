@@ -422,6 +422,30 @@ def test_translating_reads_the_sub_query_cap_from_configuration(monkeypatch, fil
     assert result.ticker_form == QUESTION_AS_TICKER
 
 
+def test_the_planner_is_built_at_temperature_zero_by_this_seam_not_by_a_default(
+    monkeypatch, filings_store
+):
+    # ADR-0003 calls `retrieve()` the deterministic component the headline numbers measure, and
+    # the planner is the one sampled step inside it (ADR-0004 §9). Temperature 0 was reaching it
+    # only as `build_chat_model`'s parameter default — reasonable for a shared constructor to
+    # change one day, and not a thing to leave a measurement premise resting on (#6 review).
+    import finbrief.retrieval.retrieve as retrieve_module
+
+    built = []
+
+    def fake_build_chat_model(settings, **kwargs):
+        built.append(kwargs)
+        return a_translator("Apple supplier concentration")
+
+    monkeypatch.setattr(retrieve_module, "build_chat_model", fake_build_chat_model)
+
+    retrieve(
+        QUESTION, strategy=VECTOR, translate=True, k=2, store=filings_store, settings=SETTINGS
+    )
+
+    assert built == [{"temperature": 0.0}], "named at the call site, not inherited"
+
+
 def test_retrieval_logs_what_it_returned_without_logging_the_filing_text(filings_store, caplog):
     with caplog.at_level("INFO", logger="finbrief.retrieval.retrieve"):
         result = retrieve(QUESTION, strategy=VECTOR, k=2, store=filings_store)
