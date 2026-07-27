@@ -27,7 +27,12 @@ from finbrief.agent.agent import BASELINE_STRATEGY
 from finbrief.config import get_settings
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.retrieval.retrieve import retrieve
-from finbrief.retrieval.smoke import SMOKE_QUERIES, SmokeCheck, render_smoke_report
+from finbrief.retrieval.smoke import (
+    SMOKE_QUERIES,
+    SmokeCheck,
+    Verdict,
+    render_smoke_report,
+)
 from finbrief.retrieval.vectorstore import build_filings_store, holds_any_chunks
 
 #: The committed machine evidence of the most recent run. Relative to the working
@@ -102,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         SMOKE_REPORT.write_text(report, encoding="utf-8")
         print(f"\nSmoke report written to {SMOKE_REPORT}")
 
-    failed = [check for check in checks if check.passed is False]
+    failed = [check for check in checks if check.outcome is Verdict.FAIL]
     if failed:
         print(
             f"\nSMOKE FAILED — {len(failed)} of "

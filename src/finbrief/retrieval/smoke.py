@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 from finbrief.config import RetrievalStrategy
 from finbrief.ingestion.model import Section
@@ -28,12 +29,29 @@ from finbrief.retrieval.retrieve import Context
 EXCERPT_CHARS = 260
 
 
+class Verdict(StrEnum):
+    """What a check concluded — three states, so the control cannot be scored by accident.
+
+    This was `passed: bool | None`, and the `None` was the problem: every truthiness test
+    on it silently counted the control as a failure, and the one caller that got it right
+    had to say `check.passed is False`. `CONTROL` is not "unknown", it is a third kind of
+    result — the out-of-KB query records a distance band and asserts nothing (scoring it
+    would need the floor T3 deliberately leaves unimplemented).
+
+    The values are what the report prints, so the rendered artifact is unchanged.
+    """
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    CONTROL = "control"
+
+
 @dataclass(frozen=True, slots=True)
 class SmokeQuery:
     """One hand-written question and where its answer must come from.
 
     `expect_ticker`/`expect_section` are `None` for the out-of-KB control, which is
-    deliberately unscored — see `SmokeCheck.passed`.
+    deliberately unscored — see `Verdict`.
     """
 
     question: str
@@ -42,6 +60,18 @@ class SmokeQuery:
     #: What this query is here to catch. Printed in the report, because a check whose
     #: purpose is not written down is a check nobody dares delete or fix.
     why: str
+
+    @property
+    def expectation(self) -> str:
+        """`TSLA Item 1A` — or an em dash for the control, which expects nothing.
+
+        One property because the verdict line and the report's Expects column were building
+        this label separately, and two spellings of the same expectation is how a table and
+        the verdict beside it come to disagree.
+        """
+        if self.expect_ticker is None or self.expect_section is None:
+            return "—"
+        return f"{self.expect_ticker} {self.expect_section.value}"
 
 
 #: The five. Each one is a KB property that could be wrong without any test failing:
@@ -101,45 +131,49 @@ class SmokeCheck:
     contexts: tuple[Context, ...]
 
     @property
-    def is_control(self) -> bool:
-        """A control query has nothing in the KB to be right about."""
-        return self.query.expect_ticker is None
-
-    @property
     def top(self) -> Context | None:
         return self.contexts[0] if self.contexts else None
 
     @property
-    def passed(self) -> bool | None:
-        """`True`/`False` for a check, `None` for the control — which is never scored.
+    def outcome(self) -> Verdict:
+        """What this check concluded. The control concludes `CONTROL`, never a score.
 
         The control's whole point is the distance band it records. Scoring it would turn
         this artifact into the retrieval-quality claim its header disclaims, and would need
         the very threshold this ticket deliberately leaves unimplemented.
         """
-        if self.is_control:
-            return None
+        if self.query.expect_ticker is None:
+            return Verdict.CONTROL
         top = self.top
         if top is None:
-            return False
-        return (
+            return Verdict.FAIL
+        matched = (
             top.ticker == self.query.expect_ticker and top.section is self.query.expect_section
         )
+        return Verdict.PASS if matched else Verdict.FAIL
+
+    @property
+    def is_control(self) -> bool:
+        """A control query has nothing in the KB to be right about."""
+        return self.outcome is Verdict.CONTROL
 
     @property
     def verdict(self) -> str:
         """One line a reader can act on: what was expected, what arrived."""
-        if self.is_control:
-            top = self.top
-            observed = f"nearest {top.citation}" if top else "nothing retrieved"
-            return f"control — recorded, not asserted ({observed})"
-        expected = f"{self.query.expect_ticker} {self.query.expect_section.value}"
         top = self.top
+        if self.outcome is Verdict.CONTROL:
+            observed = f"nearest {top.citation}" if top else "nothing retrieved"
+            return f"{Verdict.CONTROL.value} — recorded, not asserted ({observed})"
         if top is None:
-            return f"FAIL — expected {expected}, retrieved nothing"
-        if self.passed:
-            return f"PASS — {top.ticker} {top.section.value}"
-        return f"FAIL — expected {expected}, top hit was {top.ticker} {top.section.value}"
+            return (
+                f"{Verdict.FAIL.value} — expected {self.query.expectation}, retrieved nothing"
+            )
+        if self.outcome is Verdict.PASS:
+            return f"{Verdict.PASS.value} — {top.ticker} {top.section.value}"
+        return (
+            f"{Verdict.FAIL.value} — expected {self.query.expectation}, top hit was "
+            f"{top.ticker} {top.section.value}"
+        )
 
     @property
     def nearest(self) -> float | None:
@@ -168,8 +202,9 @@ def render_smoke_report(
     """
     scored = [check for check in checks if not check.is_control]
     controls = [check for check in checks if check.is_control]
-    passed = sum(1 for check in scored if check.passed)
-    outcome = "SMOKE PASSED" if passed == len(scored) else "SMOKE FAILED"
+    passed = sum(1 for check in checks if check.outcome is Verdict.PASS)
+    failed = any(check.outcome is Verdict.FAIL for check in checks)
+    headline = "SMOKE FAILED" if failed else "SMOKE PASSED"
 
     lines = [
         "# Retrieval smoke check",
@@ -185,7 +220,7 @@ def render_smoke_report(
         "",
         f"- Generated: {generated}",
         f"- Strategy: `{strategy.value}` · top-k `{k}` · embeddings `{embedding_model}`",
-        f"- Outcome: **{outcome}** — {passed}/{len(scored)} check(s) passed, "
+        f"- Outcome: **{headline}** — {passed}/{len(scored)} check(s) passed, "
         f"{len(controls)} control recorded",
         "",
         "## Checks",
@@ -194,14 +229,9 @@ def render_smoke_report(
         "|---|---|---|---|---|",
     ]
     for index, check in enumerate(checks, start=1):
-        expects = (
-            "—"
-            if check.is_control
-            else f"{check.query.expect_ticker} {check.query.expect_section.value}"
-        )
         lines.append(
-            f"| {index} | {check.query.question} | {expects} | {check.verdict} | "
-            f"{check.query.why} |"
+            f"| {index} | {check.query.question} | {check.query.expectation} | "
+            f"{check.verdict} | {check.query.why} |"
         )
 
     lines += [

@@ -9,15 +9,18 @@ the distance-floor deferral. Those are asserted here; PLAN.md §Phase 2 owns the
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fakes import a_context
 
-from finbrief.config import RetrievalStrategy
+from finbrief.config import ITEM_7A_POINTER_FILERS, RetrievalStrategy
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.smoke import (
     SMOKE_QUERIES,
     SmokeCheck,
     SmokeQuery,
+    Verdict,
     render_smoke_report,
 )
 
@@ -34,6 +37,10 @@ def a_check(*, query=None, contexts=None):
     return SmokeCheck(query=query, contexts=contexts)
 
 
+#: The last run's committed output. Read, never written — `scripts/retrieval_smoke.py` owns
+#: it, and the suite must not invoke that script (CLAUDE.md).
+REPORT = Path(__file__).parents[1] / "docs" / "verification" / "retrieval-smoke.md"
+
 CONTROL = SmokeQuery(
     question="What is Nestle's dividend policy?",
     expect_ticker=None,
@@ -46,7 +53,7 @@ CONTROL = SmokeQuery(
 
 
 def test_a_query_whose_top_hit_matches_its_expectation_passes():
-    assert a_check().passed is True
+    assert a_check().outcome is Verdict.PASS
 
 
 def test_a_query_that_retrieved_the_right_company_from_the_wrong_section_fails():
@@ -54,21 +61,21 @@ def test_a_query_that_retrieved_the_right_company_from_the_wrong_section_fails()
     # plausible-looking answer grounded in the wrong part of the filing.
     check = a_check(contexts=(a_context(1, section=Section.MDA),))
 
-    assert check.passed is False
+    assert check.outcome is Verdict.FAIL
     assert "Item 7" in check.verdict and "Item 1A" in check.verdict
 
 
 def test_a_query_that_retrieved_the_wrong_company_fails():
     check = a_check(contexts=(a_context(1, ticker="F"),))
 
-    assert check.passed is False
+    assert check.outcome is Verdict.FAIL
     assert "F" in check.verdict
 
 
 def test_a_query_that_retrieved_nothing_fails_rather_than_raising():
     check = a_check(contexts=())
 
-    assert check.passed is False
+    assert check.outcome is Verdict.FAIL
     assert "nothing" in check.verdict.lower()
 
 
@@ -78,9 +85,49 @@ def test_the_control_query_is_recorded_and_never_scored():
     # it here would be exactly the quality claim this artifact must not make.
     check = a_check(query=CONTROL, contexts=(a_context(1, ticker="PFE", distance=1.07),))
 
-    assert check.passed is None
+    assert check.outcome is Verdict.CONTROL
     assert check.is_control
     assert "control" in check.verdict.lower()
+
+
+def test_the_control_cannot_be_scored_by_a_truthiness_test():
+    # Why `Verdict` replaced `passed: bool | None`. Every `if check.passed` and every
+    # `sum(1 for c in checks if c.passed)` counted the control as a failure, and a caller
+    # had to know to write `is False`. There is no falsy state left to trip over: the
+    # control is a third kind of result, not an unknown score.
+    control = a_check(query=CONTROL, contexts=(a_context(1, ticker="PFE", distance=1.07),))
+    failing = a_check(contexts=(a_context(1, ticker="F"),))
+
+    assert control.outcome not in (Verdict.PASS, Verdict.FAIL)
+    assert [c.outcome is Verdict.FAIL for c in (control, failing)] == [False, True]
+
+
+def test_a_querys_expectation_reads_as_a_citation_or_an_em_dash():
+    assert a_check().query.expectation == "TSLA Item 1A"
+    assert CONTROL.expectation == "—", "the control expects nothing, and says so"
+
+
+def test_the_expectation_labels_match_the_committed_artifact():
+    # `docs/verification/retrieval-smoke.md` is the output of a paid run that CI cannot
+    # reproduce, so a change to how a row renders silently invalidates committed evidence.
+    # Extracting `expectation` had to leave every Expects cell byte-identical; this is what
+    # says so.
+    # Scoped to the Checks table: the distance-ranges table below it has the same column
+    # count and the same question in column 1, so an unscoped parse reads "yes" as an
+    # expectation and passes for the wrong reason.
+    _, _, rest = REPORT.read_text(encoding="utf-8").partition("## Checks")
+    checks_table, _, _ = rest.partition("## Observed distance ranges")
+    rows = {
+        cells[1]: cells[2]
+        for line in checks_table.splitlines()
+        if line.startswith("| ")
+        and len(cells := [c.strip() for c in line.split(" | ")]) == 5
+        and cells[0] != "| #"  # the header row, same shape as the data
+    }
+    assert len(rows) == len(SMOKE_QUERIES), f"parsed {len(rows)} rows from the Checks table"
+
+    for query in SMOKE_QUERIES:
+        assert rows[query.question] == query.expectation, query.question
 
 
 def test_a_check_reports_the_distance_band_it_observed():
@@ -110,11 +157,10 @@ def test_the_five_queries_cover_the_kb_shapes_a_reader_would_doubt():
     controls = [query for query in SMOKE_QUERIES if query.expect_ticker is None]
     assert len(controls) == 1, "exactly one out-of-KB control"
 
-    pointer_filers = {"BAC", "GS", "JNJ", "JPM", "LLY", "PFE"}
     market_risk = [
         query
         for query in SMOKE_QUERIES
-        if query.expect_ticker in pointer_filers and query.expect_section is Section.MDA
+        if query.expect_ticker in ITEM_7A_POINTER_FILERS and query.expect_section is Section.MDA
     ]
     assert market_risk, "a pointer filer's market-risk question must expect Item 7"
 
