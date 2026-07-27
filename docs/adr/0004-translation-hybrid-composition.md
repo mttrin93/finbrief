@@ -31,3 +31,134 @@ per-bucket A/B (#11).
 **Provenance.** For each surfaced chunk, log which variant × which retriever surfaced it
 and its RRF contribution. This is the data behind the RAG-visualization panel and lets the
 A/B analysis show *why* hybrid wins, not merely *that* it does.
+
+---
+
+## Amendment (ticket T6, issue #6) — what building it changed, and what measuring it contradicted
+
+The decision above stands: translation only adds, composition is symmetric, RRF fuses, dedup is
+by chunk id. Five things about the shape did not survive implementation, and one **pre-registered
+hypothesis did not survive measurement**. The contradiction is §6 and it is the important part.
+
+**1. `retrieve()` returns a `Retrieval`, not a bare sequence of `Context`.** ADR-0003's T3
+amendment narrowed the signature to one sequence, to stop two parallel lists desynchronising when
+a caller sorts or dedups one of them. Phase 4 widens it once, because a retrieval now knows
+something that is not a fact about any one chunk: **which queries it ran.** The RAG-viz panel
+(user story 5) has to show a sub-query that surfaced *nothing*, and that is exactly the datum no
+chunk's provenance can carry. `Retrieval.contexts` is still the sequence and each `Context` still
+carries its own `distance` and `rank`, so the pairing that amendment protects is untouched.
+
+**2. Each candidate list is `k` deep — not deeper.** This ADR fixes the *output* at top-k and says
+nothing about candidate depth. `k` is the choice that keeps `vector` without translation
+byte-identical to the T3 baseline the A/B compares against (RRF over a single list is strictly
+decreasing in rank, so fusion is a no-op on order); a wider fetch would quietly move that
+baseline. It also bounds cost, since hybrid + translation is already up to ten candidate lists,
+five of them paid embeddings. Widening it is a legitimate Tier-2 experiment and would be a change
+to the thing being measured, not a fix.
+
+**3. A chunk's vector distance is `float | None`.** Under `hybrid` this is the point rather than an
+edge case: the exact-identifier chunks this ADR exists to recover are precisely the ones vector
+search ranked outside `k`, and BM25 has no distance of its own. A stand-in (`0.0`, `inf`) would
+print a number in the sources panel that no measurement produced, so the UI says "no vector
+distance". `Context.fused_score` is what `rank` was decided by, and under hybrid the two disagree
+routinely — which is the disagreement the A/B is looking for.
+
+**4. `RRF_K = 60` lives in `config.py` as a plain constant, not a `Settings` field.** It is the
+published default (Cormack, Clarke & Buettcher 2009), **stated and not tuned**. ADR-0005
+pre-registers the shipping default before any A/B data exists so the winner cannot be picked after
+seeing the numbers, and a fusion constant somebody could sweep per environment is the back door
+into exactly that: a `hybrid` result at the published constant is a prediction that survived a
+test, one at the best of several `RRF_K` values is a number about the sweep.
+
+**5. A failed translation raises; it does not degrade to no-translation.** `±translation` is one
+axis of the measured A/B (ADR-0002), so a silent fallback would report a translation-enabled number
+for a retrieval where translation never ran — the same failure this project refuses when `hybrid`
+raised rather than serving vector results under a hybrid label. Phase 5 owns the graceful UI
+failure; what it must not become is an invisible one.
+
+---
+
+### 6. The measured contradiction: BM25 on the retained original does *not* nail exact-identifier
+
+This ADR's refined hypotheses said `±translation ≈ neutral on exact-identifier`, and gave a reason:
+*"BM25 on the retained original already nails it."* **That reason is wrong, and issue #6's
+pre-registered case is what showed it.**
+
+The case: `Tesla debt`, `k=5`, against the ingested collection. Under `vector` the one relevant
+chunk (`TSLA` Item 7, the liquidity passage) ranked **5th of 5**, behind four Ford chunks. The
+prediction was that BM25 on the retained original would move it to **rank 1**.
+
+**Measured under `hybrid`: it moved from rank 5 to absent** — out of the top-5 entirely, reappearing
+at rank 10 when `k=10`. Hybrid alone made the case *worse*. Root-caused, with numbers:
+
+| fact | measurement |
+|---|---|
+| the relevant chunk's own text | contains **no `tesla` token** — "*we* and our subsidiaries had outstanding $8.18 billion … of indebtedness". A filer writes "we". |
+| `tsla` as a corpus token | 280 of 5,842 chunks — *all* of TSLA's, because the provenance header carries the ticker |
+| `tesla` as a corpus token | **34** of 5,842 chunks — body mentions only |
+| `debt` as a corpus token | 413 of 5,842 chunks |
+
+So `tesla` carries enormous IDF and `debt` almost none, and BM25 ranked by *how often the word
+"Tesla" appears*: used-vehicle trade-ins (`tesla` ×5, `debt` ×0), then human-capital oversight,
+then "highly dependent on the services of Elon Musk". It recovered the **filer** and lost the
+**topic**, then displaced both the Ford chunks and the relevant Tesla chunk from the `k=5` window.
+
+The control shows the mechanism was sound and only mis-keyed: `TSLA debt` under `hybrid` already
+returned 5/5 TSLA with `TSLA` Item 7 at rank 2. **The gap was name → ticker, nothing else.** The
+chunk-side counterpart this ADR describes does work — for the surface form the *index* carries,
+which is not the surface form an analyst types.
+
+**The fix: deterministic entity normalisation inside the translation step.** When a Universe
+company name appears in a query, a **ticker-form variant** is added — `Tesla debt` → also
+`TSLA debt`. It is a lookup in `config.TICKER_BY_COMPANY_NAME`, derived from `UNIVERSE`, so the
+`+translation` arm gains a variant without gaining model variance; the original is always retained,
+so this only ever adds; and one substitution pass over the whole question bounds it at **one** extra
+variant however many companies are named.
+
+**Re-measured, `Tesla debt`, `k=5`, same collection, same day:**
+
+| state | strategy | translation | TSLA in top-5 | the #6 chunk's rank | its distance |
+|---|---|---|---|---|---|
+| 1 | vector | off | 1/5 | **5** | 1.0406 |
+| 2 | hybrid | off | 2/5 | **absent** (10 at `k=10`) | — |
+| 3 | hybrid | normalisation only | 3/5 | **1** | 0.6778 |
+| 4 | hybrid | normalisation + 3 sub-queries | **5/5** | **2** | 0.6777 |
+| 5 | vector | normalisation only | 3/5 | **1** | 0.6778 |
+
+Provenance says *why*, and it is not the mechanism the prediction named. The ticker form ranks the
+chunk **5th under vector search too** (state 5), at distance 0.6778 against the original's 1.0406 —
+the header moves the *embedding* as well as BM25. So the chunk collects two independent
+vector votes plus one BM25 vote, and **RRF's agreement principle** is what promotes it past four
+Ford chunks that each earned one. BM25 contributes one vote of three; it is not the load-bearing
+half.
+
+**Superseding hypothesis, and it is a pre-registration, not a post-hoc rationalisation.** No A/B
+data exists yet — ADR-0002's golden set is ticket T9 (#4) and the per-bucket matrix is T10 (#11).
+What is written here predates both, on the strength of one root-caused case:
+
+- **`+translation` is positive on `exact-identifier`, via normalisation** — superseding "≈ neutral
+  (BM25 on the retained original already nails it)". The channel is named so it is falsifiable: if
+  the bucket's win does not survive with `FINBRIEF_MAX_SUB_QUERIES=0`, normalisation is not what
+  earned it.
+- **`hybrid` alone may be *negative* on `exact-identifier`** when the query names a company by
+  name rather than by ticker, because BM25 recovers the filer and loses the topic. State 2 above is
+  one instance; the golden set is what says how general it is.
+- **The planner's sub-queries buy filer precision, not target rank** — 5/5 TSLA against 3/5, at
+  the cost of one rank on the target chunk (state 4 vs state 3), because three BM25 votes across
+  sub-queries promoted an Item 1 chunk. `n=1`; per-bucket precision and recall are #4's to report.
+
+**Variant budget, restated.** This ADR writes the cap as "up to 3 sub-queries". The true bound is
+now **1 original + at most 1 normalised + at most `max_sub_queries`** = 5 variants, 10 candidate
+lists under hybrid. Recorded here rather than smuggled in, because ADR-0005's ≤1.5s p50 budget is
+judged against this count. The normalised variant costs a retrieval round, never a chat round.
+
+**Stated limitation: the provenance header carries the ticker only.** `AAPL | FY2025 10-K | Item 1A.
+Risk Factors` gives BM25 the ticker and the Section but not the company *name*, which is the form a
+question uses. Carrying both — `AAPL | Apple Inc. | FY2025 10-K | …` — is the index-side fix and is
+**deliberately not taken now**: the header is inside `chunking.content_hash`, so changing it
+re-embeds all 5,842 chunks, and a re-embed invalidates every distance recorded on #5, #6 and #11 —
+the committed `retrieval-smoke.md` band, this amendment's own before/after, and the A/B's inputs.
+Query-side normalisation gets the same result for this bucket at no re-ingest and no spend, which
+is why it went first. A further fallback exists and was **not** needed: enrich only the BM25
+document text with the company name at index-build time, leaving the embeddings untouched. If a
+re-ingest happens for another reason, carrying both in the header is the change to make with it.

@@ -74,9 +74,14 @@ or asserts against noise.
 - `retrieval/vectorstore.py` is the only place the `filings` collection is opened,
   written, or read (`FILINGS_COLLECTION`).
 - `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
-  retrieval *means* — the strategy, the ranking contract, the `Context` shape — and crosses
-  Chroma only through `vectorstore.nearest_chunks`; nothing above it opens the collection.
-  `hybrid` raises until Phase 4 rather than serving vector results under a hybrid label.
+  retrieval *means* — the composition, the ranking contract, the `Context` and `Retrieval`
+  shapes — and crosses Chroma only through `vectorstore.nearest_chunks` / `all_chunks`;
+  nothing above it opens the collection. The two switches (`strategy`, `translate`) are
+  **named by the caller**, never read from config here: the app names them from `Settings`
+  and the A/B harness names all four combinations, so a number is never reported against a
+  configuration nobody selected. `retrieval/hybrid.py` owns fusion and the BM25 index;
+  `retrieval/query_translation.py` owns the variants, and **the original question is always
+  variant 0** (ADR-0004 — translation only ever adds).
 - `prompts.py` owns the persona and the grounding-scope disclosure. The app's caption, the
   sidebar panel, the system prompt and the README all read the same words (`GROUNDING_SCOPE`,
   `GROUNDING_SCOPE_DETAILS`), and every count in them is derived from `config`/`Section`,
@@ -99,7 +104,10 @@ or asserts against noise.
   `[1]` and nothing raises (issue #7 review). Anything that numbers sources by their position
   in a list, or offsets ranks anywhere else, reintroduces that collision.
 - All structured logging goes through `log_event` — one JSON object per line, and never a
-  secret in `fields`.
+  secret in `fields`, and **never a question or a query variant**: a variant is derived from
+  user content and these lines are kept. Counts, lengths and verdicts only — which is why the
+  `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself
+  carries the variant text for the RAG-viz panel to render (ADR-0004 amendment).
 
 ## Agent skills
 

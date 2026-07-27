@@ -23,3 +23,37 @@ before any A/B data exists.
 
 **Consequence.** The shipping default is defensible as a prediction that survived (or
 didn't) a pre-registered test, not a post-hoc pick.
+
+---
+
+## Amendment (ticket T6, issue #6) — the default survives; the reason it wins changed
+
+ADR-0004's T6 amendment records a pre-registered hypothesis that **failed**: BM25 on the retained
+original does not "already nail" the `exact-identifier` bucket, and on issue #6's case `hybrid`
+alone moved the relevant chunk from rank 5 to *absent*. Three things follow for this ADR, and the
+first two are the ones a reviewer should check.
+
+**1. The pre-committed default is unchanged: `hybrid + translation`.** The falsification clause here
+is about the *default*, and its trigger is narrow and directional — translation worse on **both**
+context precision and context recall within a bucket. Nothing of that kind happened. On the
+re-measured case translation is what *rescues* the bucket: the relevant chunk goes from absent
+(hybrid, no translation) to rank 1 (hybrid + normalisation) to rank 2 with 5/5 correct-filer chunks
+(hybrid + full translation). What changed is the *mechanism* credited for the win, from "BM25 sees
+the raw identifiers" to "normalisation supplies the identifier surface the index actually carries,
+and RRF's agreement principle promotes the chunk both surface forms found".
+
+**2. The superseding hypothesis predates any A/B data, so it is a pre-registration and not a
+post-hoc pick.** This is the whole point of writing it down now. ADR-0002's golden set is ticket T9
+(#4) and the per-bucket matrix is T10 (#11): **neither exists yet**, and no RAGAs or
+precision/recall number has been computed against any configuration. The revision rests on one
+root-caused case with its ranking published on #6, and it names its own channel so the harness can
+refute it — if the `exact-identifier` win does not survive `FINBRIEF_MAX_SUB_QUERIES=0`, then
+normalisation is not what earned it and the hypothesis is wrong. That is a stronger position than
+this ADR started in, not a weaker one: the prediction now has a stated mechanism attached to it
+rather than an assumption.
+
+**3. The latency budget is judged against a larger variant count than this ADR assumed.** The bound
+is now 1 original + at most 1 normalised + at most `max_sub_queries` (ADR-0004 amendment). The
+normalised variant costs a retrieval round and never a chat round, which is the half of the ≤1.5s
+p50 budget that matters least — but it is two more candidate lists under hybrid, and T10 measures
+the added p50 from the Phase-6 logs rather than assuming it.
