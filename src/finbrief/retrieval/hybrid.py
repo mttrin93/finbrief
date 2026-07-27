@@ -7,11 +7,20 @@ vector search cannot be, and the arithmetic that merges their answers into one r
 **Why BM25 at all.** Vector search scores *aboutness*, and a filer's name barely moves the
 vector: issue #6 records a live retrieval where the query `Tesla debt` returned four Ford
 chunks above the one Tesla chunk, because Tesla and Ford discuss indebtedness in near-identical
-language and Ford's passages discuss it more. A lexical retriever scores the token `tesla`
+language and Ford's chunks discuss it more. A lexical retriever scores the token `tesla`
 instead, where a Ford chunk earns nothing, and IDF makes the rare term the decisive one — which
-is the mechanism ADR-0004 predicts fixes that bucket. The chunk-side counterpart is
+is the mechanism ADR-0004 predicted would fix that bucket. The chunk-side counterpart is
 `Chunk.text`'s provenance header, which is why `Item 7` and a ticker are matchable on every
 chunk of a Section rather than only the one the splitter left the heading in.
+
+**That prediction was measured and it failed — read ADR-0004 §6 and §7 before trusting the
+paragraph above.** The header carries the *ticker* and an analyst types the *name*, so BM25 on
+`Tesla debt` recovered the filer and lost the topic, and hybrid alone moved the relevant chunk
+from rank 5 to absent. The fix was query-side entity normalisation
+(`query_translation.normalised`), and §7's ablation shows the recovery is **embedding-side**:
+BM25 supplies one vote of three, so its role is redundancy rather than recovery. This module is
+still the right shape, and the reasoning above is still why a lexical retriever belongs in the
+pipeline — but it is a pre-measurement argument, and §6/§7 are what the numbers say.
 
 **Why RRF rather than score blending.** The two retrievers' scores are not comparable and
 cannot be made so: Chroma returns a squared L2 distance (lower is nearer, unbounded above) and
@@ -21,9 +30,13 @@ chunk's score depend on which *other* chunks came back — so the same chunk sco
 in two retrievals and the A/B measures the normalisation as much as the strategy. RRF consumes
 only **rank**, which both retrievers genuinely have.
 
-Nothing here reads configuration or opens a collection. `fuse` is a pure function of its
-candidate lists, and `BM25Index` is built from documents somebody else read out of the store —
-which is what lets both be tested without a key, a network, or a paid embedding.
+`fuse` and `BM25Index` read no configuration and open no collection: `fuse` is a pure function
+of its candidate lists, and an index is built from documents somebody else read out of the store
+— which is what lets both be tested without a key, a network, or a paid embedding. The two
+exceptions are named rather than implied, because a blanket "nothing here" claim was wrong on
+both counts: `rrf_contribution` reads `config.RRF_K`, and `bm25_index` — the production
+accessor, not the class — performs the whole-collection read through `vectorstore.all_chunks`,
+which is still the only module allowed to touch the collection (CLAUDE.md).
 """
 
 from __future__ import annotations
@@ -179,9 +192,15 @@ def fuse(candidate_lists: Sequence[CandidateList], *, limit: int) -> tuple[Fused
 
     Pure and deterministic, which ADR-0003 stakes the A/B on. Two properties do the work:
 
-    - **Truncation happens after fusion, never before.** Cutting each list to `limit` first
-      would discard the agreement between retrievers that RRF exists to find — the chunk both
-      of them rank sixth is the one hybrid search is for.
+    - **The fused pool is truncated after fusion, never before.** Every candidate list is scored
+      and merged in full, so a chunk that ranks low in two lists can outrank one that ranks high
+      in a single list — that agreement is what RRF exists to find and what a pre-fusion cut
+      would discard. This is a rule about *this function*, not about how deep its inputs are
+      fetched: `retrieve._candidate_lists` deliberately fetches exactly `k` per list, which is
+      what keeps `vector` without translation byte-identical to the T3 baseline (ADR-0004
+      amendment §2), so the chunk both retrievers rank sixth at `k=5` is out of reach here by
+      that separate, deliberate choice. Widening the fetch is a Tier-2 experiment; nothing in
+      `fuse` assumes it either way.
     - **Ties break on chunk id.** Two chunks at the same rank in different lists score
       identically, and without a stated tie-break the winner would be whichever retriever
       happened to be iterated first: reproducible within one process, not across a refactor,

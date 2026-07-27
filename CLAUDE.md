@@ -75,13 +75,16 @@ or asserts against noise.
   written, or read (`FILINGS_COLLECTION`).
 - `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
   retrieval *means* — the composition, the ranking contract, the `Context` and `Retrieval`
-  shapes — and crosses Chroma only through `vectorstore.nearest_chunks` / `all_chunks`;
-  nothing above it opens the collection. The two switches (`strategy`, `translate`) are
+  shapes — and crosses Chroma only through `vectorstore.nearest_chunks`; nothing above it
+  opens the collection. The two switches (`strategy`, `translate`) are
   **named by the caller**, never read from config here: the app names them from `Settings`
   and the A/B harness names all four combinations, so a number is never reported against a
-  configuration nobody selected. `retrieval/hybrid.py` owns fusion and the BM25 index;
-  `retrieval/query_translation.py` owns the variants, and **the original question is always
-  variant 0** (ADR-0004 — translation only ever adds).
+  configuration nobody selected. `retrieval/hybrid.py` owns fusion and the BM25 index, and
+  makes the *other* crossing — `hybrid.bm25_index` reads the whole corpus through
+  `vectorstore.all_chunks`, once per process, because BM25 scores text and needs the corpus
+  rather than a neighbourhood of it. Two crossings, both inside `retrieval/`, both through
+  `vectorstore.py`. `retrieval/query_translation.py` owns the variants, and **the original
+  question is always variant 0** (ADR-0004 — translation only ever adds).
 - `prompts.py` owns the persona and the grounding-scope disclosure. The app's caption, the
   sidebar panel, the system prompt and the README all read the same words (`GROUNDING_SCOPE`,
   `GROUNDING_SCOPE_DETAILS`), and every count in them is derived from `config`/`Section`,
