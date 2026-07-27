@@ -13,12 +13,10 @@ all.
 from __future__ import annotations
 
 import pytest
-from fakes import KeywordEmbeddings
 
 from finbrief.config import RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import retrieve
-from finbrief.retrieval.vectorstore import build_filings_store
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test", "FINBRIEF_RETRIEVAL_K": "3"})
 
@@ -103,23 +101,28 @@ def test_hybrid_is_refused_rather_than_silently_retrieving_vector(filings_store)
         retrieve("anything", strategy=RetrievalStrategy.HYBRID, k=5, store=filings_store)
 
 
-def test_k_and_the_store_fall_back_to_the_application_settings(monkeypatch, tmp_path):
+def test_k_and_the_store_fall_back_to_the_application_settings(monkeypatch, filings_store):
     # The production path: the app passes neither, so `settings.retrieval_k` and the
     # configured `filings` collection decide. Every other test here injects both.
+    #
+    # The fake hands back a *populated* store, which is what makes `SETTINGS`'
+    # `FINBRIEF_RETRIEVAL_K=3` observable. Pointed at an empty collection this asserted
+    # `== ()`, true for every possible k, so half of what the test is named for went
+    # unchecked (issue #5 review). The empty case has its own test above.
     import finbrief.retrieval.retrieve as retrieve_module
 
     opened = []
 
     def fake_build_filings_store(settings):
         opened.append(settings)
-        return build_filings_store(
-            persist_directory=str(tmp_path / "chroma"), embeddings=KeywordEmbeddings()
-        )
+        return filings_store
 
     monkeypatch.setattr(retrieve_module, "build_filings_store", fake_build_filings_store)
     monkeypatch.setattr(retrieve_module, "get_settings", lambda: SETTINGS)
 
-    assert retrieve("anything", strategy=RetrievalStrategy.VECTOR) == ()
+    contexts = retrieve(QUESTION, strategy=RetrievalStrategy.VECTOR)
+
+    assert len(contexts) == 3, "k came from FINBRIEF_RETRIEVAL_K, not the signature default"
     assert opened == [SETTINGS], "the one place the filings collection is opened"
 
 
