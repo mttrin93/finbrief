@@ -77,6 +77,11 @@ def answer_question(
     the tiered handling).
     """
     started = time.perf_counter()
+    # Normalised here as well as inside `retrieve()`, because `retrieve()` normalises its own
+    # local and this function keeps the caller's value: `retrieve` documents accepting a raw
+    # string, so `answer_question(q, strategy="vector")` used to retrieve, pay for a
+    # generation, and *then* die on `strategy.value` in the log line below (issue #5 review).
+    strategy = RetrievalStrategy(strategy)
     contexts = retrieve(question, strategy=strategy, k=k, store=store, settings=settings)
     if not contexts:
         # Emptiness, not irrelevance — a populated collection always returns `k`. The
@@ -85,7 +90,10 @@ def answer_question(
         # `docs/verification/retrieval-smoke.md` for the distances it would be chosen from.
         text = NO_CONTEXT_FALLBACK
     else:
-        chat = model if model is not None else build_chat_model()
+        # `settings` reaches generation too, not just retrieval: a harness that points an
+        # injected `Settings` at a throwaway index would otherwise still generate with the
+        # process-global `chat_model`, so half of its configuration would silently not apply.
+        chat = model if model is not None else build_chat_model(settings)
         reply = chat.invoke(
             [
                 SystemMessage(SYSTEM_PROMPT),

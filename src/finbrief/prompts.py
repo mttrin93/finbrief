@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from finbrief.config import ITEM_7A_POINTER_FILERS, TICKERS, UNIVERSE
+from finbrief.config import (
+    ITEM_7A_POINTER_FILERS,
+    ITEM_7A_SECTION_FILERS,
+    TICKERS,
+    UNIVERSE,
+)
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context
 
@@ -40,8 +45,8 @@ _POINTER_FILERS_IN_UNIVERSE = ITEM_7A_POINTER_FILERS & TICKERS
 #: the reader to Item 7, which passes the gate and is deliberately not chunked (ADR-0007
 #: amendment §4) — so their market-risk content is in the KB, labelled `Item 7`.
 #: `docs/verification/ingest-report.md` is the evidence, cross-checked against this
-#: arithmetic by `test_prompts.py` rather than read at startup: the app must render its
-#: scope without a generated artifact on disk.
+#: arithmetic by `tests/test_grounding_scope.py` rather than read at startup: the app must
+#: render its scope without a generated artifact on disk.
 _SECTIONS_IN_KB = _SECTION_SLOTS - len(_POINTER_FILERS_IN_UNIVERSE)
 
 _ITEMS = ", ".join(f"{section.value} ({section.heading})" for section in Section)
@@ -71,8 +76,7 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
         f"Item 7A by incorporating Item 7, so their market-risk disclosure is in the "
         f"knowledge base labelled `Item 7` — not `Item 7A` ({_SECTIONS_IN_KB} of "
         f"{_SECTION_SLOTS} Sections). All {len(UNIVERSE)} companies have market-risk "
-        f"grounding; {len(UNIVERSE) - len(_POINTER_FILERS_IN_UNIVERSE)} have an "
-        f"`Item 7A` Section."
+        f"grounding; {len(ITEM_7A_SECTION_FILERS)} have an `Item 7A` Section."
     ),
     (
         "**Out of scope:** every other Item of the 10-K, 10-Qs, proxies, earnings calls, "

@@ -161,6 +161,12 @@ def _build_peers(
 COMPANIES: Mapping[str, Company] = MappingProxyType({c.ticker: c for c in UNIVERSE})
 TICKERS: frozenset[str] = frozenset(COMPANIES)
 
+#: The Universe filers that have an `Item 7A` Section of their own — the complement of
+#: `ITEM_7A_POINTER_FILERS`. Derived rather than typed: "9 of 15" appears in the app's
+#: grounding-scope panel, in the retrieval smoke check's rationale and in CONTEXT.md, and a
+#: hand-typed copy of it is wrong the moment a filer starts or stops handing the Item off.
+ITEM_7A_SECTION_FILERS: frozenset[str] = TICKERS - ITEM_7A_POINTER_FILERS
+
 #: peer cluster -> its tickers. The one place the grouping is computed: `_build_peers` and
 #: the UI's Universe panel both read it rather than re-deriving it from `UNIVERSE`.
 CLUSTERS: Mapping[PeerCluster, tuple[str, ...]] = _build_clusters(UNIVERSE)

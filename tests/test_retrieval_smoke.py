@@ -107,6 +107,24 @@ def test_a_querys_expectation_reads_as_a_citation_or_an_em_dash():
     assert CONTROL.expectation == "—", "the control expects nothing, and says so"
 
 
+def test_a_half_filled_expectation_is_a_control_everywhere_or_nowhere():
+    # `outcome` used to test `expect_ticker` alone while `expectation` tested both fields, so
+    # a query naming a ticker with no Section was scored FAIL forever *and* rendered as
+    # expecting `—`: a verdict no reader could act on. One predicate on `SmokeQuery` decides
+    # it now, and this is what keeps the two halves from parting again (issue #5 review).
+    half_filled = SmokeQuery(
+        question="Where does JPMorgan discuss market risk?",
+        expect_ticker="JPM",
+        expect_section=None,
+        why="a query somebody half-wrote",
+    )
+    check = SmokeCheck(query=half_filled, contexts=(a_context(1, ticker="JPM"),))
+
+    assert half_filled.is_control
+    assert check.outcome is Verdict.CONTROL
+    assert half_filled.expectation == "—"
+
+
 def test_the_expectation_labels_match_the_committed_artifact():
     # `docs/verification/retrieval-smoke.md` is the output of a paid run that CI cannot
     # reproduce, so a change to how a row renders silently invalidates committed evidence.
@@ -233,3 +251,42 @@ def test_the_report_lists_every_retrieved_chunk_so_a_reader_can_check_it():
 
     assert "0001628280-26-003952:Item 1A:1" in report
     assert "TSLA Item 1A body 1." in report
+
+
+def test_the_report_headline_announces_a_failure_a_reader_would_otherwise_scroll_past():
+    # The artifact is committed, so its first screenful is what anyone reads. A run with a
+    # wrong top hit that still said SMOKE PASSED would be worse than no evidence at all.
+    passing = render([a_check(), a_check(query=CONTROL)])
+    failing = render([a_check(contexts=(a_context(1, ticker="F"),)), a_check(query=CONTROL)])
+
+    assert "**SMOKE PASSED**" in passing and "SMOKE FAILED" not in passing
+    assert "**SMOKE FAILED**" in failing and "SMOKE PASSED" not in failing
+
+
+def test_the_headline_does_not_treat_the_unscored_control_as_a_failure():
+    # The regression `Verdict` was introduced to kill: a control counted as a failure makes
+    # every healthy run render SMOKE FAILED.
+    report = render([a_check(query=CONTROL, contexts=(a_context(1, ticker="PFE"),))])
+
+    assert "**SMOKE PASSED**" in report
+    assert "0/0 check(s) passed, 1 control recorded" in report
+
+
+def test_a_query_that_retrieved_nothing_says_so_where_its_chunks_would_be():
+    # Distinct from an omitted section: a reader checking a FAIL needs to see that the list
+    # is empty rather than missing.
+    report = render([a_check(contexts=())])
+
+    assert "Nothing retrieved." in report
+    assert "| — | — |" in report, "and an empty distance band, not a formatting error"
+
+
+def test_an_excerpt_is_marked_elided_only_when_something_was_elided():
+    # The ellipsis is a claim about the source. A short tail chunk printed whole was being
+    # reported as truncated, which invites a reader to go looking for text that is all there.
+    whole = render([a_check(contexts=(a_context(1, body="Short and complete."),))])
+    clipped = render([a_check(contexts=(a_context(1, body="word " * 200),))])
+
+    assert "> Short and complete.\n" in whole
+    assert "…" not in whole.partition("## Retrieved chunks")[2]
+    assert "…" in clipped.partition("## Retrieved chunks")[2]

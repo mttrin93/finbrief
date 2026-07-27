@@ -241,6 +241,54 @@ def test_an_ungrounded_answer_renders_no_empty_sources_panel(app, monkeypatch):
     assert not assistant.expander
 
 
+def test_retrieving_nothing_names_the_un_ingested_collection_as_the_cause(app, monkeypatch):
+    # A populated Chroma always returns top-k, so an empty result has one cause: nobody has
+    # ingested, or the app is pointed at the wrong directory. The fallback text alone reads
+    # as "your question was out of scope" and sends a reviewer who simply has not run ingest
+    # looking for a retrieval bug (issue #5 review).
+    stub_answer(monkeypatch, GroundedAnswer(text=NO_CONTEXT_FALLBACK, contexts=()))
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assert not app.exception
+    (warning,) = app.warning
+    assert "ingest_filings.py" in warning.value
+    assert "data/chroma" in warning.value, "and which collection it looked in"
+
+
+def test_a_grounded_answer_raises_no_setup_banner(app, monkeypatch):
+    # The other half: a banner on every healthy turn is a banner nobody reads.
+    stub_answer(monkeypatch)
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assert not app.warning
+
+
+def test_a_transcript_row_from_an_older_shape_replays(app, monkeypatch):
+    # A live session's transcript outlives a code reload, so rows written before `contexts`
+    # existed are still in `st.session_state` on the first rerun after a deploy. They must
+    # replay without their sources, not `KeyError` the whole page.
+    stub_answer(monkeypatch)
+    app.run()
+    app.session_state.messages = [
+        {"role": "user", "content": "What are Tesla's risk factors?"},
+        {"role": "assistant", "content": "An answer written before contexts were stored."},
+    ]
+
+    app.run()
+
+    assert not app.exception
+    assistant = app.chat_message[1]
+    assert "An answer written before contexts were stored." in [
+        md.value for md in assistant.markdown
+    ]
+    assert not assistant.expander
+    assert DISCLAIMER in [caption.value for caption in assistant.caption]
+
+
 def test_sending_a_message_reaches_the_agent_seam(app, monkeypatch):
     asked = stub_answer(monkeypatch)
     app.run()

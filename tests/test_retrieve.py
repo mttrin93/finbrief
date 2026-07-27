@@ -101,6 +101,22 @@ def test_hybrid_is_refused_rather_than_silently_retrieving_vector(filings_store)
         retrieve("anything", strategy=RetrievalStrategy.HYBRID, k=5, store=filings_store)
 
 
+def test_a_strategy_named_as_a_string_lands_on_the_same_branch_as_the_enum(filings_store):
+    # `retrieve` normalises rather than trusts, and the reason is the `hybrid` guard below
+    # it: `"hybrid" is RetrievalStrategy.HYBRID` is `False`, so an unnormalised string would
+    # slip past the refusal and serve vector results under a hybrid label — the one outcome
+    # ADR-0005 rules out.
+    assert retrieve("anything", strategy="vector", k=1, store=filings_store)
+
+    with pytest.raises(NotImplementedError, match="Phase 4"):
+        retrieve("anything", strategy="hybrid", k=1, store=filings_store)
+
+
+def test_an_unknown_strategy_is_refused_by_name_rather_than_taken_as_vector(filings_store):
+    with pytest.raises(ValueError, match="bm25"):
+        retrieve("anything", strategy="bm25", k=1, store=filings_store)
+
+
 def test_k_and_the_store_fall_back_to_the_application_settings(monkeypatch, filings_store):
     # The production path: the app passes neither, so `settings.retrieval_k` and the
     # configured `filings` collection decide. Every other test here injects both.

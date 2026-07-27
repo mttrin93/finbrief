@@ -67,13 +67,17 @@ evaluated (RAGAs + per-bucket A/B), so the quality claims are measured, not asse
 ## Implementation Decisions
 
 **Retrieval engine (ADR-0003, 0004).** A standalone deterministic component
-`retrieve(question, strategy, k) → (contexts, scores)` runs query translation and hybrid
+`retrieve(question, strategy, k) → tuple[Context, ...]` runs query translation and hybrid
 search internally, selected by a `strategy` config flag (temperature 0, fixed `k` in eval
 mode). Translation only *adds*: the original query is always retained as a variant, plus up
 to 3 sub-queries (capped for latency). All variants run through **both** BM25 and vector;
 candidate lists are fused with Reciprocal Rank Fusion, deduplicated by chunk id, truncated
-to top-k. Per-chunk provenance (variant × retriever × RRF contribution) is recorded. The
-same function is wrapped as the `search_filings` agent tool, whose description instructs the
+to top-k. Per-chunk provenance (variant × retriever × RRF contribution) is recorded. It
+returns one sequence rather than the `(contexts, scores)` pair this spec first wrote, because
+each `Context` carries its own `distance` (Chroma L2 — lower is nearer, not a normalised
+similarity) and 1-based `rank`: two parallel lists desynchronise the moment a caller sorts,
+filters or dedups one of them, which is precisely what RRF fusion does (ADR-0003 amendment).
+The same function is wrapped as the `search_filings` agent tool, whose description instructs the
 agent to pass the user question verbatim (the tool owns optimization) to avoid double
 translation.
 
@@ -149,8 +153,10 @@ Six seams (confirmed):
 3. **Streamlit app via `streamlit.testing.v1.AppTest`** — session/rendering only: thread_id
    stability across reruns, distinctness across sessions, fresh-uuid+surviving-agent on
    start-over, toggles, panels render. **The agent is stubbed entirely — no LLM calls.**
-   Lands as `test_app_state.py` in Phase 3; `test_app_smoke.py` is the Phase-0 subset
-   (page renders, a message reaches the agent seam).
+   Lands as `test_app_state.py` in Phase 3. `test_app_smoke.py` covers rendering: the
+   answer, the sources panel and its survival across reruns, the disclaimer, the
+   grounding-scope disclosure, the configured-vs-ran strategy caption, and the banner an
+   un-ingested collection earns.
 4. **Security gate** — normalize/regex tested as **pure functions**; the classifier layer via
    **mocked responses in unit runs**, live only in the cached security-suite evals. Indirect
    injection asserted against the dedicated test collection (obeys nothing / no prompt leak);

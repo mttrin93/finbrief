@@ -23,9 +23,11 @@ uv run streamlit run app/Home.py
 
 CI runs exactly the lint and test commands above (`.github/workflows/ci.yml`).
 
-Building the knowledge base is a separate, non-hermetic entry point — the one command that
-reaches the network and spends money. Run it from the repo root; its report paths are
-relative to the working directory.
+The non-hermetic entry points — the only commands that reach the network, and two of the
+three spend money. Run them from the repo root; their report paths are relative to the
+working directory. `retrieval_smoke.py` reads the collection ingest built and embeds its five
+queries with the same paid model, so it needs a key too: a query embedded by a different
+model retrieves noise with no error.
 
 ```bash
 uv run python scripts/ingest_filings.py             # full Universe: EDGAR + paid embeddings
@@ -41,11 +43,17 @@ Never invoke any of these from a test.
 `load_dotenv` out, strips the managed env prefixes (including `LANGCHAIN_`/`LANGSMITH_`, so
 tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build configuration
 with `Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never
-add a test dependency that fetches data at import time. Two more mechanisms keep the
+add a test dependency that fetches data at import time. Three more mechanisms keep the
 no-network half true: tiktoken's cl100k_base table is vendored under
 `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
-`get_encoding` silently downloads it), and the EDGAR fixtures under `tests/fixtures/edgar/`
-are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`.
+`get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`
+are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`;
+and retrieval runs against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py`
+holds the doubles (`KeywordEmbeddings`, deterministic and lexical, so a test may assert an
+order; `a_context`, the shared `Context` builder) and conftest builds `filings_store` /
+`empty_filings_store` from them. Never point a test at the ingested `data/chroma`: it is only
+searchable by the paid model that wrote it, so a test that reaches for it either needs a key
+or asserts against noise.
 
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
@@ -62,6 +70,19 @@ are recorded, never fetched — refresh them by hand with `scripts/record_edgar_
   retrieval to noise with no error).
 - `retrieval/vectorstore.py` is the only place the `filings` collection is opened,
   written, or read (`FILINGS_COLLECTION`).
+- `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
+  retrieval *means* — the strategy, the ranking contract, the `Context` shape — and crosses
+  Chroma only through `vectorstore.nearest_chunks`; nothing above it opens the collection.
+  `hybrid` raises until Phase 4 rather than serving vector results under a hybrid label.
+- `prompts.py` owns the persona and the grounding-scope disclosure. The app's caption, the
+  sidebar panel, the system prompt and the README all read the same words (`GROUNDING_SCOPE`,
+  `GROUNDING_SCOPE_DETAILS`), and every count in them is derived from `config`/`Section`,
+  never typed — a scope sentence written twice will disagree with itself, and the disagreeing
+  copy is the one on screen. `tests/test_grounding_scope.py` binds the README's prose and the
+  committed ingest evidence to the derived values.
+- `rag.answer_question` is the measured chain (ADR-0003) and must stay callable with no agent
+  in the way. `GroundedAnswer.text` deliberately carries **no** disclaimer, so every surface
+  that renders it owes a `prompts.DISCLAIMER` beside it.
 - All structured logging goes through `log_event` — one JSON object per line, and never a
   secret in `fields`.
 

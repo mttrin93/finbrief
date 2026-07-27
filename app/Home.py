@@ -83,10 +83,22 @@ def render_sources(contexts: tuple[Context, ...]) -> None:
 
     Rendered for every assistant turn, replayed turns included — a citation whose source
     vanishes on the next rerun cannot be checked, which is the whole point of showing it
-    (user story 3). Skipped entirely when nothing was retrieved: an empty panel reads as
-    "grounded in nothing in particular" rather than "not grounded".
+    (user story 3). No panel when nothing was retrieved: an empty panel reads as "grounded
+    in nothing in particular" rather than "not grounded".
+
+    What replaces it is a setup banner, because "nothing retrieved" has exactly one cause
+    here. A populated Chroma always returns `k` chunks, so an empty result means an empty or
+    misdirected collection — never "nothing relevant" (see `prompts.NO_CONTEXT_FALLBACK`).
+    The fallback text alone reads as "your question was out of scope" and sends a reviewer
+    who simply has not ingested yet looking for a retrieval bug (issue #5 review).
     """
     if not contexts:
+        st.warning(
+            "Nothing was retrieved. A populated collection always returns top-k, so the "
+            f"`filings` collection at `{settings.chroma_dir}` is empty or is not the one "
+            "ingest wrote. Build it with `uv run python scripts/ingest_filings.py` — see "
+            "the README's *Building the knowledge base*."
+        )
         return
     # The icon rides in the label rather than in `icon=`, which would render this as a
     # `status` block and put the panel out of `AppTest.expander`'s reach (seam 3).
@@ -112,8 +124,10 @@ for message in st.session_state.messages:
         if message["role"] == "assistant":
             # `.get`, because a live session's transcript outlives a code reload: rows
             # written by an older shape would otherwise `KeyError` on the first rerun after
-            # a deploy. The regression this could hide — a turn stored without its contexts
-            # — is what `test_the_sources_panel_survives_the_next_turn` is for.
+            # a deploy (`test_a_transcript_row_from_an_older_shape_replays`). That the
+            # current shape *does* carry its contexts across a rerun — the regression this
+            # tolerance could otherwise hide — is
+            # `test_the_sources_panel_survives_the_next_turn`.
             render_sources(message.get("contexts", ()))
             st.caption(DISCLAIMER)
 

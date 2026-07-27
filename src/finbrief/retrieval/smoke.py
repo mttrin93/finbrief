@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from finbrief.config import RetrievalStrategy
+from finbrief.config import ITEM_7A_SECTION_FILERS, RetrievalStrategy
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context
 
@@ -62,6 +62,18 @@ class SmokeQuery:
     why: str
 
     @property
+    def is_control(self) -> bool:
+        """Whether this query asserts nothing — the one predicate that decides it.
+
+        Read by `expectation` here and by `SmokeCheck.outcome`, which each used to test a
+        different half of the pair: `outcome` looked at `expect_ticker` alone while
+        `expectation` required both to be `None`. A half-filled query — a ticker with no
+        Section — was therefore scored `FAIL` forever *and* rendered as expecting `—`, a
+        verdict no reader could act on (issue #5 review).
+        """
+        return self.expect_ticker is None or self.expect_section is None
+
+    @property
     def expectation(self) -> str:
         """`TSLA Item 1A` — or an em dash for the control, which expects nothing.
 
@@ -69,7 +81,7 @@ class SmokeQuery:
         this label separately, and two spellings of the same expectation is how a table and
         the verdict beside it come to disagree.
         """
-        if self.expect_ticker is None or self.expect_section is None:
+        if self.is_control:
             return "—"
         return f"{self.expect_ticker} {self.expect_section.value}"
 
@@ -106,7 +118,12 @@ SMOKE_QUERIES: tuple[SmokeQuery, ...] = (
         ),
         expect_ticker="NVDA",
         expect_section=Section.MARKET_RISK,
-        why="the nine filers that do have an Item 7A still retrieve it (FY2026 filer)",
+        # Derived, not typed: this string lands verbatim in the committed artifact, and
+        # "nine" was already a number nothing would have corrected (issue #5 review).
+        why=(
+            f"the {len(ITEM_7A_SECTION_FILERS)} filers that do have an Item 7A still "
+            f"retrieve it (FY2026 filer)"
+        ),
     ),
     SmokeQuery(
         question="What products and services does Apple sell?",
@@ -142,7 +159,7 @@ class SmokeCheck:
         this artifact into the retrieval-quality claim its header disclaims, and would need
         the very threshold this ticket deliberately leaves unimplemented.
         """
-        if self.query.expect_ticker is None:
+        if self.query.is_control:
             return Verdict.CONTROL
         top = self.top
         if top is None:
@@ -275,10 +292,13 @@ def render_smoke_report(
             continue
         for context in check.contexts:
             excerpt = " ".join(context.body[:EXCERPT_CHARS].split())
+            # The ellipsis marks elision, so it is only earned when something was elided: a
+            # short tail chunk printed whole was being reported as truncated.
+            elided = "…" if len(context.body) > EXCERPT_CHARS else ""
             lines += [
                 f"- **[{context.rank}] {context.citation}** · distance "
                 f"{context.distance:.4f} · `{context.chunk_id}`",
-                f"  > {excerpt}…",
+                f"  > {excerpt}{elided}",
             ]
         lines.append("")
 

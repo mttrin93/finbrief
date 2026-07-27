@@ -11,7 +11,7 @@ from __future__ import annotations
 from fakes import a_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-from finbrief.config import RetrievalStrategy
+from finbrief.config import RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
 from finbrief.prompts import NO_CONTEXT_FALLBACK, SYSTEM_PROMPT
 from finbrief.rag import answer_question
@@ -32,6 +32,10 @@ def a_model(reply="Apple flags supply-chain concentration [1].") -> RecordingFak
 
 
 QUESTION = "What are the risks to Apple's supply chain?"
+
+#: An injected configuration, for the tests that check it reaches every client the chain
+#: builds rather than only the retrieval half.
+SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test", "FINBRIEF_RETRIEVAL_K": "3"})
 
 
 def test_the_answer_carries_the_contexts_it_was_grounded_in(filings_store):
@@ -123,8 +127,45 @@ def test_the_turn_is_logged_with_the_strategy_and_what_grounded_it(filings_store
     assert record.fields["contexts"] == 2
     assert record.fields["grounded"] is True
     assert record.fields["question_chars"] == len(QUESTION)
+    assert record.fields["answer_chars"] == len(answer.text)
     assert record.fields["latency_ms"] >= 0
+    # Provenance, so Phase 7 can reconstruct a turn from the lines alone. `retrieved_`, not
+    # `cited_`: nothing parses the answer's `[n]` markers, and a log reader handed
+    # `cited_sections` would report citation behaviour that was never measured.
+    assert record.fields["tickers"] == ["AAPL"]
+    assert record.fields["retrieved_sections"] == sorted(
+        {context.section.value for context in answer.contexts}
+    )
+    assert "cited_sections" not in record.fields
+    # The question and the answer are user content and these lines are kept, so only their
+    # sizes may appear.
     assert answer.text not in str(record.fields)
+    assert QUESTION not in str(record.fields)
+
+
+def test_an_ungrounded_turn_is_logged_as_ungrounded_with_nothing_to_attribute(
+    empty_filings_store, caplog
+):
+    with caplog.at_level("INFO", logger="finbrief.rag"):
+        answer = answer_question(QUESTION, k=2, store=empty_filings_store)
+
+    (record,) = [r for r in caplog.records if getattr(r, "event", None) == "rag_answer"]
+    assert record.fields["grounded"] is False
+    assert record.fields["contexts"] == 0
+    assert record.fields["tickers"] == [] and record.fields["retrieved_sections"] == []
+    assert record.fields["answer_chars"] == len(NO_CONTEXT_FALLBACK)
+    assert answer.text == NO_CONTEXT_FALLBACK
+
+
+def test_a_strategy_named_as_a_string_survives_the_whole_chain(filings_store):
+    # `retrieve()` documents accepting a raw string and normalises its own local, so this
+    # chain used to retrieve, pay for a generation, and *then* die on `strategy.value` in its
+    # own log line — the one place the failure costs money (issue #5 review).
+    answer = answer_question(
+        QUESTION, strategy="vector", k=1, store=filings_store, model=a_model()
+    )
+
+    assert answer.grounded
 
 
 def test_the_chain_builds_the_shared_chat_model_when_none_is_injected(
@@ -139,10 +180,32 @@ def test_the_chain_builds_the_shared_chat_model_when_none_is_injected(
     monkeypatch.setattr(
         rag,
         "build_chat_model",
-        lambda: built.append(True) or GenericFakeChatModel(messages=iter(["grounded [1]"])),
+        lambda settings=None: (
+            built.append(settings) or GenericFakeChatModel(messages=iter(["grounded [1]"]))
+        ),
     )
 
     answer = answer_question(QUESTION, k=1, store=filings_store)
 
-    assert built == [True]
+    assert built == [None], "no injected Settings, so the constructor resolves its own"
     assert answer.text == "grounded [1]"
+
+
+def test_injected_settings_reach_generation_and_not_only_retrieval(filings_store, monkeypatch):
+    # A harness pointing an injected `Settings` at a throwaway index would otherwise still
+    # generate with the process-global `chat_model`, so half its configuration would silently
+    # not apply — and the A/B run would report a model it did not use (issue #5 review).
+    import finbrief.rag as rag
+
+    built = []
+    monkeypatch.setattr(
+        rag,
+        "build_chat_model",
+        lambda settings=None: (
+            built.append(settings) or GenericFakeChatModel(messages=iter(["grounded [1]"]))
+        ),
+    )
+
+    answer_question(QUESTION, k=1, store=filings_store, settings=SETTINGS)
+
+    assert built == [SETTINGS]

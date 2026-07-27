@@ -174,18 +174,25 @@ finbrief/
 ├── src/finbrief/
 │   ├── config.py          # models, universe (peer clusters), PEERS map, flags, strategy switches
 │   ├── llm.py             # shared OpenRouter chat-model client (agent, translation, classifier)
+│   ├── prompts.py         # persona, grounding-scope disclosure, context framing — at the
+│   │                      # root, not under agent/: the UI and the chain read it too
+│   ├── rag.py             # the deterministic question -> contexts -> answer chain the
+│   │                      # evaluation harness measures (ADR-0003)
 │   ├── ingestion/         # edgar.py, model.py, gate.py, chunking.py, pipeline.py,
 │   │                      # reporting.py (Phase 1); pdf_docs.py, news.py later
-│   ├── retrieval/         # embeddings.py (shared by ingest+query), vectorstore.py, hybrid.py, query_translation.py
+│   ├── retrieval/         # embeddings.py (shared by ingest+query), vectorstore.py,
+│   │                      # retrieve.py (the seam-1 entry point), smoke.py (Phase 2);
+│   │                      # hybrid.py, query_translation.py (Phase 4)
 │   ├── tools/             # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
-│   ├── agent/             # agent.py (create_agent), prompts.py, guardrails.py
+│   ├── agent/             # agent.py (create_agent), guardrails.py
 │   ├── evaluation/        # golden_set.json, ragas_eval.py, ab_test.py, tool_eval.py
 │   └── observability/     # logging_setup.py, costs.py
 ├── app/
 │   ├── Home.py            # chat page
 │   └── pages/Dashboard.py # analytics (P2)
-├── scripts/               # ingest_filings.py, record_edgar_fixtures.py (Phase 1);
-│                          # scheduled KB update lands with Tier-2
+├── scripts/               # ingest_filings.py, record_edgar_fixtures.py (Phase 1),
+│                          # retrieval_smoke.py (Phase 2); scheduled KB update lands
+│                          # with Tier-2
 ├── tests/                 # unit: chunking, tools, guardrails, validation
 │   ├── conftest.py        # hermetic env: no .env, no key, no network (Phase 0);
 │   │                      # recorded EDGAR + vendored tiktoken fixtures (Phase 1)
@@ -197,7 +204,12 @@ finbrief/
 │   ├── test_section_gate.py + 9 more   # seam 6: gate rules, recorded filings, chunker,
 │   │                      # store, pipeline, reports, EDGAR selection, regex fallback,
 │   │                      # verification artifact, CLI (Phase 1)
-│   ├── test_app_smoke.py  # AppTest — page renders, a message reaches the agent seam
+│   ├── test_retrieve.py + 5 more   # seams 1 & 3: retrieval, the chain, the smoke
+│   │                      # verdicts and their report, the script's exits, the persona,
+│   │                      # the scope disclosure vs. the ingest evidence (Phase 2)
+│   ├── fakes.py           # hermetic doubles: KeywordEmbeddings, a_context (Phase 2)
+│   ├── test_app_smoke.py  # AppTest — page renders, sources panel, disclaimer, scope
+│   │                      # disclosure, a message reaches the agent seam
 │   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
 │                          # reruns, distinctness across sessions,
 │                          # fresh-uuid+surviving-agent on start-over, reset flows,
@@ -223,9 +235,9 @@ Each step ends with something runnable/testable.
 - uv project, config, .env handling, logging setup, CI lint+test workflow
 - Streamlit hello-chat with OpenRouter round-trip
 
-**Phase 1 — Knowledge base (Tier-1, ~4 h)** *(see ADR-0007)* — ✅ **done except the
-retrieval smoke test** (`t2-kb-ingestion`, #3; top-k sanity checks need Phase 2's
-retrieval chain and land there)
+**Phase 1 — Knowledge base (Tier-1, ~4 h)** *(see ADR-0007)* — ✅ **done**
+(`t2-kb-ingestion`, #3; the one deferred item, the retrieval smoke test, needed Phase 2's
+retrieval chain and landed with it — ticket T3, #5)
 - EDGAR ingest for the universe (latest 10-K per company; accession-id idempotency).
   KB = **curated sections only** (Items 1, 1A, 7, 7A), not full filings.
 - Structure-anchored section extraction via **edgartools**; bounded regex as documented
@@ -251,9 +263,16 @@ retrieval chain and land there)
   script's. ADR-0007's *Outcome* records row by row what the re-render changed — and why no
   row moved for the chunker fix, the prediction that run settled.
 
-**Phase 2 — Baseline RAG (P0, ~3 h)**
-- Vector-only retrieval chain, source citations, sources panel in UI
-- Domain system prompt + disclaimer
+**Phase 2 — Baseline RAG (P0, ~3 h)** — ✅ **done** (`t3-baseline-rag`, #5)
+- Vector-only retrieval chain, source citations, sources panel in UI. `retrieve()` is the
+  deterministic seam ADR-0003 asks for and is **vector-only by design**: `hybrid` raises
+  rather than serving vector results under a hybrid label, because `DEFAULT_STRATEGY` is
+  the pre-registered `hybrid` (ADR-0005) and Phase 4 is where it becomes true. The sidebar
+  names the gap between the configured strategy and the one that answered.
+- Domain system prompt + disclaimer. The grounding-scope disclosure (user story 18) is
+  derived from `config`, not typed, and the disclaimer is rendered *beside* the answer
+  rather than requested from the model.
+- Also here: the Phase-1 smoke test above, as `scripts/retrieval_smoke.py`.
 
 **Phase 3 — Tools + agent (Tier-1, ~4 h)** *(agent state: see ADR-0008)*
 - Three `@tool` functions with caching + error handling

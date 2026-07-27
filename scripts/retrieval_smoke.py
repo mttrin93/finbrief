@@ -81,9 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     checks = tuple(
         SmokeCheck(
             query=query,
-            contexts=retrieve(
-                query.question, strategy=BASELINE_STRATEGY, k=k, store=store, settings=settings
-            ),
+            # No `settings=`: `retrieve()` reads it only to resolve a missing `k` or `store`,
+            # and both are supplied here, so passing it would imply a configuration path
+            # that cannot be taken.
+            contexts=retrieve(query.question, strategy=BASELINE_STRATEGY, k=k, store=store),
         )
         for query in SMOKE_QUERIES
     )
@@ -101,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
         embedding_model=settings.embedding_model,
     )
     if args.no_write:
-        print(f"\n(--no-write: {SMOKE_REPORT} left as the last run wrote it.)")
+        # Printed, not discarded: the run has already paid for five query embeddings, and
+        # the distance table and chunk excerpts are the whole reason to look at a report.
+        # Writing is what `--no-write` withholds; rendering is not.
+        print(f"\n{report}")
+        print(f"(--no-write: {SMOKE_REPORT} left as the last run wrote it.)")
     else:
         SMOKE_REPORT.parent.mkdir(parents=True, exist_ok=True)
         SMOKE_REPORT.write_text(report, encoding="utf-8")

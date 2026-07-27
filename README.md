@@ -91,6 +91,12 @@ cp .env.example .env   # fill in OPENROUTER_API_KEY
 uv run streamlit run app/Home.py
 ```
 
+Answers come from the persisted `filings` collection, so **build the knowledge base first**
+(*Building the knowledge base* below) or point `FINBRIEF_CHROMA_DIR` at one that exists.
+Against an empty collection nothing raises — a populated Chroma always returns top-k, so
+every answer is the retrieval-level fallback instead; the app says so in a banner naming the
+directory it looked in, rather than leaving a reviewer to read the fallback as "out of scope".
+
 Lint and test the way CI does:
 
 ```bash
@@ -124,7 +130,14 @@ Once the collection is built, a wiring check over it:
 
 ```bash
 uv run python scripts/retrieval_smoke.py   # 5 sanity queries → docs/verification/retrieval-smoke.md
+uv run python scripts/retrieval_smoke.py --no-write   # print the report, leave the
+                                                      # committed artifact alone
 ```
+
+An empty collection exits 2 and names the ingest command rather than reporting five
+"retrieved nothing" verdicts as a retrieval bug; a scored query whose top hit is the wrong
+filing or Section exits 1 and still writes the report, because that is the run whose report
+someone needs to read. The out-of-KB control query is recorded, never scored.
 
 Needs `OPENROUTER_API_KEY` — it embeds each query with the same paid model the ingest used,
 because a query embedded by a different model retrieves noise with no error. It is a **smoke
