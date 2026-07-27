@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_chroma import Chroma
-from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 
 from finbrief.config import RRF_K, RetrievalStrategy, Settings, get_settings
@@ -377,23 +376,34 @@ def _candidate_lists(
     Vector runs under every strategy; `hybrid` adds BM25 beside it. Nothing here is asymmetric:
     the original question is a variant like any other, which is the invariant that guarantees
     BM25 always sees the raw identifiers the analyst typed.
+
+    **Each list is built where its hits are fetched, so a list cannot carry another
+    retriever's.** An earlier shape looped over a `retrievers` tuple and assigned `hits` in an
+    `if`/`elif` with no `else`: had BM25 ever been requested with no index built, `hits` would
+    have kept the previous iteration's *vector* hits and been appended as a **BM25** candidate
+    list — doubling every vote and writing provenance rows naming a retriever that never
+    returned the chunk. Unreachable as it stood, and silent if it ever became reachable, which
+    is the wrong combination for the one datum ADR-0004 promises: `BM25Index.nearest` refuses
+    to pad a short list for this exact reason, and this function must not undo it (#6 review).
     """
-    retrievers = (
-        (Retriever.VECTOR, Retriever.BM25)
-        if strategy is RetrievalStrategy.HYBRID
-        else (Retriever.VECTOR,)
-    )
-    lexical = bm25_index(store) if Retriever.BM25 in retrievers else None
+    lexical = bm25_index(store) if strategy is RetrievalStrategy.HYBRID else None
     lists: list[CandidateList] = []
     for variant in variants:
-        for retriever in retrievers:
-            if retriever is Retriever.VECTOR:
-                hits: tuple[tuple[Document, float | None], ...] = tuple(
-                    nearest_chunks(store, variant, k)
+        lists.append(
+            CandidateList(
+                variant=variant,
+                retriever=Retriever.VECTOR,
+                hits=tuple(nearest_chunks(store, variant, k)),
+            )
+        )
+        if lexical is not None:
+            lists.append(
+                CandidateList(
+                    variant=variant,
+                    retriever=Retriever.BM25,
+                    hits=tuple((document, None) for document in lexical.nearest(variant, k)),
                 )
-            elif lexical is not None:
-                hits = tuple((document, None) for document in lexical.nearest(variant, k))
-            lists.append(CandidateList(variant=variant, retriever=retriever, hits=hits))
+            )
     return tuple(lists)
 
 

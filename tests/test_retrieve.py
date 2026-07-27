@@ -26,7 +26,7 @@ from langchain_core.messages import AIMessage
 
 from finbrief.config import RRF_K, RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
-from finbrief.retrieval.hybrid import Retriever
+from finbrief.retrieval.hybrid import Retriever, bm25_index
 from finbrief.retrieval.retrieve import Retrieval, retrieve
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "sk-test", "FINBRIEF_RETRIEVAL_K": "3"})
@@ -253,6 +253,44 @@ def test_vector_only_never_consults_the_lexical_retriever(filings_store):
         row.retriever is Retriever.VECTOR
         for context in result.contexts
         for row in context.provenance
+    )
+
+
+def test_no_provenance_row_claims_a_retriever_that_never_returned_the_chunk(filings_store):
+    # The property the `if`/`elif`-with-no-`else` in `_candidate_lists` could have broken
+    # silently: a BM25 candidate list built from the previous iteration's *vector* hits would
+    # double every vote and write rows naming a retriever that never saw the chunk. Asserted
+    # against the lexical index directly, per variant, because a fabricated row is invisible in
+    # the top-k — the ranking just quietly becomes about something else (issue #6 review).
+    result = retrieve(
+        QUESTION,
+        strategy=HYBRID,
+        translate=True,
+        k=5,
+        store=filings_store,
+        settings=SETTINGS,
+        model=a_translator("Apple supplier concentration"),
+    )
+
+    lexical = bm25_index(filings_store)
+    matched = {
+        variant: {document.id for document in lexical.nearest(variant, 5)}
+        for variant in result.variants
+    }
+    claimed = {
+        (row.variant, context.chunk_id)
+        for context in result.contexts
+        for row in context.provenance
+        if row.retriever is Retriever.BM25
+    }
+    assert claimed, "hybrid ran, so BM25 rows must exist to be checked"
+    assert all(chunk_id in matched[variant] for variant, chunk_id in claimed)
+    # And a BM25 row never carries a distance, so a vector hit cannot masquerade as one.
+    assert all(
+        row.distance is None
+        for context in result.contexts
+        for row in context.provenance
+        if row.retriever is Retriever.BM25
     )
 
 
