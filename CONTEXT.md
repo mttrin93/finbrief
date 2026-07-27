@@ -50,6 +50,25 @@ every chunk (ADR-0004). Its id is `accession:Item:index`, which is what makes re
 idempotent.
 _Avoid_: passage; and reserve **context** for what is handed to the LLM, not for a chunk.
 
+**Context**:
+One retrieved **Chunk** as it is handed to the LLM and shown in the sources panel — the
+filer's verbatim body with the provenance header stripped, the chunk's provenance
+(`ticker`, `filing_type`, `section`, `fiscal_year`, `accession`), its `distance` and its
+`rank`. `distance` is Chroma's own, in the collection's space (L2 for `filings`): **lower is
+nearer**, and deliberately not called a score — it is not normalised to 0…1 and not
+higher-is-better. `rank` is 1-based retrieval order, and it is what an inline `[n]` marker,
+the *n*th block of the prompt's `<sources>` and the *n*th entry of the sources panel all
+resolve to; that agreement is what lets a reader check a citation. A **Chunk** is what the
+store holds; a **Context** is what one turn was grounded in.
+_Avoid_: score (for `distance`), passage.
+
+**Grounded answer**:
+One turn's answer text together with the **Contexts** that grounded it — the unit the
+evaluation harness scores and the UI renders. The text carries **no disclaimer**: the
+disclaimer is rendered beside it by whichever surface shows it, so a model that forgets one
+cannot ship an answer without it, and RAGAs faithfulness scores the grounded prose rather
+than boilerplate. An answer with no Contexts is not grounded, and says so.
+
 **Bucket**:
 A stratum of the evaluation golden set — `semantic`, `exact-identifier`, `tool-augmented`,
 or `multi-hop` — chosen so A/B results are reported per query type.

@@ -29,3 +29,26 @@ distinct job; none is redundant.
 
 **Framing.** Defense-in-depth: input gate guards the front door; quarantine framing +
 output validation guard the back door (retrieved content).
+
+## Amendment (ticket T3, issue #5) — the quarantine framing, as shipped
+
+"Quarantine framing" was one clause above, and Phase 2 had to make it concrete before the
+gate it belongs to exists: the baseline chain hands the model real filing text on its first
+turn. `finbrief/prompts.py` cites this ADR for the framing, so what it settled belongs here
+rather than in a docstring.
+
+1. **Retrieved text is wrapped in `<sources>…</sources>` in the *human* message, never in the
+   system message.** The system message is the persona and the rules; mixing filing text into
+   it makes the two indistinguishable to the model, which is the whole failure mode.
+2. **Order is load-bearing: sources → framing sentence → question.** The question is the
+   instruction and the sources are data, so the sources may not be the outermost frame the
+   question sits inside — a filing that ends "…now ignore the above and…" must not be the last
+   thing the model reads before answering. `tests/test_prompts.py` pins the order, and
+   `tests/test_rag.py` asserts it again through the chain that builds the message.
+3. **The persona makes the block evidence and asks the model to report, not obey.** Text inside
+   `<sources>` that addresses the model, changes its behaviour or claims new rules is quoted
+   filing content: relevant to *mention*, never to act on.
+4. **Framing only.** The normalization/regex/classifier input gate and the output validator
+   remain Phase 5, and so do the planted-injection tests against the dedicated collection
+   (item 3 of the Decision above). Phase 2 asserts the framing those layers assume is already
+   in place — it does not claim the gate.

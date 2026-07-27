@@ -1,24 +1,27 @@
-"""FinBrief chat UI — walking skeleton (ticket T1, #2).
+"""FinBrief chat UI — baseline vector RAG (ticket T3, #5).
 
 UI only: every non-Streamlit concern lives in `finbrief.*` so it can be tested without
-driving the app. Per ADR-0008 `st.session_state` holds only UI state — here, the display
-transcript. The `thread_id` and the cached agent arrive in Phase 3 together with the
-checkpointer that gives them a purpose.
+driving the app, and every word about the knowledge base's shape comes from
+`finbrief.prompts` — the same text the model is given, so the page and the persona cannot
+disagree about what is grounded (user story 18, ADR-0007).
+
+Per ADR-0008 `st.session_state` holds only UI state: here the display transcript, and with
+each assistant turn the contexts its `[n]` markers point at. That is display data, not the
+agent's memory — the `thread_id` and the checkpointer arrive in Phase 3.
 """
 
 import streamlit as st
 
-from finbrief.agent.agent import answer
+from finbrief.agent.agent import BASELINE_STRATEGY, answer
 from finbrief.config import CLUSTERS, PEERS, UNIVERSE, ConfigError, get_settings
 from finbrief.observability.logging_setup import configure_logging
+from finbrief.prompts import DISCLAIMER, GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.retrieval.retrieve import Context
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
 st.title("FinBrief")
-st.caption(
-    "Walking skeleton — a plain LLM round-trip via OpenRouter. Filing-grounded answers, "
-    "citations, and the finance tools arrive in later phases."
-)
+st.caption(GROUNDING_SCOPE)
 
 # Fail here rather than on the first message: a missing key should be obvious before the
 # user has typed anything. Logging setup shares the guard because `LOG_LEVEL` is itself
@@ -37,14 +40,29 @@ except ConfigError as exc:
     st.stop()
 
 with st.sidebar:
+    st.subheader("Grounding scope")
+    for detail in GROUNDING_SCOPE_DETAILS:
+        st.markdown(f"- {detail}")
+
     st.subheader("Configuration")
     st.markdown(
         f"**Model** `{settings.chat_model}`  \n"
-        f"**Strategy** `{settings.retrieval_strategy}"
-        f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
+        f"**Strategy** `{BASELINE_STRATEGY}`  \n"
         f"**Top-k** `{settings.retrieval_k}`"
     )
-    st.caption("Retrieval settings are declared but not yet wired up (Phase 2 onward).")
+    # Never let the panel advertise a configuration that did not run: `hybrid +
+    # translation` is the pre-registered shipping default (ADR-0005) and arrives in Phase 4.
+    # Translation is checked as well as strategy, because the two switches move
+    # independently: `retrieve()` tells an operator to set
+    # `FINBRIEF_RETRIEVAL_STRATEGY=vector`, and doing exactly that leaves
+    # `FINBRIEF_QUERY_TRANSLATION` at its default `True` — so gating on the strategy alone
+    # left the one configuration we recommend as the only one that ran silently.
+    if settings.retrieval_strategy != BASELINE_STRATEGY or settings.query_translation_enabled:
+        st.caption(
+            f"Configured strategy `{settings.retrieval_strategy}"
+            f"{' + translation' if settings.query_translation_enabled else ''}` "
+            f"lands in Phase 4. Answers below ran `{BASELINE_STRATEGY}`."
+        )
 
     st.subheader("Universe")
     st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
@@ -59,24 +77,96 @@ with st.sidebar:
         f"{', '.join(PEERS[example.ticker])}."
     )
 
+
+def as_markdown(text: str) -> str:
+    """Escape what Streamlit's Markdown would swallow, and leave the rest to render.
+
+    Only `$`, and for the same reason `render_sources` reaches for `st.text` below:
+    `st.markdown` parses `$…$` as KaTeX. The answer is the dollar-densest surface on the
+    page — the persona is asked to be quantitative where the source is — so "net sales rose
+    to $416,161 million from $391,035 million" renders as prose plus one maths expression,
+    and both figures are gone from the headline sentence of a finance assistant.
+
+    `st.text` is the wrong instrument here, unlike for a source body: the persona answers in
+    bullets and short paragraphs and the `[n]` markers sit in that prose, so the Markdown
+    has to keep rendering. Escaping costs a literal `\\$` inside a fenced code block, which
+    this persona has no reason to emit.
+    """
+    return text.replace("$", r"\$")
+
+
+def render_sources(contexts: tuple[Context, ...]) -> None:
+    """The sources panel: what each inline `[n]` in the answer above resolves to.
+
+    Rendered for every assistant turn, replayed turns included — a citation whose source
+    vanishes on the next rerun cannot be checked, which is the whole point of showing it
+    (user story 3). No panel when nothing was retrieved: an empty panel reads as "grounded
+    in nothing in particular" rather than "not grounded".
+
+    What replaces it is a setup banner, because "nothing retrieved" has exactly one cause
+    here. A populated Chroma always returns `k` chunks, so an empty result means an empty or
+    misdirected collection — never "nothing relevant" (see `prompts.NO_CONTEXT_FALLBACK`).
+    The fallback text alone reads as "your question was out of scope" and sends a reviewer
+    who simply has not ingested yet looking for a retrieval bug (issue #5 review).
+    """
+    if not contexts:
+        st.warning(
+            "Nothing was retrieved. A populated collection always returns top-k, so the "
+            f"`filings` collection at `{settings.chroma_dir}` is empty or is not the one "
+            "ingest wrote. Build it with `uv run python scripts/ingest_filings.py` — see "
+            "the README's *Building the knowledge base*."
+        )
+        return
+    # The icon rides in the label rather than in `icon=`, which would render this as a
+    # `status` block and put the panel out of `AppTest.expander`'s reach (seam 3).
+    with st.expander(f":material/description: Sources ({len(contexts)})"):
+        for context in contexts:
+            st.markdown(f"**[{context.rank}] {context.citation}**")
+            st.caption(f"`{context.chunk_id}` · distance {context.distance:.4f}")
+            # `st.text`, not a Markdown blockquote: the body is the filer's own words, and
+            # this is the surface a reader checks a citation against, so it must render
+            # character-identical. `st.markdown` does not — it parses `$…$` as KaTeX, so
+            # Apple's own segment line `Americas$178,353 7 %$167,045` renders as prose plus
+            # a maths expression, and a blockquote silently ends at the filing's first
+            # blank line. Losing the quote styling is the cheaper trade.
+            st.text(context.body)
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        st.markdown(as_markdown(message["content"]))
+        if message["role"] == "assistant":
+            # `.get` returning `None`, not `()`, because a live session's transcript
+            # outlives a code reload: rows written by an older shape would otherwise
+            # `KeyError` on the first rerun after a deploy
+            # (`test_a_transcript_row_from_an_older_shape_replays`). The two absences are
+            # different facts and only one is a setup problem — "this row predates
+            # contexts" must not raise `render_sources`' empty-collection banner over an
+            # answer that was grounded when it was written. That the current shape *does*
+            # carry its contexts across a rerun — the regression this tolerance could
+            # otherwise hide — is `test_the_sources_panel_survives_the_next_turn`.
+            if (contexts := message.get("contexts")) is not None:
+                render_sources(contexts)
+            st.caption(DISCLAIMER)
 
-if prompt := st.chat_input("Ask about a company", submit_mode="disable"):
+if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(as_markdown(prompt))
 
     with st.chat_message("assistant"):
         try:
-            with st.spinner("Thinking…"):
+            with st.spinner("Searching the filings…"):
                 reply = answer(prompt)
         except Exception as exc:  # noqa: BLE001 — tiered error handling lands in Phase 5
             st.error(f"The model call failed: {exc}", icon=":material/error:")
         else:
-            st.markdown(reply)
-            st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.markdown(as_markdown(reply.text))
+            render_sources(reply.contexts)
+            st.caption(DISCLAIMER)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": reply.text, "contexts": reply.contexts}
+            )

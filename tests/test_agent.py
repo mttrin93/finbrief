@@ -1,11 +1,19 @@
-"""The agent entrypoint and the OpenRouter binding. No network calls."""
+"""The agent entrypoint and the OpenRouter binding. No network calls.
+
+The seam the UI depends on (spec seam 2). In Phase 2 it is a delegation to the
+deterministic chain, so what is asserted here is the delegation's *contract* — which
+strategy the shipped path runs — and not the chain's behaviour, which `test_rag.py` owns at
+its own seam. Phase 3 replaces the body with the real agent loop and this file grows into
+tool-selection assertions.
+"""
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 from finbrief.agent import agent as agent_module
-from finbrief.agent.agent import SKELETON_SYSTEM_PROMPT, answer
-from finbrief.config import Settings
+from finbrief.agent.agent import BASELINE_STRATEGY, answer
+from finbrief.config import RetrievalStrategy, Settings
 from finbrief.llm import build_chat_model
+from finbrief.rag import GroundedAnswer
 
 SETTINGS = Settings.from_env(
     {
@@ -15,41 +23,32 @@ SETTINGS = Settings.from_env(
 )
 
 
-class RecordingFakeChatModel(GenericFakeChatModel):
-    """A fake chat model that keeps the prompt it was handed."""
+def test_answer_runs_the_deterministic_chain_and_returns_what_grounded_it(monkeypatch):
+    model = GenericFakeChatModel(messages=iter(["unused — the chain is stubbed"]))
+    grounded = GroundedAnswer(text="Tesla identifies supply-chain risk [1].", contexts=())
+    calls = []
 
-    prompts: list = []
+    def fake_answer_question(question, *, strategy, model):
+        calls.append({"question": question, "strategy": strategy, "model": model})
+        return grounded
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        self.prompts.append(messages)
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+    monkeypatch.setattr(agent_module, "answer_question", fake_answer_question)
 
-
-def test_answer_returns_the_model_reply():
-    model = GenericFakeChatModel(messages=iter(["Tesla's Item 1A lists supply-chain risk."]))
-    assert answer("What are Tesla's risks?", model=model) == (
-        "Tesla's Item 1A lists supply-chain risk."
-    )
-
-
-def test_answer_sends_the_persona_and_the_question():
-    model = RecordingFakeChatModel(messages=iter(["ok"]), prompts=[])
-
-    answer("What are Tesla's risks?", model=model)
-
-    (prompt,) = model.prompts
-    system, human = prompt
-    assert system.text == SKELETON_SYSTEM_PROMPT
-    assert human.text == "What are Tesla's risks?"
+    assert answer("What are Tesla's risks?", model=model) is grounded
+    assert calls == [
+        {
+            "question": "What are Tesla's risks?",
+            "strategy": BASELINE_STRATEGY,
+            "model": model,
+        }
+    ]
 
 
-def test_answer_logs_a_chat_turn_event(caplog):
-    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
-        answer("hi", model=GenericFakeChatModel(messages=iter(["hello"])))
-
-    (record,) = [r for r in caplog.records if getattr(r, "event", None) == "chat_turn"]
-    assert record.fields["question_chars"] == 2
-    assert record.fields["latency_ms"] >= 0
+def test_the_shipped_path_runs_the_strategy_that_exists_not_the_configured_one():
+    # `config.DEFAULT_STRATEGY` is the pre-registered `hybrid` (ADR-0005), which
+    # `retrieve()` refuses until Phase 4. If this constant ever tracked the setting again,
+    # the app's first question would raise instead of answering.
+    assert BASELINE_STRATEGY is RetrievalStrategy.VECTOR
 
 
 def test_chat_model_is_bound_to_openrouter():
@@ -77,17 +76,3 @@ def test_chat_model_falls_back_to_the_application_settings(monkeypatch):
 
     assert model.model_name == "openai/gpt-4o"
     assert model.openai_api_key.get_secret_value() == "sk-from-environ"
-
-
-def test_answer_builds_the_openrouter_model_when_none_is_injected(monkeypatch):
-    """The default branch the app takes — unexercised, a swapped constructor ships green."""
-    built = []
-
-    def fake_build_chat_model():
-        built.append(True)
-        return GenericFakeChatModel(messages=iter(["grounded reply"]))
-
-    monkeypatch.setattr(agent_module, "build_chat_model", fake_build_chat_model)
-
-    assert answer("What are Tesla's risks?") == "grounded reply"
-    assert built == [True], "answer() must build the shared chat model, not its own client"

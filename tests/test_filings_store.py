@@ -18,6 +18,8 @@ from finbrief.retrieval.vectorstore import (
     content_hashes_by_accession,
     delete_orphaned_chunks,
     delete_superseded,
+    holds_any_chunks,
+    nearest_chunks,
     write_chunks,
 )
 
@@ -90,6 +92,37 @@ def test_a_second_company_adds_to_the_collection_rather_than_replacing_it(store)
 
 def test_an_empty_collection_reports_nothing_ingested(store):
     assert content_hashes_by_accession(store) == {}
+
+
+def test_the_store_reports_whether_it_holds_anything_at_all(store):
+    # `scripts/retrieval_smoke.py` asks this before it spends anything on embeddings, so
+    # that "nobody has ingested yet" cannot be reported as five broken retrievals.
+    assert holds_any_chunks(store) is False
+
+    write_chunks(store, chunk_filing(a_filing()))
+
+    assert holds_any_chunks(store) is True
+
+
+def test_nearest_chunks_returns_the_documents_with_their_distances(store):
+    # The one Chroma read `retrieve()` is built on, kept in this module because CLAUDE.md
+    # makes it the only place the collection is opened, written, or read. `FakeEmbeddings`
+    # is random, so what is asserted here is the *shape* of the contract — k, the pairing,
+    # the metadata — while ordering and relevance belong to `test_retrieve.py`, which uses a
+    # deterministic fake.
+    write_chunks(store, chunk_filing(a_filing()))
+
+    hits = nearest_chunks(store, "supply chain risk", 3)
+
+    assert len(hits) == 3
+    for document, distance in hits:
+        assert isinstance(distance, float)
+        assert document.metadata["ticker"] == "AAPL"
+        assert document.page_content
+
+
+def test_nearest_chunks_on_an_empty_collection_returns_nothing(store):
+    assert nearest_chunks(store, "anything", 5) == []
 
 
 def test_writing_no_chunks_is_a_no_op(store):

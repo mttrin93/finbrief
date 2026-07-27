@@ -13,6 +13,7 @@ from finbrief.config import (
     CLUSTERS,
     COMPANIES,
     ITEM_7A_POINTER_FILERS,
+    ITEM_7A_SECTION_FILERS,
     PEERS,
     TICKERS,
     UNIVERSE,
@@ -93,6 +94,15 @@ def test_every_recorded_pointer_filer_is_in_the_universe():
     # `_TWENTY_F_FILERS` list has this check; this one is the same shape.
     strays = ITEM_7A_POINTER_FILERS - TICKERS
     assert not strays, f"{sorted(strays)} are not Universe tickers (ADR-0007 amendment)"
+
+
+def test_the_filers_with_their_own_item_7a_are_derived_from_the_pointer_set():
+    # "9 of 15" is read out by the app's grounding-scope panel and by the retrieval smoke
+    # check's rationale, which lands verbatim in a committed artifact. Both take the count
+    # from here, so neither can be the stale copy (issue #5 review).
+    assert ITEM_7A_SECTION_FILERS | ITEM_7A_POINTER_FILERS == TICKERS
+    assert not ITEM_7A_SECTION_FILERS & ITEM_7A_POINTER_FILERS
+    assert len(ITEM_7A_SECTION_FILERS) == len(TICKERS) - len(ITEM_7A_POINTER_FILERS)
 
 
 # --- Settings -------------------------------------------------------------------------
