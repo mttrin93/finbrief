@@ -330,3 +330,133 @@ designed around numbers already seen. **Falsifiable as written:** if the n-repea
 returns identical sub-queries across runs on this Universe and this model, step 2 was unnecessary
 caution and the flat claim ADR-0003 started with was fine. That would be a good outcome; it is not
 one to assume.
+
+---
+
+### 10. BM25 admits chunks on question-form terms — measured, pre-data, fixed before T9 authoring
+
+Found by observation, not by a failing test: a live `what are the main risk factors for Tesla?`
+through the shipping default returned **GOOGL's `Item 7:21` in slot [5]**, BM25-only, no vector
+distance. Its text is "The **main** components of our research and development expenses **are**".
+
+Recorded here for the same reason §6 and §7 are: **before any A/B data exists**, so the fix cannot
+be read as chosen after seeing a number it improved — and fixed **before T9 (#4) authors the
+golden set**, so the ground truth is not written against a known leak.
+
+**What surfaced it.** Both deterministic variants, at BM25 rank 1 and 2 over the whole
+5,842-chunk corpus:
+
+| variant | text | rank of `Item 7:21` |
+|---|---|:--:|
+| 0 (original) | `what are the main risk factors for Tesla?` | **1** of 5,678 matching chunks |
+| 1 (ticker form) | `what are the main risk factors for TSLA?` | **2** |
+
+It matched `main`, `for`, `the`, `are` — and **none** of `risk`, `factors`, `tesla`. Zero of the
+three terms carrying the information need, ranked first.
+
+**The scoring.** Chunk length 147, corpus `avgdl` 123.9, total score 16.4742:
+
+| term | df | df % | idf | tf | saturation | contribution |
+|---|---:|---:|---:|---:|---:|---:|
+| `main` | 7 | 0.1 % | **6.6568** | 3 | 1.5926 | **10.6016** |
+| `the` | 5229 | 89.5 % | 1.7212 | 3 | 1.5926 | 2.7412 |
+| `for` | 3405 | 58.3 % | 1.7212 | 3 | 1.5926 | 2.7412 |
+| `are` | 2565 | 43.9 % | 0.2449 | 3 | 1.5926 | 0.3901 |
+| `risk` | 3043 | 52.1 % | 1.7212 | 0 | — | 0 |
+| `factors` | 2498 | 42.8 % | 0.2916 | 0 | — | 0 |
+| `tesla` | 34 | 0.6 % | 5.1261 | 0 | — | 0 |
+
+**Root cause: IDF measures corpus rarity, not query informativeness.** Filers write "principal"
+and "primary"; an analyst types "main". So `main` is rare *in 10-K prose* — 7 chunks in 5,842 —
+and BM25 therefore weights it **above the filer's own name** (6.6568 against `tesla`'s 5.1261),
+at 64 % of the chunk's whole score. No corpus statistic can separate a rare question-register
+word from a rare identifier like `nvda`: both are rare, and the statistic is *correct* about
+both. Only a query-side lexicon can.
+
+**Three hypotheses, two falsified with numbers.** Recorded because the falsifications are the
+evidence for the shape of the fix:
+
+- **Term-frequency saturation — ruled out.** tf 3 yields 1.5926, not 3×. Okapi's `k1`/`b` are
+  behaving exactly as designed and are not a factor.
+- **Stopword removal on both sides — measured *worse*.** Stripping a published stopword list from
+  the corpus *and* the query removes more compensating mass from the Tesla chunks than from the
+  offender: `Item 7:21` stays top-5 and **rises to rank 1 on variant 1**.
+- **A minimum-IDF floor on query terms — measured worse, and backwards.** It strips `factors`
+  (0.2916) and `are` (0.2449) while **keeping `main` at 6.6568**, puts the leak at rank 1 on both
+  variants, and costs `TSLA Item 1A` both `item` and `1a`.
+
+**The fix: `hybrid.query_terms`, query-side only.** `tokenize` minus a stopword list plus exactly
+one word, `main`. The corpus keeps every term, so `df`, `idf` and `avgdl` are untouched and **any
+query carrying no scaffolding term scores byte-identically to the baseline** — which is what made
+this safe to land on the measured path. The tokenizer is still shared, so `Item 1A` still becomes
+`item`/`1a` on both sides; what differs is a query-side term filter, which is ordinary BM25
+practice. Each retriever still sees **every** variant — the composition of §1 is unchanged — and
+each applies its own preprocessing, the vector half embedding the variant unmodified. The
+stopword list is inlined as a literal rather than taken from NLTK, which downloads its corpora at
+first use and would break the hermetic-suite contract exactly as tiktoken's BPE table did.
+
+**Measured, all eight queries, real corpus:**
+
+| query | baseline top-1 | after | |
+|---|---|---|:--:|
+| `what are the main risk factors for Tesla?` | **GOOGL `Item 7:21`** 16.474 | TSLA `Item 1A:70` 10.800 | fixed |
+| `...for TSLA?` | TSLA `1A:38`, leak at **2** | TSLA `1A:86` — top-5 all TSLA Item 1A | fixed |
+| `Tesla debt` (§6 before-case) | TSLA `Item 1:22` 10.629 | TSLA `Item 1:22` 10.629 | **identical, 5/5 rows** |
+| `TSLA debt` | TSLA `Item 1A:83` 7.762 | TSLA `Item 1A:83` 7.762 | **identical, 5/5 rows** |
+| `TSLA Item 1A` | TSLA `Item 1:0` 8.541 | TSLA `Item 1:0` 8.541 | **identical, 5/5 rows** |
+| `NVDA Item 7A interest rate risk` | NVDA `Item 7A:0` 22.990 | NVDA `Item 7A:0` 22.990 | **identical, 5/5 rows** |
+| smoke q1 (same as the failing query) | **GOOGL `Item 7:21`** | TSLA `Item 1A:70` | fixed |
+| smoke q3 (NVIDIA interest-rate risk) | no NVDA chunk in top-5 | NVDA `Item 7A:0` enters at 3 | improved |
+
+On the failing query the leak does not merely score lower — it is **not a hit at all**, because
+scaffolding is dropped before the membership test as well as before the scoring, so it earns no
+rank and therefore no RRF vote.
+
+**The growth rule, which matters more than the entry.** No word joins `_SCAFFOLDING` without a
+recorded `df` statistic **and** a measured query it fixes. The near-neighbour qualifier set —
+`key major biggest largest top overall important` — was measured across seven queries and changed
+**no** result: inert, so it stays out. And these each name a real filing concept, so adding them
+would cost recall to buy nothing measured:
+
+| word | why it stays out |
+|---|---|
+| `principal` | *principal amount* of debt |
+| `common` | *common stock* |
+| `general` | *general and administrative* expenses |
+| `significant` | *significant accounting policies* — a 10-K heading |
+| `basic` | *basic* earnings per share |
+| `central` | *central bank* |
+| `chief` | *Chief Executive Officer* |
+| `core` | *core* operations |
+| `major` | *major customers* |
+| `key` | *key employees* |
+
+A curated lexicon is a dangerous thing to grow; this table is the evidence for why, and it is the
+reason the set holds one word rather than eight.
+
+**Separately: a known `rank_bm25` distortion, observed and deliberately not fixed.** The library
+replaces a negative IDF with `epsilon * average_idf`. This corpus's `average_idf` is 6.8905, so
+that floor is **1.7212** — and it lands on `the` (89.5 % df), `for` (58.3 %) and `risk` (52.1 %)
+alike. Two consequences, both real:
+
+- `the` receives **the same weight as `risk`**, the query's actual topic word.
+- `the` at 1.7212 outweighs `factors` at its honest 0.2916 by roughly **6×**.
+
+It is recorded and **not fixed now**, for two reasons. It does not resolve the observed case —
+`main` is 64 % of that score and is not floored — and changing `epsilon` would move **every** BM25
+score off the byte-identical baseline this section's fix was chosen to preserve, which is the
+parameter sweep `config.RRF_K`'s note rules out ("a number about the sweep, not about the
+strategy"). **Carried forward as a candidate explanation if BM25 underperforms in T10 (#11)**: if
+the lexical half contributes less than §7 pre-registers, this floor is the first thing to test,
+and testing it means re-running the whole matrix, not adjusting a constant.
+
+**What this does to §7.** §7 pre-registers hybrid's marginal contribution over
+`vector + translation` on the `exact-identifier` bucket as **small**, because the recovery is
+embedding-side. That pre-registration was made against a BM25 that admitted question-form matches.
+BM25 precision is now higher on natural-language question forms, so **the expected marginal
+contribution may be larger than §7 states — for the semantic bucket more than the exact-identifier
+one**, whose queries are terse and carried no scaffolding to strip (all four such queries above are
+byte-identical). This restatement is itself **still pre-data**: it is written before any A/B run,
+it is a direction rather than a magnitude, and §7's number stands as the prediction of record. If
+T10 shows hybrid's margin unchanged from §7 on the semantic bucket, this paragraph was wrong and
+that is a finding worth reporting.

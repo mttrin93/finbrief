@@ -24,6 +24,7 @@ from finbrief.retrieval.hybrid import (
     Surfaced,
     bm25_index,
     fuse,
+    query_terms,
     tokenize,
 )
 
@@ -359,6 +360,78 @@ def test_a_chunk_holding_only_a_common_query_term_is_still_a_hit():
 
     assert len(hits) == 5
     assert hits[0].id == "tsla-7-3", "the rare term still decides the ranking"
+
+
+#: The observed leak in miniature (ADR-0004 §10). Repeats "main"/"are"/"the"/"for" and holds
+#: none of `risk`/`factors`/`tesla` — the shape of GOOGL's `Item 7:21`, which a live
+#: `what are the main risk factors for Tesla?` returned at BM25 **rank 1** over the whole
+#: 5,842-chunk corpus, on `main` alone (df 0.1%, idf 6.6568) for 10.6016 of its 16.4742.
+SCAFFOLDING_ONLY_CHUNK = Document(
+    id="googl-7-21",
+    page_content=(
+        "GOOGL | FY2025 10-K | Item 7. Management's Discussion and Analysis\n\n"
+        "The main components of our research and development expenses are: depreciation "
+        "expense for technical infrastructure; and the main compensation expenses for the "
+        "engineering employees responsible for the main development programmes."
+    ),
+    metadata={"ticker": "GOOGL", "section": "Item 7"},
+)
+
+
+def test_a_question_is_scored_on_its_topic_terms_not_its_question_form():
+    # The lexicon, pinned as a whole. `main` is the one word here that no published stopword
+    # list carries, and it is the whole finding: filers write "principal", so `main` is rare in
+    # the corpus and IDF therefore weights it *above the filer's own name*.
+    assert query_terms("What are the main risk factors for Tesla?") == [
+        "risk",
+        "factors",
+        "tesla",
+    ]
+
+
+def test_a_chunk_matching_only_a_questions_scaffolding_is_not_a_hit():
+    # ADR-0004 §10's observed leak. Scaffolding is dropped before the membership test as well as
+    # before the scoring, so this chunk earns no rank — and therefore no RRF vote — rather than
+    # merely scoring lower. It shares `main`, `the`, `are` and `for` with the question and not
+    # one of `risk`, `factors`, `tesla`.
+    index = BM25Index.over([*FORD_CHUNKS, TSLA_CHUNK, SCAFFOLDING_ONLY_CHUNK])
+
+    hits = index.nearest("What are the main risk factors for Tesla?", 5)
+
+    assert "googl-7-21" not in {hit.id for hit in hits}
+    assert hits[0].id == "tsla-7-3"
+
+
+def test_the_corpus_keeps_every_term_the_query_drops():
+    # Query-side only, which is what leaves `df`, `idf` and `avgdl` exactly as they were and the
+    # baseline byte-identical for any query carrying no scaffolding. In a filing, "the main
+    # components" is content; in a question, "the main" is how an analyst asks for salience.
+    assert tokenize("The main components are") == ["the", "main", "components", "are"]
+    assert query_terms("The main components are") == ["components"]
+
+
+def test_the_before_case_and_the_exact_identifier_bucket_keep_every_term():
+    # ADR-0004 §6's before-case and the bucket BM25 exists to serve carry no scaffolding, so
+    # they are untouched by construction — the property that made this safe to land on the
+    # measured path. Verified against the real corpus too: all five rows unchanged (§10).
+    assert query_terms("Tesla debt") == ["tesla", "debt"]
+    assert query_terms("TSLA Item 1A") == ["tsla", "item", "1a"]
+
+    index = BM25Index.over([*FORD_CHUNKS, TSLA_CHUNK, SCAFFOLDING_ONLY_CHUNK])
+
+    assert index.nearest("Tesla debt", 5)[0].id == "tsla-7-3"
+
+
+def test_a_query_that_is_all_scaffolding_scores_nothing_rather_than_falling_back():
+    # Falling back to the unfiltered terms would re-admit exactly the chunks the filter exists
+    # to exclude. An empty term list is already "no lexical hits", which `fuse` accepts from a
+    # short list — and the vector half still answers the question.
+    index = BM25Index.over([*FORD_CHUNKS, TSLA_CHUNK, SCAFFOLDING_ONLY_CHUNK])
+
+    # One content word is still a query; scaffolding alone is not.
+    assert query_terms("What are the main ones?") == ["ones"]
+    assert query_terms("And what are the main?") == []
+    assert index.nearest("And what are the main?", 5) == ()
 
 
 def test_tokenizing_keeps_the_identifiers_the_exact_identifier_bucket_turns_on():

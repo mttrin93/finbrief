@@ -22,6 +22,11 @@ BM25 supplies one vote of three, so its role is redundancy rather than recovery.
 still the right shape, and the reasoning above is still why a lexical retriever belongs in the
 pipeline — but it is a pre-measurement argument, and §6/§7 are what the numbers say.
 
+**And "IDF makes the rare term the decisive one" cuts both ways — §10.** IDF measures rarity in
+*this corpus*, not informativeness in the analyst's question, so a question-register word that
+filings happen not to use (`main`, df 0.1%) outweighs the filer's own name. `query_terms` drops
+that scaffolding from the query before scoring; the corpus keeps every term.
+
 **Why RRF rather than score blending.** The two retrievers' scores are not comparable and
 cannot be made so: Chroma returns a squared L2 distance (lower is nearer, unbounded above) and
 BM25 returns a corpus-relative sum of IDF-weighted term scores (higher is better, unbounded).
@@ -83,10 +88,80 @@ class Retriever(StrEnum):
 #: typed the hyphen.
 _WORD = re.compile(r"[a-z0-9]+")
 
+#: Terms dropped from a **query** before BM25 scores it — never from the corpus (ADR-0004 §10).
+#:
+#: A published English stopword list, plus exactly one word: `main`. Inlined as a literal rather
+#: than taken from NLTK, which downloads its corpora at first use and would break the same
+#: hermetic-suite contract that made `tests/fixtures/tiktoken/` necessary (CLAUDE.md).
+#:
+#: **`main` is the whole finding, and it is not a stopword anywhere.** A live
+#: `what are the main risk factors for Tesla?` returned GOOGL's `Item 7:21` — "The **main**
+#: components of our research and development expenses **are**" — at BM25 **rank 1**, above
+#: every Tesla Item 1A chunk, matching `main`/`for`/`the`/`are` and none of `risk`/`factors`/
+#: `tesla`. `main` alone was 10.6016 of its 16.4742, because filers write "principal" and
+#: analysts type "main": df 7/5842 (0.1%), idf 6.6568 — a **higher weight than `tesla`**
+#: (5.1261). IDF measures corpus rarity, and no corpus statistic can separate a rare
+#: question-register word from a rare identifier like `nvda`. Only a query-side lexicon can.
+#:
+#: **The growth rule is the important part** (ADR-0004 §10): no word enters this set without a
+#: recorded `df` statistic *and* a measured query it fixes. A qualifier set of the near
+#: neighbours — `key major biggest largest top overall important` — was measured against seven
+#: queries and changed **no** result, so it is inert and stays out; `principal`, `common`,
+#: `general`, `significant`, `basic`, `central`, `chief` and `core` each name a real filing
+#: concept (*principal amount*, *common stock*, *general and administrative*, *significant
+#: accounting policies*, *basic EPS*, *central bank*, *Chief Executive Officer*) and would cost
+#: recall to buy nothing measured.
+_STOPWORDS = frozenset(
+    (
+        "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours",
+        "yourself", "yourselves", "he", "him", "his", "himself", "she", "her", "hers",
+        "herself", "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+        "what", "which", "who", "whom", "this", "that", "these", "those", "am", "is", "are",
+        "was", "were", "be", "been", "being", "have", "has", "had", "having", "do", "does",
+        "did", "doing", "a", "an", "the", "and", "but", "if", "or", "because", "as", "until",
+        "while", "of", "at", "by", "for", "with", "about", "against", "between", "into",
+        "through", "during", "before", "after", "above", "below", "to", "from", "up", "down",
+        "in", "out", "on", "off", "over", "under", "again", "further", "then", "once", "here",
+        "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more",
+        "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+        "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now", "d",
+        "ll", "m", "o", "re", "ve", "y",
+    )
+)  # fmt: skip
+
+#: The stopword list **plus exactly one word**, kept a separate expression so the lexicon's one
+#: judgement call cannot be mistaken for part of the published list it sits beside.
+_SCAFFOLDING = _STOPWORDS | frozenset({"main"})
+
 
 def tokenize(text: str) -> list[str]:
     """`text` as BM25 terms. Used for the corpus and the query, so they cannot disagree."""
     return _WORD.findall(text.lower())
+
+
+def query_terms(query: str) -> list[str]:
+    """`query` as the terms BM25 should score it on — `tokenize` minus `_SCAFFOLDING`.
+
+    **The corpus keeps every term; only the query is filtered**, which is what makes this
+    change safe to land on the measured path. The index is untouched, so `df`, `idf` and `avgdl`
+    are exactly what they were, and any query carrying no scaffolding term scores **byte-
+    identically to the baseline** — verified on ADR-0004 §6's `Tesla debt` before-case and on
+    `TSLA Item 1A` / `NVDA Item 7A interest rate risk`, all five rows unchanged.
+
+    This is not the disagreement `tokenize`'s note warns about. The *tokenizer* is still shared:
+    both sides split on the same rule, so `Item 1A` still becomes `item`/`1a` on both and the
+    exact-identifier bucket is untouched. What differs is a query-side **term filter**, which is
+    ordinary BM25 practice — the vector half likewise embeds the variant unmodified rather than
+    tokenizing it at all. Each retriever still sees **every** variant (ADR-0004's composition is
+    unchanged); each applies its own preprocessing to it, which is a different thing from one
+    retriever seeing less than the other.
+
+    A query that is *entirely* scaffolding scores nothing rather than falling back to its
+    unfiltered terms: falling back would re-admit precisely the chunks this exists to exclude,
+    and `nearest` already treats an empty term list as "no lexical hits" — the honest answer,
+    which `fuse` is built to accept from a short list.
+    """
+    return [term for term in tokenize(query) if term not in _SCAFFOLDING]
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,9 +394,13 @@ class BM25Index:
         dropped the four peer chunks from issue #6's `Tesla debt` case because `debt` is common,
         which is precisely the comparison hybrid search is being measured on.
 
+        The query is scored on `query_terms`, not `tokenize` — its scaffolding is dropped before
+        both the scoring *and* the membership test, so a chunk that shares only a question's
+        function words is not a hit either (ADR-0004 §10).
+
         Ties break on chunk id, for the same reason `fuse`'s do.
         """
-        terms = tokenize(query)
+        terms = query_terms(query)
         if self._index is None or not terms:
             return ()
         wanted = frozenset(terms)
