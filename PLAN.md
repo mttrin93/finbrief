@@ -243,10 +243,13 @@ retrieval chain and land there)
   (ticket T3, #5) as `scripts/retrieval_smoke.py`, evidence in
   `docs/verification/retrieval-smoke.md`. A wiring check on `retrieve()`, explicitly not an
   evaluation: ADR-0002's golden set (T9, #4) remains the measurement artifact of record.
-- The committed evidence under `docs/verification/` is the last full run's and predates the
-  post-run extractor, chunker and checklist-format fixes. Re-running ingestion re-renders
-  both files and re-embeds all fifteen once; ADR-0007's *Outcome* records row by row what
-  that changes and why no row moves for the chunker fix.
+- The committed evidence under `docs/verification/` is the last full run's, regenerated
+  *after* the post-run extractor, chunker and checklist-format fixes: 60/60 gated, 60/60
+  ticked, nothing flagged `CHANGED`. Re-running ingestion re-renders the two files it owns
+  (`ingest-report.md` always; `section-starts.md` on `--section-starts`, carrying forward
+  every tick whose Section text is byte-identical); `retrieval-smoke.md` is the smoke
+  script's. ADR-0007's *Outcome* records row by row what the re-render changed — and why no
+  row moved for the chunker fix, the prediction that run settled.
 
 **Phase 2 — Baseline RAG (P0, ~3 h)**
 - Vector-only retrieval chain, source citations, sources panel in UI
