@@ -90,6 +90,51 @@ def test_the_page_says_where_the_six_pointer_filers_market_risk_lives(app):
     assert "Item 7" in scope
 
 
+def sidebar_captions(app) -> str:
+    return " ".join(caption.value for caption in app.sidebar.caption)
+
+
+def test_the_configuration_panel_states_the_strategy_that_actually_ran(app):
+    # ADR-0003 amendment §3 through seam 3: the panel names `vector` because that is what
+    # `agent.answer` pins, whatever `FINBRIEF_RETRIEVAL_STRATEGY` is set to.
+    app.run()
+
+    panel = " ".join(md.value for md in app.sidebar.markdown)
+    assert "**Strategy** `vector`" in panel
+
+
+def test_the_configured_hybrid_default_is_disclosed_as_not_yet_running(app):
+    # `config.DEFAULT_STRATEGY` is the pre-registered `hybrid + translation` (ADR-0005), so
+    # out of the box the configured strategy is one no answer has ever used. Saying so is
+    # the whole point of the caption: a reader who takes `hybrid` on trust reads Phase 4's
+    # numbers into a Phase 2 answer.
+    app.run()
+
+    assert "hybrid + translation" in sidebar_captions(app)
+    assert "lands in Phase 4" in sidebar_captions(app)
+
+
+def test_configuring_the_strategy_that_works_still_discloses_translation(app, monkeypatch):
+    # The regression: `retrieve()`'s NotImplementedError tells an operator to set exactly
+    # this, and doing so leaves `FINBRIEF_QUERY_TRANSLATION` at its default `True`. Gating
+    # the caption on strategy alone made the panel silent about translation on the one
+    # configuration we recommend — the likeliest configuration in the world to be running.
+    monkeypatch.setenv("FINBRIEF_RETRIEVAL_STRATEGY", "vector")
+    app.run()
+
+    assert "vector + translation" in sidebar_captions(app)
+    assert "lands in Phase 4" in sidebar_captions(app)
+
+
+def test_vector_without_translation_has_nothing_left_to_disclose(app, monkeypatch):
+    # The one configuration that *is* what ran, so the caption would be noise.
+    monkeypatch.setenv("FINBRIEF_RETRIEVAL_STRATEGY", "vector")
+    monkeypatch.setenv("FINBRIEF_QUERY_TRANSLATION", "false")
+    app.run()
+
+    assert "lands in Phase 4" not in sidebar_captions(app)
+
+
 def test_an_answer_renders_with_its_sources_and_the_disclaimer(app, monkeypatch):
     stub_answer(monkeypatch)
     app.run()

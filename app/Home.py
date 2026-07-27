@@ -50,9 +50,14 @@ with st.sidebar:
         f"**Strategy** `{BASELINE_STRATEGY}`  \n"
         f"**Top-k** `{settings.retrieval_k}`"
     )
-    if settings.retrieval_strategy != BASELINE_STRATEGY:
-        # Never let the panel advertise a strategy that did not run: `hybrid + translation`
-        # is the pre-registered shipping default (ADR-0005) and arrives in Phase 4.
+    # Never let the panel advertise a configuration that did not run: `hybrid +
+    # translation` is the pre-registered shipping default (ADR-0005) and arrives in Phase 4.
+    # Translation is checked as well as strategy, because the two switches move
+    # independently: `retrieve()` tells an operator to set
+    # `FINBRIEF_RETRIEVAL_STRATEGY=vector`, and doing exactly that leaves
+    # `FINBRIEF_QUERY_TRANSLATION` at its default `True` — so gating on the strategy alone
+    # left the one configuration we recommend as the only one that ran silently.
+    if settings.retrieval_strategy != BASELINE_STRATEGY or settings.query_translation_enabled:
         st.caption(
             f"Configured strategy `{settings.retrieval_strategy}"
             f"{' + translation' if settings.query_translation_enabled else ''}` "
