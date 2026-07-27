@@ -172,7 +172,11 @@ def test_the_five_queries_cover_the_kb_shapes_a_reader_would_doubt():
     # out-of-KB question with nothing to ground it.
     assert len(SMOKE_QUERIES) == 5
 
-    controls = [query for query in SMOKE_QUERIES if query.expect_ticker is None]
+    # `query.is_control`, not `expect_ticker is None`: that was the third spelling of this
+    # predicate, and the review that collapsed the other two left it here. A sixth query
+    # filled in halfway — a ticker with no Section — is a control to `SmokeQuery` and to the
+    # report, and would have been counted as a scored check by this line alone.
+    controls = [query for query in SMOKE_QUERIES if query.is_control]
     assert len(controls) == 1, "exactly one out-of-KB control"
 
     market_risk = [
