@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -62,6 +64,47 @@ class Context:
     def citation(self) -> str:
         """`AAPL 10-K FY2025, Item 1A` — what an inline `[n]` marker resolves to."""
         return f"{self.ticker} {self.filing_type} FY{self.fiscal_year}, {self.section.value}"
+
+    def as_payload(self) -> dict[str, str | int | float]:
+        """This chunk as JSON-safe primitives — the form that crosses a serialised boundary.
+
+        `search_filings` returns its chunks as a tool message's artifact, and the agent's
+        checkpointer serialises every message it stores (ADR-0008). A frozen dataclass
+        holding an enum survives that round trip only through an escape hatch LangGraph
+        warns on and will remove; under its strict serialiser it comes back as an untyped
+        dict instead, silently. So the wire form is written down here rather than left to a
+        library's inference — and this class stays the one authority on the shape, since
+        `from_payload` is what reads it back (ticket T4, #7).
+
+        No cost in checkpoint size: the tool message's *content* already carries these
+        bodies verbatim, because that is what the model reads.
+        """
+        return {
+            "chunk_id": self.chunk_id,
+            "body": self.body,
+            "ticker": self.ticker,
+            "filing_type": self.filing_type,
+            "section": self.section.value,
+            "fiscal_year": self.fiscal_year,
+            "accession": self.accession,
+            "distance": self.distance,
+            "rank": self.rank,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> Context:
+        """Rebuild a chunk from `as_payload`, for the surface that displays it."""
+        return cls(
+            chunk_id=str(payload["chunk_id"]),
+            body=str(payload["body"]),
+            ticker=str(payload["ticker"]),
+            filing_type=str(payload["filing_type"]),
+            section=Section(payload["section"]),
+            fiscal_year=int(payload["fiscal_year"]),
+            accession=str(payload["accession"]),
+            distance=float(payload["distance"]),
+            rank=int(payload["rank"]),
+        )
 
 
 def retrieve(

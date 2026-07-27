@@ -7,8 +7,13 @@ Not a fixture module — these are the doubles a fixture is built from, kept out
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
+from langchain.tools import ToolRuntime
 from langchain_core.embeddings import Embeddings
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AnyMessage
+from pydantic import Field
 
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context
@@ -41,6 +46,50 @@ def a_context(
         distance=distance,
         rank=rank,
     )
+
+
+def a_tool_runtime(messages: Sequence[AnyMessage] = ()) -> ToolRuntime:
+    """The runtime a tool node injects, for a test that calls a tool without an agent.
+
+    Only `state["messages"]` is load-bearing for FinBrief's tools — `search_filings` reads
+    the conversation to continue its citation numbering — so the rest is blank rather than
+    faked into something a test might start relying on.
+    """
+    return ToolRuntime(
+        state={"messages": list(messages)},
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="call-1",
+        store=None,
+    )
+
+
+class ScriptedChatModel(GenericFakeChatModel):
+    """A chat model that returns pre-written replies and keeps the prompts it was handed.
+
+    Two reasons it is not `GenericFakeChatModel` itself. It answers `bind_tools`, which
+    `BaseChatModel` refuses by default — so a stock fake cannot drive an agent loop at all;
+    returning `self` puts the script, rather than the model, in charge of which tools fire
+    with which arguments, which is exactly what a test of the agent's *wiring* wants to
+    control. And it records `prompts`, because half of what there is to assert about memory
+    is what the model was *shown*: a follow-up whose prompt does not contain the earlier turn
+    has no conversation to resolve "its debt" against, however well it answers.
+
+    Nothing here checks the script against the bound tools, deliberately — a test that
+    scripts a call to a tool the agent does not have is testing error handling, and should be
+    able to.
+    """
+
+    #: Every message list this model has been called with, oldest call first.
+    prompts: list[list[AnyMessage]] = Field(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs):  # noqa: ARG002 — the script decides, not the model
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.prompts.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 #: The fake embedding's whole vocabulary: terms a 10-K question actually turns on, so a
