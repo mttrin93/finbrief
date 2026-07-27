@@ -29,3 +29,44 @@ a deployed multi-user app).
 stability across reruns; distinctness across two AppTest sessions; fresh-uuid + surviving
 cached agent on start-over. This is where the prior review's session-state-testing
 recommendation is implemented.
+
+---
+
+## Amendment (ticket T4, issue #7) — what implementing it added
+
+The decision above stands as written. Four things it did not say, recorded here rather than
+left in the code for the next reader to reconstruct.
+
+**1. The checkpointer is also the citation register.** `retrieve()` ranks 1…k on every call, so
+`search_filings` offsets each result by the number of sources the thread has already issued —
+counted from the thread's own tool messages, which the checkpointer already persists. No new
+state, and the register cannot drift from the transcript it numbers. This is the decision's
+"the agent's context always comes from the checkpointer" doing more work than it was written
+for, and it is why the sequence is deliberately *thread-global* rather than per-turn: `[7]` then
+means one chunk for a whole conversation, so a marker in an earlier answer still resolves to the
+source the reader was shown beside it (ADR-0003 amendment §3).
+
+**2. Nothing that crosses into the checkpoint may be a domain object.** Every message is
+serialised, artifacts included. A frozen dataclass holding an enum survives that round trip only
+through an escape hatch LangGraph warns on and will remove, and comes back as an untyped dict
+under its strict serialiser — silently. So `search_filings` returns `Context.as_payload()` dicts
+and the agent rebuilds them for display. No cost in checkpoint size: the tool message's *content*
+already carries those bodies, because that is what the model reads.
+
+**3. "Start over" mints a thread; it does not clear the checkpointer.** The old thread is
+orphaned rather than deleted — nothing can reach it, and it is ephemeral anyway. Clearing the
+saver, or rebuilding the cached agent, would discard **every other session's** memory, which is
+precisely the cross-user failure this ADR exists to prevent, arriving through the button that
+looks like the safe one. `test_starting_over_does_not_reach_another_session` holds it down.
+
+**4. The stated semantics have to be stated *on screen*.** "Browser refresh starts a new
+conversation" is an accepted consequence, so the sidebar says so — a user who is not told reads
+a lost conversation as a bug, and a reviewer cannot tell an accepted consequence from an
+oversight. `test_the_page_states_that_a_refresh_starts_a_new_conversation` binds it.
+
+**Also true, and outside the decision as written.** The `thread_id` is logged with every turn
+(`agent_query`, `agent_turn`): it is a conversation identifier, not user content, and grouping
+turns by conversation is what lets T10 (#11) report per-conversation behaviour. `session_state`
+also holds one flag per assistant row — whether the turn searched — which is display data, since
+"the agent answered from the conversation" and "the collection returned nothing" render
+differently and only the second is a setup problem.

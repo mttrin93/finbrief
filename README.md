@@ -4,18 +4,22 @@ A domain-specialised RAG chatbot for equity research. Target user: a junior anal
 who needs a grounded, source-cited company snapshot before an earnings call —
 business overview, risk factors, current valuation, and recent news — in minutes.
 
-> **Status:** baseline vector RAG over the knowledge base. A question retrieves from the
-> Chroma `filings` collection and comes back as a grounded answer carrying inline `[n]`
-> citations, each resolving to a sources panel entry with that chunk's ticker, Section,
-> fiscal year and accession — so a claim can be checked against the filing that made it.
-> The KB holds curated 10-K Sections for all fifteen Universe companies, fetched from
-> EDGAR, gated, chunked, and persisted (see *Building the knowledge base* below).
+> **Status:** a conversational agent over the knowledge base. A question reaches
+> `create_agent`, which searches the Chroma `filings` collection through its
+> `search_filings` tool and answers with inline `[n]` citations, each resolving to a sources
+> panel entry with that chunk's ticker, Section, fiscal year and accession — so a claim can be
+> checked against the filing that made it. Follow-ups work: *"and its debt?"* resolves against
+> the company just discussed, because the conversation lives in a `SqliteSaver` checkpointer
+> rather than in the UI (ADR-0008). The KB holds curated 10-K Sections for all fifteen
+> Universe companies, fetched from EDGAR, gated, chunked, and persisted (see *Building the
+> knowledge base* below).
 >
 > Retrieval is **vector-only**, deliberately: the pre-registered shipping default is
 > `hybrid + translation` (ADR-0005) and it arrives in Phase 4, so until then the app's
 > sidebar states both what is configured and what actually ran rather than letting a
-> configured strategy be read as a measured one. The agent loop, the finance and news
-> tools, and the security gate are the phases that follow. The three files under
+> configured strategy be read as a measured one. The finance and news tools, and the
+> security gate, are the phases that follow — so the agent has one tool today, and the
+> tool-*selection* it exists for starts mattering when there are four. The three files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
 > hand-authored. The plan lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
@@ -58,6 +62,37 @@ Retrieved text is shown verbatim in the sources panel: it renders through `st.te
 Markdown, because a filer's own `$178,353` is a KaTeX expression to a Markdown renderer and
 a citation surface that silently reformats the figures is not a citation surface.
 
+## Conversation memory, and who owns it
+
+The agent's memory of record is a file-backed `SqliteSaver` checkpointer; `st.session_state`
+holds only the `thread_id`, UI state, and the transcript on screen (ADR-0008). `answer()` is
+handed the new question and a thread id, never a history — a history assembled in the UI would
+be a second copy of the conversation, and the copy the model never sees is the one that goes
+stale.
+
+- **One `uuid4` per browser session**, minted before the first message and stable across
+  reruns. The agent and the checkpointer are built once per *process* and shared by every
+  session, so that id is what keeps two users apart. `tests/test_app_state.py` drives two
+  `AppTest` sessions in one process and asserts they get different threads and that each turn
+  lands on its own — the cross-user leak this design exists to prevent, provable without
+  deploying.
+- **Refreshing the browser starts a new conversation.** `session_state` resets, a new uuid is
+  minted, the old thread is orphaned. That is a stated consequence, not a defect, and the
+  sidebar says so. *Start over* does the same thing on purpose, and deliberately does **not**
+  clear the checkpointer — that would discard every other session's memory too.
+- **Conversations are not durable data.** The checkpoint file is ephemeral on Streamlit
+  Community Cloud, and `FINBRIEF_CHECKPOINT_DB` exists so a deployment can put it somewhere
+  writable. Losing it costs conversations and nothing else; the knowledge base is a separate
+  artifact.
+- **The agent's query is logged against yours.** `search_filings`'s description tells the agent
+  to pass your question verbatim — the tool owns query optimization, so translating before it
+  would translate twice (ADR-0003) — with one exception: a pronoun or elliptical reference is
+  resolved first, because the retrieval engine is stateless and *"its debt"* names no company.
+  Whether each search ran your words is logged as a verdict (never the text of either query),
+  so the divergence between the shipped path and the measured chain is reported rather than
+  assumed away. On the first live two-turn run the model rephrased both queries; the rate is a
+  finding for the evaluation phase, not something to tune the prompt against.
+
 ## Configuration
 
 Every knob lives in [`src/finbrief/config.py`](./src/finbrief/config.py) and resolves from
@@ -70,7 +105,8 @@ the environment, so the app and the evaluation harness read the same switches (A
 - `SEC_EDGAR_USER_AGENT` is required **for ingestion**: the SEC rejects unidentified
   traffic, so `scripts/ingest_filings.py` fails loudly without a contact identity
   (`FinBrief your-email@example.com`). `FINBRIEF_CHROMA_DIR` (default `data/chroma`) is
-  where the persisted collections live — ingest and app must agree on it.
+  where the persisted collections live — ingest and app must agree on it, and
+  `FINBRIEF_CHECKPOINT_DB` (default `data/checkpoints.sqlite`) is where conversations go.
 - Retrieval switches. `FINBRIEF_RETRIEVAL_K` is read by the answer path today.
   `FINBRIEF_RETRIEVAL_STRATEGY` and `FINBRIEF_QUERY_TRANSLATION` resolve from the
   environment but are deliberately **not** honoured by it yet: their defaults are the

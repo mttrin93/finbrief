@@ -63,6 +63,9 @@ or asserts against noise.
   (`HEADING_LINE_MAX_CHARS`, `POINTER_MAX_CHARS`, `POINTER_RESIDUE_MAX_WORDS`) and
   `CHUNK_OVERLAP_CHARS` in the chunker. Do not move them into `config.py` or make them
   env-overridable; each is calibrated against measured filings and documented where it sits.
+  `agent/agent.py`'s `MAX_AGENT_STEPS` is exempt on the same grounds — a ceiling on the
+  agent loop, next to the loop it guards. **This list is the exception**: a limit not
+  enumerated here belongs in `config.py`, or the exemption stops being narrow.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
 - `llm.py` is the only chat-model constructor; `retrieval/embeddings.py` the only

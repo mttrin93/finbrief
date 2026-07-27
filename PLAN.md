@@ -183,8 +183,10 @@ finbrief/
 │   ├── retrieval/         # embeddings.py (shared by ingest+query), vectorstore.py,
 │   │                      # retrieve.py (the seam-1 entry point), smoke.py (Phase 2);
 │   │                      # hybrid.py, query_translation.py (Phase 4)
-│   ├── tools/             # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
-│   ├── agent/             # agent.py (create_agent), guardrails.py
+│   ├── tools/             # search_filings.py (Phase 3, the wrapped engine);
+│   │                      # stock_data.py, ratios.py, news.py (+ mcp_server.py P2)
+│   ├── agent/             # agent.py (create_agent + the SqliteSaver checkpointer that
+│   │                      # is its memory of record — Phase 3), guardrails.py
 │   ├── evaluation/        # golden_set.json, ragas_eval.py, ab_test.py, tool_eval.py
 │   └── observability/     # logging_setup.py, costs.py
 ├── app/
@@ -198,7 +200,9 @@ finbrief/
 │   │                      # recorded EDGAR + vendored tiktoken fixtures (Phase 1)
 │   ├── test_config.py     # Universe/Peers invariants + env resolution (Phase 0)
 │   ├── test_logging_setup.py       # the JSON-lines contract (Phase 0)
-│   ├── test_agent.py               # answer() + the OpenRouter binding (Phase 0)
+│   ├── test_agent.py               # seam 2: the real agent loop — memory, thread
+│   │                      # isolation, citation numbering, query divergence (Phase 3);
+│   │                      # the OpenRouter binding (Phase 0)
 │   ├── test_embeddings.py          # the one shared embedding model (Phase 0)
 │   ├── test_chunk_token_limit.py   # CHUNK_SIZE_CHARS vs. the embedding window (Phase 0)
 │   ├── test_section_gate.py + 9 more   # seam 6: gate rules, recorded filings, chunker,
@@ -207,13 +211,16 @@ finbrief/
 │   ├── test_retrieve.py + 5 more   # seams 1 & 3: retrieval, the chain, the smoke
 │   │                      # verdicts and their report, the script's exits, the persona,
 │   │                      # the scope disclosure vs. the ingest evidence (Phase 2)
-│   ├── fakes.py           # hermetic doubles: KeywordEmbeddings, a_context (Phase 2)
+│   ├── fakes.py           # hermetic doubles: KeywordEmbeddings, a_context (Phase 2),
+│   │                      # ScriptedChatModel, a_tool_runtime (Phase 3)
 │   ├── test_app_smoke.py  # AppTest — page renders, sources panel, disclaimer, scope
 │   │                      # disclosure, a message reaches the agent seam
+│   ├── test_search_filings.py      # seam 5: the tool wraps the engine, verbatim
+│   │                      # contract, JSON-safe artifact (Phase 3)
 │   └── test_app_state.py  # AppTest (ADR-0008) — Phase 3: thread_id stability across
-│                          # reruns, distinctness across sessions,
-│                          # fresh-uuid+surviving-agent on start-over, reset flows,
-│                          # model-picker & strategy toggles
+│                          # reruns, distinctness across two sessions,
+│                          # fresh-uuid+surviving-agent on start-over; the model-picker
+│                          # and strategy toggles land with the phases that add them
 └── .github/workflows/     # ci.yml (lint+tests), kb_update.yml (scheduled, P2)
 ```
 
@@ -275,10 +282,25 @@ retrieval chain and landed with it — ticket T3, #5)
 - Also here: the Phase-1 smoke test above, as `scripts/retrieval_smoke.py`.
 
 **Phase 3 — Tools + agent (Tier-1, ~4 h)** *(agent state: see ADR-0008)*
-- Three `@tool` functions with caching + error handling
-- `create_agent` + SqliteSaver checkpointer built once under `@st.cache_resource`
-  (SQLite `check_same_thread=False`); thread_id = uuid4 per session in session_state
-  (isolates users on the shared cached instance). Tool-call cards in UI; progress indicators.
+- The agent half is ✅ **done** (`t4-agent-memory`, #7): `create_agent` + SqliteSaver
+  checkpointer built once under `@st.cache_resource` (SQLite `check_same_thread=False`);
+  thread_id = uuid4 per session in session_state, which is what isolates users on the shared
+  cached instance — asserted by two `AppTest` sessions in one process, not claimed
+  (`test_app_state.py`). `search_filings` wraps `retrieve()`, so the measured chain and the
+  shipped path stay one code path (ADR-0003); its description carries the verbatim-query
+  contract, and the agent's issued query is logged against the original so the divergence is
+  reported rather than assumed away. Citation numbering continues across a conversation,
+  counted from the thread's own tool messages, because a second search that reused `[1]` would
+  make every marker above it unresolvable.
+- Still open (ticket T5, #9): three `@tool` functions with caching + error handling, tool-call
+  cards in the UI, per-tool progress indicators. Until they land the agent has one tool, so
+  the tool-*selection* the loop exists for is not yet exercised.
+- Two findings from the first live run, recorded on the tickets that will use them: the model
+  rephrased both queries despite the verbatim instruction (#11 — the rate is a reportable
+  metric, and per ADR-0003 the prompt is not tuned against a paid model to move it), and the
+  rephrased follow-up `Tesla debt` returned four Ford chunks out of five (#6 — a measured
+  instance of the exact-identifier weakness ADR-0004 predicts hybrid + BM25 fixes, and a
+  candidate golden-set case for #4).
 
 **Phase 4 — Advanced RAG (Tier-1, ~4 h)** *(see ADR-0004)*
 - Query translation (rewrite + decompose): original query always retained as a variant,
@@ -381,7 +403,8 @@ Each item built only when fully understood; anything not defensible is cut befor
   verified in demo step 5
 - **UI/state:** AppTest — thread_id stability across reruns, distinctness across two
   sessions, fresh-uuid+surviving-agent on start-over, plus reset/toggle flows (ADR-0008) —
-  catches Streamlit-layer regressions that pure function tests miss
+  catches Streamlit-layer regressions that pure function tests miss. ✅ done for the state
+  half in Phase 3 (#7); the toggle flows arrive with the toggles.
 
 ## 8. Risks & mitigations
 
