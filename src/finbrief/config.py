@@ -194,6 +194,20 @@ class RetrievalStrategy(StrEnum):
 DEFAULT_STRATEGY = RetrievalStrategy.HYBRID
 DEFAULT_TRANSLATION_ENABLED = True
 
+#: Reciprocal Rank Fusion's rank-smoothing constant: a candidate list's vote for the chunk it
+#: ranks `r`th is `1 / (RRF_K + r)` (`retrieval/hybrid.py`).
+#:
+#: **60 is the published default, stated and not tuned** — Cormack, Clarke & Buettcher (2009),
+#: who introduced RRF and report it as insensitive over a wide range. Deliberately *not* a
+#: `Settings` field, on the same reasoning as `CHUNK_SIZE_CHARS` below and for one extra one:
+#: ADR-0005 pre-registers the shipping default before any A/B data exists so that the winner
+#: cannot be picked after seeing the numbers, and a fusion constant somebody could sweep is
+#: exactly the back door into that. A `hybrid` result obtained at the published constant is a
+#: prediction that survived a test; one obtained at the best of several `RRF_K` values is a
+#: number about the sweep. If it is ever changed, it is changed here, in one commit, with the
+#: A/B re-run — never per environment.
+RRF_K = 60
+
 #: Maximum characters per chunk — the PLAN.md baseline for section-aware chunking
 #: (RecursiveCharacterTextSplitter, 1000 chars with a 200-char overlap; the overlap
 #: belongs to the chunker itself and lands with it in Phase 1).

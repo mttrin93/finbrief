@@ -13,9 +13,11 @@ from finbrief.config import Settings
 from finbrief.ingestion.chunking import chunk_filing, content_hash
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.retrieval.vectorstore import (
+    all_chunks,
     build_filings_store,
     chunk_counts_by_ticker,
     content_hashes_by_accession,
+    default_filings_store,
     delete_orphaned_chunks,
     delete_superseded,
     holds_any_chunks,
@@ -262,3 +264,46 @@ def test_build_filings_store_falls_back_to_settings_for_both_arguments(monkeypat
     assert built == [settings], "the one shared embedding model, not a second constructor"
     write_chunks(store, chunk_filing(a_filing()))
     assert (tmp_path / "from-settings").exists()
+
+
+def test_all_chunks_reads_back_every_chunk_as_it_was_indexed(store):
+    # BM25 scores *text*, so hybrid search needs the whole corpus rather than a neighbourhood
+    # of it (ADR-0004) — and this is the read that supplies it, in the one module allowed to
+    # open the collection. What it must preserve is the *indexed* text, provenance header
+    # included: the header is the whole reason a ticker and a Section literal are matchable on
+    # every chunk of a Section and not only the one the splitter left the heading in.
+    written = chunk_filing(a_filing())
+    write_chunks(store, written)
+
+    held = all_chunks(store)
+
+    assert {document.id for document in held} == {chunk.id for chunk in written}
+    by_id = {document.id: document for document in held}
+    for chunk in written:
+        assert by_id[chunk.id].page_content == chunk.text
+        assert by_id[chunk.id].metadata["ticker"] == "AAPL"
+        assert by_id[chunk.id].metadata["section"] == chunk.section.value
+
+
+def test_all_chunks_of_an_empty_collection_is_empty_rather_than_an_error(store):
+    # The un-ingested case: `store.get` returns `None` for the lists it was asked to include,
+    # which an unguarded zip would turn into a `TypeError` on the first query.
+    assert all_chunks(store) == ()
+
+
+def test_the_application_shares_one_handle_on_the_collection(monkeypatch, tmp_path):
+    # Phase 4's BM25 index is cached against the store object that holds its corpus
+    # (`retrieval/hybrid.py`). A `Chroma` opened afresh per query — which is what `retrieve()`
+    # used to do — would miss that cache every time and rebuild a 5,800-chunk lexical index for
+    # one question.
+    import finbrief.retrieval.vectorstore as vectorstore
+
+    monkeypatch.setattr(
+        vectorstore, "build_embeddings", lambda settings: FakeEmbeddings(size=32)
+    )
+    settings = Settings.from_env(
+        {"OPENROUTER_API_KEY": "key", "FINBRIEF_CHROMA_DIR": str(tmp_path / "shared")}
+    )
+    default_filings_store.cache_clear()
+
+    assert default_filings_store(settings) is default_filings_store(settings)
