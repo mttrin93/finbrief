@@ -17,16 +17,22 @@ from fakes import a_context
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from finbrief.agent.citations import renumbered
-from finbrief.retrieval.retrieve import Context
+from finbrief.retrieval.retrieve import Context, Retrieval
 from finbrief.tools.search_filings import TOOL_NAME
+
+#: What one search ran, for the replies below — two variants, so every assertion here also
+#: exercises the half of the artifact the register must carry through without touching.
+VARIANTS = ("What are Tesla's risk factors?", "Tesla supply chain risk")
 
 
 def a_reply(*ranks: int, call_id: str = "call-1", name: str = TOOL_NAME) -> ToolMessage:
     """A `search_filings` reply carrying chunks numbered `ranks`, as the tool emits them."""
-    contexts = tuple(a_context(rank) for rank in ranks)
+    retrieval = Retrieval(
+        contexts=tuple(a_context(rank) for rank in ranks), variants=VARIANTS, translated=True
+    )
     return ToolMessage(
         content="<sources>…</sources>",
-        artifact=tuple(context.as_payload() for context in contexts),
+        artifact=retrieval.as_payload(),
         name=name,
         tool_call_id=call_id,
         id=f"msg-{call_id}",
@@ -34,7 +40,7 @@ def a_reply(*ranks: int, call_id: str = "call-1", name: str = TOOL_NAME) -> Tool
 
 
 def ranks_of(message: ToolMessage) -> list[int]:
-    return [payload["rank"] for payload in message.artifact]
+    return [payload["rank"] for payload in message.artifact["chunks"]]
 
 
 def test_a_step_with_two_searches_numbers_them_in_sequence():
@@ -63,7 +69,7 @@ def test_the_rewritten_content_carries_the_numbers_the_model_will_cite():
 
     assert "[4] " in update.content
     assert "[1] " not in update.content
-    rebuilt = tuple(Context.from_payload(payload) for payload in update.artifact)
+    rebuilt = tuple(Context.from_payload(p) for p in update.artifact["chunks"])
     assert f"[4] {rebuilt[0].citation}" in update.content
     assert rebuilt[0].body in update.content, "the filer's words, still verbatim"
 
@@ -133,3 +139,29 @@ def test_a_reply_with_no_artifact_at_all_does_not_raise():
     updates = renumbered(thread)
 
     assert [ranks_of(m) for m in updates] == []
+
+
+def test_renumbering_carries_the_query_variants_through_untouched():
+    # The register rewrites `rank` and nothing else. Rebuilding the artifact from the chunks
+    # alone would empty the RAG-viz panel on every renumbered reply — which is every reply after
+    # the first search in a conversation, i.e. exactly the turns the panel is most useful on.
+    step = [a_reply(1, 2, 3, call_id="call-1"), a_reply(1, 2, 3, call_id="call-2")]
+
+    (update,) = renumbered(step)
+
+    assert update.artifact["variants"] == list(VARIANTS)
+    assert update.artifact["translated"] is True
+
+
+def test_renumbering_preserves_each_chunks_provenance():
+    # `rank` is the conversation's citation number; a provenance row's `rank` is that chunk's
+    # position in one candidate list. Renumbering the second would make the RRF contributions
+    # beside it arithmetically false.
+    step = [a_reply(1, 2, call_id="call-1"), a_reply(1, 2, call_id="call-2")]
+
+    (update,) = renumbered(step)
+
+    before = a_context(1).provenance
+    rebuilt = Context.from_payload(update.artifact["chunks"][0])
+    assert rebuilt.rank == 3, "the citation number moved"
+    assert rebuilt.provenance == before, "and the retrieval-level provenance did not"

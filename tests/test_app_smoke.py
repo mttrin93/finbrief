@@ -17,6 +17,7 @@ from finbrief.agent import agent
 from finbrief.agent.agent import AgentTurn, Search
 from finbrief.ingestion.model import Section
 from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK
+from finbrief.retrieval.hybrid import Retriever, Surfaced
 
 APP = str(Path(__file__).parents[1] / "app" / "Home.py")
 
@@ -112,45 +113,48 @@ def sidebar_captions(app) -> str:
     return " ".join(caption.value for caption in app.sidebar.caption)
 
 
-def test_the_configuration_panel_states_the_strategy_that_actually_ran(app):
-    # ADR-0003 amendment §3 through seam 3: the panel names `vector` because that is what
-    # `agent.answer` pins, whatever `FINBRIEF_RETRIEVAL_STRATEGY` is set to.
+def sources_panel(assistant):
+    """The `Sources (n)` expander of one assistant turn, or `None` if it has none.
+
+    Found by label rather than by position: an answer now renders two expanders — its sources
+    and the RAG-viz panel — and a positional lookup would silently start asserting about the
+    wrong one the day their order changed.
+    """
+    panels = [panel for panel in assistant.expander if "Sources" in panel.label]
+    return panels[0] if panels else None
+
+
+def how_i_answered(assistant):
+    """The RAG-visualization expander of one assistant turn, or `None` if it has none."""
+    panels = [panel for panel in assistant.expander if "How I answered" in panel.label]
+    return panels[0] if panels else None
+
+
+def test_the_configuration_panel_states_the_shipping_default_out_of_the_box(app):
+    # `config.DEFAULT_STRATEGY` is the pre-registered `hybrid + translation` (ADR-0005), and as
+    # of Phase 4 it is also what answers — so the panel names one value, not two. Until Phase 4
+    # this test asserted the opposite (`vector`, plus a caption explaining the gap), because the
+    # configured default was a strategy `retrieve()` refused.
     app.run()
 
     panel = " ".join(md.value for md in app.sidebar.markdown)
-    assert "**Strategy** `vector`" in panel
+    assert "**Strategy** `hybrid + translation`" in panel
+    assert "lands in Phase 4" not in sidebar_captions(app), "the gap it described is closed"
 
 
-def test_the_configured_hybrid_default_is_disclosed_as_not_yet_running(app):
-    # `config.DEFAULT_STRATEGY` is the pre-registered `hybrid + translation` (ADR-0005), so
-    # out of the box the configured strategy is one no answer has ever used. Saying so is
-    # the whole point of the caption: a reader who takes `hybrid` on trust reads Phase 4's
-    # numbers into a Phase 2 answer.
-    app.run()
-
-    assert "hybrid + translation" in sidebar_captions(app)
-    assert "lands in Phase 4" in sidebar_captions(app)
-
-
-def test_configuring_the_strategy_that_works_still_discloses_translation(app, monkeypatch):
-    # The regression: `retrieve()`'s NotImplementedError tells an operator to set exactly
-    # this, and doing so leaves `FINBRIEF_QUERY_TRANSLATION` at its default `True`. Gating
-    # the caption on strategy alone made the panel silent about translation on the one
-    # configuration we recommend — the likeliest configuration in the world to be running.
-    monkeypatch.setenv("FINBRIEF_RETRIEVAL_STRATEGY", "vector")
-    app.run()
-
-    assert "vector + translation" in sidebar_captions(app)
-    assert "lands in Phase 4" in sidebar_captions(app)
-
-
-def test_vector_without_translation_has_nothing_left_to_disclose(app, monkeypatch):
-    # The one configuration that *is* what ran, so the caption would be noise.
+def test_the_configuration_panel_follows_the_switches_it_does_not_restate_them(
+    app, monkeypatch
+):
+    # Both switches move independently (ADR-0002's A/B axes), and the panel is the only place a
+    # reviewer checks which configuration produced the answers above it. `agent.build_agent`
+    # reads these same two settings, which is what makes the panel a report rather than a claim.
     monkeypatch.setenv("FINBRIEF_RETRIEVAL_STRATEGY", "vector")
     monkeypatch.setenv("FINBRIEF_QUERY_TRANSLATION", "false")
     app.run()
 
-    assert "lands in Phase 4" not in sidebar_captions(app)
+    panel = " ".join(md.value for md in app.sidebar.markdown)
+    assert "**Strategy** `vector`" in panel
+    assert "translation" not in panel
 
 
 def test_an_answer_renders_with_its_sources_and_the_disclaimer(app, monkeypatch):
@@ -166,8 +170,9 @@ def test_an_answer_renders_with_its_sources_and_the_disclaimer(app, monkeypatch)
     ]
     # The sources panel: one entry per retrieved chunk, each carrying the metadata user
     # story 3 asks for — ticker, Section and fiscal year — so an inline `[n]` can be
-    # checked against the primary source.
-    (sources,) = assistant.expander
+    # checked against the primary source. It is the *first* expander; the RAG-viz panel
+    # ("How I answered") sits beside it and has its own tests below.
+    sources = sources_panel(assistant)
     assert "2" in sources.label, "the panel states how many chunks grounded the answer"
     panel = " ".join(md.value for md in sources.markdown)
     assert panel.count("TSLA 10-K FY2025, Item 1A") == 2
@@ -225,8 +230,7 @@ def test_a_source_body_renders_the_filers_words_character_identical(
     app.chat_input[0].set_value("How did Apple's segments perform?").run()
 
     assert not app.exception
-    (sources,) = app.chat_message[1].expander
-    assert [text.value for text in sources.text] == [body]
+    assert [text.value for text in sources_panel(app.chat_message[1]).text] == [body]
 
 
 def test_an_answers_dollar_figures_survive_rendering(app, monkeypatch):
@@ -277,8 +281,8 @@ def test_the_sources_panel_survives_the_next_turn(app, monkeypatch):
         "user",
         "assistant",
     ]
-    assert len(app.chat_message[1].expander) == 1
-    assert len(app.chat_message[3].expander) == 1
+    assert sources_panel(app.chat_message[1]) is not None
+    assert sources_panel(app.chat_message[3]) is not None
 
 
 def test_an_ungrounded_answer_renders_no_empty_sources_panel(app, monkeypatch):
@@ -351,7 +355,7 @@ def test_a_turn_that_did_not_search_replays_without_a_banner(app, monkeypatch):
 
     assert not app.exception
     assert not app.warning
-    assert app.session_state.messages[1]["searched"] is False
+    assert app.session_state.messages[1]["turn"].searched is False
 
 
 def test_a_transcript_row_from_an_older_shape_replays(app, monkeypatch):
@@ -426,3 +430,162 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     assert "upstream refused" in app.error[0].value
     # A failed turn must not leave a phantom assistant message in the transcript.
     assert [m["role"] for m in app.session_state.messages] == ["user"]
+
+
+# --------------------------------------------------------------------------------------
+# The RAG-visualization panel (user story 5, ADR-0004)
+# --------------------------------------------------------------------------------------
+
+
+def a_translated_turn():
+    """A turn whose search translated the question and fused two retrievers over both variants.
+
+    Built by hand rather than retrieved, because seam 3 stubs the agent entirely: what is under
+    test here is what the page renders from a turn, not what a turn contains.
+    """
+    variants = ("What are Tesla's risk factors?", "Tesla supply chain concentration")
+    surfaced_by_both = a_context(
+        1,
+        provenance=(
+            Surfaced(
+                variant=variants[0], retriever=Retriever.VECTOR, rank=3, contribution=1 / 63
+            ),
+            Surfaced(
+                variant=variants[1], retriever=Retriever.BM25, rank=1, contribution=1 / 61
+            ),
+        ),
+    )
+    lexical_only = a_context(
+        2,
+        distance=None,
+        provenance=(
+            Surfaced(
+                variant=variants[0], retriever=Retriever.BM25, rank=2, contribution=1 / 62
+            ),
+        ),
+    )
+    return AgentTurn(
+        text="Tesla identifies supply-chain concentration [1][2].",
+        searches=(
+            Search(
+                query=variants[0],
+                contexts=(surfaced_by_both, lexical_only),
+                variants=variants,
+                translated=True,
+            ),
+        ),
+    )
+
+
+def test_the_panel_shows_the_original_query_and_the_sub_queries_it_added(app, monkeypatch):
+    # User story 5, and ADR-0004's invariant made visible: the original is variant 1 and
+    # translation only ever *added* to it. A reader who cannot see the original cannot tell a
+    # decomposition from a replacement, which is the failure mode the ADR is written against.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    panel = how_i_answered(app.chat_message[1])
+    text = " ".join(md.value for md in panel.markdown)
+    assert "`original`" in text
+    assert "What are Tesla's risk factors?" in text
+    assert "`sub-query 1`" in text
+    assert "Tesla supply chain concentration" in text
+
+
+def test_the_panel_shows_which_variant_and_retriever_surfaced_each_chunk(app, monkeypatch):
+    # The provenance ADR-0004 asks for, on the surface it was asked for: variant × retriever ×
+    # rank × RRF contribution, per chunk. This is what makes "*why* hybrid wins" checkable
+    # against a single answer rather than only in an aggregate table.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    text = " ".join(md.value for md in how_i_answered(app.chat_message[1]).markdown)
+    assert "| query | retriever | rank | RRF contribution |" in text
+    assert "| original | vector | 3 |" in text
+    assert "| sub-query 1 | bm25 | 1 |" in text
+    assert f"{1 / 61:.6f}" in text, "the contribution that was summed, not a recomputation"
+
+
+def test_the_panel_says_when_a_chunk_has_no_vector_distance_rather_than_inventing_one(
+    app, monkeypatch
+):
+    # The exact-identifier case: a chunk BM25 recovered is one vector search did not return, so
+    # it has no distance. A stand-in would put a number on screen that no measurement produced,
+    # and `distance None` reads as a bug.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assistant = app.chat_message[1]
+    rendered = " ".join(
+        [
+            *(md.value for md in how_i_answered(assistant).markdown),
+            *(caption.value for caption in sources_panel(assistant).caption),
+        ]
+    )
+    assert "no vector distance" in rendered
+    assert "distance None" not in rendered
+
+
+def test_the_sources_panel_names_the_retrievers_that_found_each_chunk(app, monkeypatch):
+    # The one-glance version of the same fact, where a reader already is: beside the citation.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    captions = " ".join(c.value for c in sources_panel(app.chat_message[1]).caption)
+    assert "vector + BM25" in captions
+
+
+def test_the_panel_survives_the_next_turn_like_the_sources_do(app, monkeypatch):
+    # The transcript is replayed from `session_state` on every rerun, so a panel rendered only
+    # on the turn it arrives is one a reader cannot go back to — the same defect the sources
+    # panel was fixed for in T3.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+    app.chat_input[0].set_value("And its competition?").run()
+
+    assert not app.exception
+    assert how_i_answered(app.chat_message[1]) is not None
+    assert how_i_answered(app.chat_message[3]) is not None
+
+
+def test_a_turn_that_did_not_search_renders_no_panel(app, monkeypatch):
+    # "Summarise that" was answered from the conversation. There is no retrieval to explain, and
+    # an empty panel promising an explanation is worse than no panel.
+    stub_answer(monkeypatch, a_turn_without_searching())
+    app.run()
+
+    app.chat_input[0].set_value("Summarise that in two lines.").run()
+
+    assert how_i_answered(app.chat_message[1]) is None
+
+
+def test_a_reply_whose_provenance_did_not_survive_renders_no_panel(app, monkeypatch):
+    # A checkpoint written before Phase 4 replays with chunks and no provenance. The sources
+    # panel still works — the citations are checkable — and the RAG-viz panel has nothing
+    # truthful to say, so it says nothing.
+    stub_answer(
+        monkeypatch,
+        AgentTurn(
+            text="An answer from before provenance was recorded [1].",
+            searches=(
+                Search(query="Tesla risk factors", contexts=(a_context(1, provenance=()),)),
+            ),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assert not app.exception
+    assert sources_panel(app.chat_message[1]) is not None
+    assert how_i_answered(app.chat_message[1]) is None

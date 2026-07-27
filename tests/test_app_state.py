@@ -185,7 +185,7 @@ def test_the_transcript_is_the_only_conversation_state_the_ui_keeps(app, stubbed
     app.chat_input[0].set_value(QUESTION).run()
 
     assert set(app.session_state.messages[0]) == {"role", "content"}
-    assert set(app.session_state.messages[1]) == {"role", "content", "contexts", "searched"}
+    assert set(app.session_state.messages[1]) == {"role", "content", "turn"}
     assert {"messages", "thread_id"} <= set(app.session_state.filtered_state)
     # Whatever else the UI keeps, none of it may be the conversation the agent is given: the
     # agent is handed one question and a thread id, and nothing else.

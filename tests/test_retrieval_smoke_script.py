@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from fakes import a_context
 
+from finbrief.retrieval.retrieve import Retrieval
 from finbrief.retrieval.smoke import SMOKE_QUERIES
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "retrieval_smoke.py"
@@ -35,12 +36,19 @@ def load_script():
     return module
 
 
-def expected_contexts(question: str):
-    """What a run that got every query right would retrieve, keyed off the query itself."""
+def expected_contexts(question: str) -> Retrieval:
+    """What a run that got every query right would retrieve, keyed off the query itself.
+
+    A `Retrieval`, because that is what `retrieve()` returns — and the script reads `.contexts`
+    off it. `variants` is the question alone: this check runs the plain vector path with
+    translation off (`SMOKE_STRATEGY`), so there is never a second variant.
+    """
     (query,) = [q for q in SMOKE_QUERIES if q.question == question]
     if query.is_control:
-        return (a_context(1, ticker="PFE", distance=1.07),)
-    return (a_context(1, ticker=query.expect_ticker, section=query.expect_section),)
+        contexts = (a_context(1, ticker="PFE", distance=1.07),)
+    else:
+        contexts = (a_context(1, ticker=query.expect_ticker, section=query.expect_section),)
+    return Retrieval(contexts=contexts, variants=(question,), translated=False)
 
 
 def wire(script, monkeypatch, tmp_path, store, retrieve=None):
@@ -58,6 +66,9 @@ def wire(script, monkeypatch, tmp_path, store, retrieve=None):
         "retrieve",
         retrieve or (lambda question, *, strategy, k, **kwargs: expected_contexts(question)),
     )
+    # `default_filings_store` is the shared handle production reads; the script builds its own,
+    # so patching only `build_filings_store` would leave a second constructor reachable.
+    monkeypatch.setattr(script, "build_filings_store", lambda settings=None: store)
 
 
 def test_an_un_ingested_collection_exits_2_before_spending_anything_on_embeddings(
@@ -72,7 +83,9 @@ def test_an_un_ingested_collection_exits_2_before_spending_anything_on_embedding
         monkeypatch,
         tmp_path,
         empty_filings_store,
-        retrieve=lambda *a, **k: retrieved.append(a) or (),
+        retrieve=lambda *a, **k: (
+            retrieved.append(a) or Retrieval(contexts=(), variants=(), translated=False)
+        ),
     )
 
     assert script.main([]) == 2
@@ -104,7 +117,9 @@ def test_a_wrong_top_hit_exits_1_and_still_writes_the_evidence(
 
     def retrieve_tesla_from_the_wrong_filer(question, *, strategy, k, **kwargs):
         if question.startswith("What are the main risk factors"):
-            return (a_context(1, ticker="F"),)
+            return Retrieval(
+                contexts=(a_context(1, ticker="F"),), variants=(question,), translated=False
+            )
         return expected_contexts(question)
 
     wire(script, monkeypatch, tmp_path, filings_store, retrieve_tesla_from_the_wrong_filer)
@@ -162,18 +177,25 @@ def test_a_first_ever_run_creates_the_evidence_directory(monkeypatch, tmp_path, 
 def test_the_run_checks_the_strategy_the_app_actually_ships(
     monkeypatch, tmp_path, filings_store, argv
 ):
-    # A smoke check that ran a strategy the app does not is checking nothing the demo
-    # depends on, and `settings.retrieval_strategy` is the pre-registered `hybrid` that
-    # `retrieve()` refuses (ADR-0005). The script must follow `BASELINE_STRATEGY`.
+    # This is a *wiring* check — "is retrieval reading the collection ingest wrote, embedded by
+    # the model that wrote it?" — so it deliberately runs the plain vector path rather than
+    # the shipped `hybrid + translation`. Every part of the shipped configuration it added
+    # would be a part that can absorb the failure it exists to catch: BM25 matches lexically
+    # and would find the right filing even if the embedding model had drifted, which is the
+    # drift this script is here to notice. `settings.retrieval_strategy` must therefore *not*
+    # be what it follows.
     script = load_script()
-    strategies = []
+    monkeypatch.setenv("FINBRIEF_RETRIEVAL_STRATEGY", "hybrid")
+    monkeypatch.setenv("FINBRIEF_QUERY_TRANSLATION", "true")
+    ran = []
 
-    def record(question, *, strategy, k, **kwargs):
-        strategies.append(strategy)
+    def record(question, *, strategy, k, translate=False, **kwargs):
+        ran.append((strategy, translate))
         return expected_contexts(question)
 
     wire(script, monkeypatch, tmp_path, filings_store, record)
 
     assert script.main(argv) == 0
 
-    assert strategies == [script.BASELINE_STRATEGY] * len(SMOKE_QUERIES)
+    assert ran == [(script.SMOKE_STRATEGY, script.SMOKE_TRANSLATION)] * len(SMOKE_QUERIES)
+    assert script.SMOKE_TRANSLATION is False, "no paid chat call inside a wiring check"

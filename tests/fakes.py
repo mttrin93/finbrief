@@ -14,6 +14,7 @@ from langchain_core.messages import AnyMessage
 from pydantic import Field
 
 from finbrief.ingestion.model import Section
+from finbrief.retrieval.hybrid import Retriever, Surfaced, rrf_contribution
 from finbrief.retrieval.retrieve import Context
 
 
@@ -23,16 +24,35 @@ def a_context(
     ticker: str = "TSLA",
     section: Section = Section.RISK_FACTORS,
     fiscal_year: int = 2025,
-    distance: float = 0.5,
+    distance: float | None = 0.5,
     body: str | None = None,
     accession: str = "0001628280-26-003952",
+    provenance: tuple[Surfaced, ...] | None = None,
 ) -> Context:
     """A retrieved chunk, for the callers that display or score one rather than fetch it.
 
     Shared because three test modules were each writing their own (issue #5 review), and a
     `Context` that drifts between them is a citation shape the UI and the smoke report can
     disagree about while both suites stay green.
+
+    The default `provenance` is the shape `vector` without translation produces: one row, the
+    analyst's own question through the vector retriever. That keeps `fused_score` consistent
+    with the rows rather than a free-floating number — the invariant `test_retrieve.py` asserts
+    of a real retrieval, and one a display test should not be able to violate by accident. Pass
+    `provenance=()` for a chunk read back from a pre-Phase-4 checkpoint.
     """
+    surfaced = (
+        provenance
+        if provenance is not None
+        else (
+            Surfaced(
+                variant=f"{ticker} {section.value}?",
+                retriever=Retriever.VECTOR,
+                rank=rank,
+                contribution=rrf_contribution(rank),
+            ),
+        )
+    )
     return Context(
         chunk_id=f"{accession}:{section.value}:{rank}",
         body=body if body is not None else f"{ticker} {section.value} body {rank}.",
@@ -43,6 +63,8 @@ def a_context(
         accession=accession,
         distance=distance,
         rank=rank,
+        fused_score=sum(row.contribution for row in surfaced),
+        provenance=surfaced,
     )
 
 

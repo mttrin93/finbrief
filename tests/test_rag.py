@@ -15,6 +15,7 @@ from finbrief.config import RetrievalStrategy, Settings
 from finbrief.ingestion.model import Section
 from finbrief.prompts import NO_CONTEXT_FALLBACK, SYSTEM_PROMPT
 from finbrief.rag import answer_question
+from finbrief.retrieval.retrieve import Retrieval
 
 
 class RecordingFakeChatModel(GenericFakeChatModel):
@@ -99,23 +100,39 @@ def test_the_chain_passes_its_strategy_and_k_to_retrieval(filings_store, monkeyp
 
     calls = []
 
-    def fake_retrieve(question, *, strategy, k, store, settings=None):
-        calls.append({"question": question, "strategy": strategy, "k": k})
-        return (a_context(ticker="AAPL", body="A risk factor."),)
+    def fake_retrieve(question, *, strategy, translate, k, store, settings=None, model=None):
+        calls.append(
+            {"question": question, "strategy": strategy, "translate": translate, "k": k}
+        )
+        return Retrieval(
+            contexts=(a_context(ticker="AAPL", body="A risk factor."),),
+            variants=(question,),
+            translated=translate,
+        )
 
     monkeypatch.setattr(rag, "retrieve", fake_retrieve)
 
     answer_question(
         QUESTION,
         strategy=RetrievalStrategy.VECTOR,
+        translate=True,
         k=7,
         store=filings_store,
         model=a_model(),
     )
 
-    assert calls == [{"question": QUESTION, "strategy": RetrievalStrategy.VECTOR, "k": 7}], (
-        "the chain must not translate or rewrite the question in Phase 2 (ADR-0004)"
-    )
+    # The question reaches the engine unchanged and translation happens *inside* it (ADR-0004).
+    # A chain that pre-decomposed would translate twice and part the measured path from the
+    # shipped one — so what this asserts is that the chain forwards the switch, never that it
+    # acts on it.
+    assert calls == [
+        {
+            "question": QUESTION,
+            "strategy": RetrievalStrategy.VECTOR,
+            "translate": True,
+            "k": 7,
+        }
+    ]
 
 
 def test_the_turn_is_logged_with_the_strategy_and_what_grounded_it(filings_store, caplog):

@@ -58,10 +58,11 @@ def renumbered(messages: Iterable[AnyMessage]) -> list[ToolMessage]:
     """
     updates: list[ToolMessage] = []
     next_number = 1
-    for message, payloads in search_results(messages):
-        owed = tuple(
+    for message, artifact in search_results(messages):
+        payloads = artifact["chunks"]
+        owed = [
             {**payload, "rank": next_number + offset} for offset, payload in enumerate(payloads)
-        )
+        ]
         next_number += len(owed)
         if owed == payloads:
             continue
@@ -69,7 +70,11 @@ def renumbered(messages: Iterable[AnyMessage]) -> list[ToolMessage]:
         updates.append(
             ToolMessage(
                 content=sources_block(contexts),
-                artifact=owed,
+                # The rest of the retrieval is carried through untouched. The variants a
+                # translation produced are not numbered and are not the register's to rewrite;
+                # dropping them here would empty the RAG-viz panel on every renumbered reply,
+                # which is every reply after the first search in a conversation.
+                artifact={**artifact, "chunks": owed},
                 name=message.name,
                 tool_call_id=message.tool_call_id,
                 id=message.id,

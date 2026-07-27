@@ -26,15 +26,22 @@ from finbrief.agent.agent import (
     build_agent,
     build_checkpointer,
 )
-from finbrief.config import RetrievalStrategy, Settings
+from finbrief.config import Settings
 from finbrief.llm import build_chat_model
 from finbrief.tools.search_filings import TOOL_NAME
 
+#: The configuration these tests build the agent with. **`vector`, translation off**, and
+#: explicitly so: what this file is for is the agent's wiring — memory, the register, the
+#: divergence log — and the shipped default would put a paid chat call (the query planner) and a
+#: BM25 index in front of every one of those assertions without sharpening any of them. Which
+#: configuration the agent *reads* is its own test, below.
 SETTINGS = Settings.from_env(
     {
         "OPENROUTER_API_KEY": "sk-test",
         "FINBRIEF_CHAT_MODEL": "openai/gpt-4o-mini",
         "FINBRIEF_RETRIEVAL_K": "3",
+        "FINBRIEF_RETRIEVAL_STRATEGY": "vector",
+        "FINBRIEF_QUERY_TRANSLATION": "false",
     }
 )
 
@@ -66,14 +73,17 @@ def a_fan_out(*queries: str) -> AIMessage:
     )
 
 
-def an_agent(tmp_path, store, script, *, name="checkpoints.sqlite"):
+def an_agent(
+    tmp_path, store, script, *, name="checkpoints.sqlite", settings=None, planner=None
+):
     """The real agent, with a scripted model and a real checkpoint file."""
     model = ScriptedChatModel(messages=iter(script))
     agent = build_agent(
         model=model,
-        settings=SETTINGS,
+        settings=settings or SETTINGS,
         store=store,
         checkpointer=build_checkpointer(path=str(tmp_path / name)),
+        translation_model=planner,
     )
     return agent, model
 
@@ -348,13 +358,71 @@ def test_a_turn_is_logged_with_what_it_searched_and_grounded(tmp_path, filings_s
     assert turn.fields["latency_ms"] >= 0
 
 
-def test_the_shipped_path_runs_the_strategy_that_exists_not_the_configured_one():
-    # `config.DEFAULT_STRATEGY` is the pre-registered `hybrid` (ADR-0005), which
-    # `retrieve()` refuses until Phase 4. If this constant ever tracked the setting again,
-    # the app's first question would raise instead of answering.
-    from finbrief.agent.agent import BASELINE_STRATEGY
+def test_the_shipped_path_runs_the_configuration_it_is_configured_with(tmp_path, filings_store):
+    # Until Phase 4 this asserted the opposite — a `BASELINE_STRATEGY` constant pinned to
+    # `vector`, because `config.DEFAULT_STRATEGY` was the pre-registered `hybrid` (ADR-0005) and
+    # `retrieve()` refused it. Now that hybrid exists, the shipped path must honour the setting:
+    # a constant left in place here would make the sidebar advertise a configuration no answer
+    # used, and ADR-0005's pre-registered default would never actually ship.
+    #
+    # Read off the retrieval this turn actually ran, not off the wiring: the agent hands
+    # `search_filings` a configuration and the tool hands it to `retrieve()`, and the only
+    # evidence that survives all of that is the provenance on the chunks that came back.
+    shipped = Settings.from_env(
+        {
+            "OPENROUTER_API_KEY": "sk-test",
+            "FINBRIEF_RETRIEVAL_K": "3",
+            "FINBRIEF_RETRIEVAL_STRATEGY": "hybrid",
+            "FINBRIEF_QUERY_TRANSLATION": "true",
+            "FINBRIEF_MAX_SUB_QUERIES": "1",
+        }
+    )
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_search("Apple supply chain risk"), AIMessage("Apple flags concentration [1].")],
+        settings=shipped,
+        planner=ScriptedChatModel(messages=iter([AIMessage("Apple supplier concentration")])),
+    )
 
-    assert BASELINE_STRATEGY is RetrievalStrategy.VECTOR
+    turn = answer("What are Apple's supply-chain risks?", thread_id="t-1", agent=agent)
+
+    (search,) = turn.searches
+    assert search.translated is True
+    assert search.variants == ("Apple supply chain risk", "Apple supplier concentration")
+    retrievers = {row.retriever.value for c in turn.contexts for row in c.provenance}
+    assert retrievers == {"vector", "bm25"}, "hybrid ran both retrievers over both variants"
+
+
+def test_the_configured_strategy_is_read_once_and_not_restated_by_the_tool():
+    # `build_search_filings` requires both switches rather than defaulting them, so there is
+    # exactly one place the shipped configuration is named. A default there would be a second
+    # place for it to be wrong — one that keeps working while disagreeing with the sidebar.
+    import inspect
+
+    from finbrief.tools.search_filings import build_search_filings
+
+    parameters = inspect.signature(build_search_filings).parameters
+    assert parameters["strategy"].default is inspect.Parameter.empty
+    assert parameters["translate"].default is inspect.Parameter.empty
+
+
+def test_a_search_reports_the_variants_it_ran_for_the_rag_viz_panel(tmp_path, filings_store):
+    # User story 5 through the agent seam: the panel needs the variants, and a sub-query that
+    # surfaced nothing is invisible in `contexts` — so `Search` has to carry them itself.
+    # Translation off here, which is the case that must still be honest rather than empty.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_search("Apple supply chain risk"), AIMessage("Apple flags concentration [1].")],
+    )
+
+    turn = answer("What are Apple's supply-chain risks?", thread_id="t-1", agent=agent)
+
+    (search,) = turn.searches
+    assert search.variants == ("Apple supply chain risk",)
+    assert search.sub_queries == ()
+    assert search.translated is False
 
 
 def test_the_agent_binds_the_knowledge_base_as_a_tool_not_as_a_chain(tmp_path, filings_store):
