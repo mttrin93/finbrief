@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 import pytest
+from fakes import KeywordEmbeddings
 
 from finbrief import config
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
@@ -93,6 +94,35 @@ def recorded_filing() -> ExtractedFiling:
 def recorded_sections() -> dict[str, str]:
     """Individual real Section texts that broke something: pointers and a boundary miss."""
     return json.loads((FIXTURES / "section-samples.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def filings_store(tmp_path, recorded_filing):
+    """A real on-disk `filings` collection holding Apple's real FY2025 Sections.
+
+    Real Chroma and real chunks, a fake embedding: retrieval behaviour (ordering, `k`,
+    metadata) is the store's, and nothing reaches the network. Deliberately *not* the
+    ingested `data/chroma` — that index is only searchable by the paid model that wrote
+    it, so pointing a test at it would either need a key or return noise.
+    """
+    from finbrief.ingestion.chunking import chunk_filing
+    from finbrief.retrieval.vectorstore import build_filings_store, write_chunks
+
+    store = build_filings_store(
+        persist_directory=str(tmp_path / "chroma"), embeddings=KeywordEmbeddings()
+    )
+    write_chunks(store, chunk_filing(recorded_filing))
+    return store
+
+
+@pytest.fixture
+def empty_filings_store(tmp_path):
+    """A `filings` collection with nothing in it — the retrieval-level fallback's input."""
+    from finbrief.retrieval.vectorstore import build_filings_store
+
+    return build_filings_store(
+        persist_directory=str(tmp_path / "empty-chroma"), embeddings=KeywordEmbeddings()
+    )
 
 
 @pytest.fixture(autouse=True)
