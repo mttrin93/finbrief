@@ -78,6 +78,23 @@ with st.sidebar:
     )
 
 
+def as_markdown(text: str) -> str:
+    """Escape what Streamlit's Markdown would swallow, and leave the rest to render.
+
+    Only `$`, and for the same reason `render_sources` reaches for `st.text` below:
+    `st.markdown` parses `$…$` as KaTeX. The answer is the dollar-densest surface on the
+    page — the persona is asked to be quantitative where the source is — so "net sales rose
+    to $416,161 million from $391,035 million" renders as prose plus one maths expression,
+    and both figures are gone from the headline sentence of a finance assistant.
+
+    `st.text` is the wrong instrument here, unlike for a source body: the persona answers in
+    bullets and short paragraphs and the `[n]` markers sit in that prose, so the Markdown
+    has to keep rendering. Escaping costs a literal `\\$` inside a fenced code block, which
+    this persona has no reason to emit.
+    """
+    return text.replace("$", r"\$")
+
+
 def render_sources(contexts: tuple[Context, ...]) -> None:
     """The sources panel: what each inline `[n]` in the answer above resolves to.
 
@@ -120,21 +137,25 @@ if "messages" not in st.session_state:
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        st.markdown(as_markdown(message["content"]))
         if message["role"] == "assistant":
-            # `.get`, because a live session's transcript outlives a code reload: rows
-            # written by an older shape would otherwise `KeyError` on the first rerun after
-            # a deploy (`test_a_transcript_row_from_an_older_shape_replays`). That the
-            # current shape *does* carry its contexts across a rerun — the regression this
-            # tolerance could otherwise hide — is
-            # `test_the_sources_panel_survives_the_next_turn`.
-            render_sources(message.get("contexts", ()))
+            # `.get` returning `None`, not `()`, because a live session's transcript
+            # outlives a code reload: rows written by an older shape would otherwise
+            # `KeyError` on the first rerun after a deploy
+            # (`test_a_transcript_row_from_an_older_shape_replays`). The two absences are
+            # different facts and only one is a setup problem — "this row predates
+            # contexts" must not raise `render_sources`' empty-collection banner over an
+            # answer that was grounded when it was written. That the current shape *does*
+            # carry its contexts across a rerun — the regression this tolerance could
+            # otherwise hide — is `test_the_sources_panel_survives_the_next_turn`.
+            if (contexts := message.get("contexts")) is not None:
+                render_sources(contexts)
             st.caption(DISCLAIMER)
 
 if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(as_markdown(prompt))
 
     with st.chat_message("assistant"):
         try:
@@ -143,7 +164,7 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
         except Exception as exc:  # noqa: BLE001 — tiered error handling lands in Phase 5
             st.error(f"The model call failed: {exc}", icon=":material/error:")
         else:
-            st.markdown(reply.text)
+            st.markdown(as_markdown(reply.text))
             render_sources(reply.contexts)
             st.caption(DISCLAIMER)
             st.session_state.messages.append(

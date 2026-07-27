@@ -206,6 +206,37 @@ def test_a_source_body_renders_the_filers_words_character_identical(
     assert [text.value for text in sources.text] == [body]
 
 
+def test_an_answers_dollar_figures_survive_rendering(app, monkeypatch):
+    # The same KaTeX hazard as the sources panel, on the surface it costs the most: this is
+    # the sentence a reader takes the number from, and the persona is asked to be
+    # quantitative where the source is. Unescaped, `$416,161 million from $` is parsed as a
+    # maths expression and both figures vanish from the answer.
+    figures = "Net sales rose to $416,161 million from $391,035 million [1]."
+    stub_answer(monkeypatch, a_grounded_answer(text=figures))
+    app.run()
+
+    app.chat_input[0].set_value("How did Apple's net sales move?").run()
+
+    assert not app.exception
+    rendered = [md.value for md in app.chat_message[1].markdown]
+    assert r"Net sales rose to \$416,161 million from \$391,035 million [1]." in rendered
+    assert figures not in rendered, "an unescaped `$` is the whole defect"
+
+
+def test_a_dollar_figure_in_the_question_survives_the_echo(app, monkeypatch):
+    # The user's own words are echoed through the same `st.markdown`, so a question about a
+    # threshold loses it before the answer is even asked for.
+    stub_answer(monkeypatch)
+    app.run()
+
+    app.chat_input[0].set_value("Did Tesla's revenue pass $100 billion in $USD?").run()
+
+    assert not app.exception
+    assert r"Did Tesla's revenue pass \$100 billion in \$USD?" in [
+        md.value for md in app.chat_message[0].markdown
+    ]
+
+
 def test_the_sources_panel_survives_the_next_turn(app, monkeypatch):
     # The transcript is replayed from `st.session_state` on every rerun, so citations that
     # are only rendered on the turn they arrive lose their sources the moment anything else
@@ -286,6 +317,10 @@ def test_a_transcript_row_from_an_older_shape_replays(app, monkeypatch):
         md.value for md in assistant.markdown
     ]
     assert not assistant.expander
+    # And no banner: "this row predates contexts" is not "your collection is empty". Sending
+    # a reviewer to re-run a paid ingest because an old answer replayed is the worse failure
+    # of the two, and it fires on every rerun until the row scrolls out of the transcript.
+    assert not app.warning
     assert DISCLAIMER in [caption.value for caption in assistant.caption]
 
 
