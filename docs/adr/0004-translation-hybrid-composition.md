@@ -247,6 +247,15 @@ right fix would be to state the rule as name-coverage rather than length. Record
 reader knows which of the two the constant is really standing in for. The per-filer coverage table
 is on #4, where it constrains golden-set sampling.
 
+**A second filer gains no ticker form, for an unrelated reason: META.** Its alias `Meta` differs
+from its ticker only in **case**, so the rewrite of `Meta advertising revenue` is `META advertising
+revenue` — a different string that `hybrid.tokenize` lowercases to the *same* term list. Left in,
+BM25 scored two identical candidate lists and RRF counted every one of the original question's
+votes twice, at no additional evidence: the duplication `normalised()` returns `None` to prevent,
+arriving through the one comparison that could not see it. It is now compared case-insensitively
+(issue #6 review). Nothing measured is lost, and the paragraph above says why — META is the "bar
+one" in Ford's coverage claim, the filer whose own name least needs a ticker to be found.
+
 ---
 
 ### 9. Where `retrieve()` is deterministic, and where it is not

@@ -41,7 +41,35 @@ logger = logging.getLogger(__name__)
 #: Leading list furniture a model adds however plainly it was asked not to: `- `, `* `, `• `,
 #: `1. `, `1) `. Stripped rather than prompted away, because what is left of it gets embedded
 #: and BM25-indexed — a query beginning `1. ` carries a term the corpus does not.
-_MARKER = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
+#:
+#: An ordinal must be **followed by whitespace or end the line**, because a decimal is not list
+#: furniture: without that, `1.5x leverage for TSLA` was stripped to `5x leverage for TSLA` and
+#: the corrupted form was what got embedded and indexed — the exact failure this pattern exists
+#: to prevent, inflicted by the pattern itself. `1.` alone still strips to nothing and is then
+#: dropped as blank, which is why the lookahead admits end-of-line.
+_MARKER = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)](?=\s|$)\s*)")
+
+#: A refusal that arrived as prose instead of as the empty reply the prompt asks for.
+#:
+#: The prompt's own instruction is what makes this the likeliest non-query line a planner
+#: returns: "if the question is already one specific thing a filing answers, output nothing at
+#: all". A model that complies conversationally rather than literally writes `None.` or `No
+#: sub-queries needed.`, and every other rule here would let that through as a variant — one
+#: paid embedding, plus a vector and a BM25 candidate list whose top hit receives the **same**
+#: RRF vote as the analyst's own question's top hit. `none` is not even a rare term in the
+#: corpus (`Item 3. Legal Proceedings — None.`), so those votes land, and displacing the target
+#: chunk by a rank is what ADR-0004 §6 measured spurious votes doing. It bites hardest on the
+#: atomic and exact-identifier questions the prompt is telling the model *not* to decompose.
+#:
+#: A **closed set**, anchored whole-line: a phrase it misses keeps today's behaviour, while
+#: nothing a 10-K sub-query could say matches it. `Nothing to report about TSLA` is not matched
+#: — only the line that is a refusal and nothing else.
+_REFUSAL = re.compile(
+    r"^(?:none|n/?a|nothing|no\s+(?:further\s+)?"
+    r"(?:sub[-\s]?quer(?:y|ies)|sub[-\s]?questions?|decomposition)"
+    r"(?:\s+(?:needed|required|necessary))?)\W*$",
+    re.IGNORECASE,
+)
 
 #: Every Universe company name form, longest first, as one alternation.
 #:
@@ -84,11 +112,19 @@ def normalised(question: str) -> str | None:
     extra variant rather than three — the added retrieval cost stays flat in the question's
     breadth. Returns `None` when the result would equal the input, since a duplicate variant
     costs an embedding and lets RRF count one candidate list twice.
+
+    **Equal up to case is equal**, and META is why: its alias `Meta` differs from its ticker
+    only in case, so `Meta advertising revenue` → `META advertising revenue` used to pass a
+    byte-comparison while `hybrid.tokenize` lowercases both to the *same term list*. BM25 then
+    scored two identical candidate lists and RRF counted every one of the original's votes
+    twice — the duplication this guard is here to stop, at double weight. Nothing is lost by
+    suppressing it: a name that already reads as its own ticker is a name BM25 can already
+    find, which is what `MIN_LEXICAL_TICKER_CHARS`' measurements record for META.
     """
     rewritten = _COMPANY_NAME.sub(
         lambda match: TICKER_BY_COMPANY_NAME[match.group(0).lower()], question
     )
-    return rewritten if rewritten != question else None
+    return rewritten if rewritten.casefold() != question.casefold() else None
 
 
 def added_variants(variants: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
@@ -120,12 +156,14 @@ def sub_queries(reply: str, *, known: Iterable[str], limit: int) -> tuple[str, .
     """A model's free text as at most `limit` sub-queries, in the order it offered them.
 
     Pure, so the parsing can be tested against every plausible formatting of "one per line"
-    without a model in the way. Four things are dropped, each because it would otherwise be
+    without a model in the way. Five things are dropped, each because it would otherwise be
     embedded, retrieved and fused as though the analyst had asked it:
 
     - **list furniture and blank lines** (see `_MARKER`);
     - **a line ending in a colon** — "Here are three sub-queries:" is a preamble, and a genuine
       query does not end in one. Narrow on purpose;
+    - **a prose refusal** — "None.", "No sub-queries needed." (see `_REFUSAL`). The prompt asks
+      for the empty reply and this is what a model sends instead;
     - **a repeat of anything in `known`**, compared case-insensitively on stripped text: neither
       casing nor whitespace is a translation, and a variant already in play retrieves it
       already. Keeping it would cost a second embedding *and* let RRF count one candidate list
@@ -147,7 +185,7 @@ def sub_queries(reply: str, *, known: Iterable[str], limit: int) -> tuple[str, .
     kept: list[str] = []
     for line in reply.splitlines():
         candidate = _MARKER.sub("", line).strip()
-        if not candidate or candidate.endswith(":"):
+        if not candidate or candidate.endswith(":") or _REFUSAL.match(candidate):
             continue
         fingerprint = candidate.casefold()
         if fingerprint in seen:

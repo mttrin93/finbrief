@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 
 from finbrief.config import TICKER_BY_COMPANY_NAME
 from finbrief.prompts import query_translation_prompt
+from finbrief.retrieval.hybrid import tokenize
 from finbrief.retrieval.query_translation import normalised, sub_queries, translate
 
 QUESTION = "Is Tesla in trouble?"
@@ -204,6 +205,37 @@ def test_a_refusal_to_decompose_yields_no_sub_queries():
     assert sub_queries("-\n*\n", known=[QUESTION], limit=3) == ()
 
 
+@pytest.mark.parametrize(
+    "reply",
+    ["None.", "N/A", "Nothing", "No sub-queries needed.", "no subqueries", "No decomposition"],
+)
+def test_a_prose_refusal_is_not_kept_as_a_variant(reply):
+    # The other way a model says "nothing": prose, because the prompt's own "output nothing at
+    # all" invites a conversational reply. Kept, that line is a paid embedding plus two
+    # candidate lists whose top hit gets the same RRF vote as the analyst's question's — and
+    # `none` is a term the corpus carries, so the vote lands. It arrives on the atomic questions
+    # the prompt is telling the model not to decompose, which is the bucket that can least
+    # afford a displaced rank.
+    assert sub_queries(reply, known=[QUESTION], limit=3) == ()
+
+
+def test_a_refusal_is_recognised_whole_line_only():
+    # Closed set, anchored: a line that merely *starts* with one of those words is still a query
+    assert sub_queries("Nothing to report in Tesla's Item 3", known=[QUESTION], limit=3) == (
+        "Nothing to report in Tesla's Item 3",
+    )
+
+
+def test_a_decimal_is_not_mistaken_for_list_furniture():
+    # `1.5x` is a ratio, not the `1. ` a model prefixes a list with. Stripping it embeds and
+    # indexes `5x leverage`, which is the corruption `_MARKER` exists to prevent.
+    assert sub_queries("1.5x leverage for Tesla", known=[QUESTION], limit=3) == (
+        "1.5x leverage for Tesla",
+    )
+    # And a bare ordinal is still furniture, so it strips to nothing and drops as blank.
+    assert sub_queries("1.\n2)", known=[QUESTION], limit=3) == ()
+
+
 # --------------------------------------------------------------------------------------
 # Entity normalisation: the company name an analyst types -> the ticker the index carries
 # --------------------------------------------------------------------------------------
@@ -276,7 +308,18 @@ def test_a_name_is_matched_on_word_boundaries_not_as_a_substring():
     # `Meta` must not fire inside `Metabolism`, and `Lilly` must not fire inside `Lillybrook`.
     # A substring match would corrupt a word into a ticker and embed the wreckage.
     assert normalised("metabolism and metadata") is None
-    assert normalised("Meta advertising revenue") == "META advertising revenue"
+    assert normalised("lillybrook capital") is None
+    assert normalised("Meta Platforms advertising revenue") == "META advertising revenue"
+
+
+def test_a_rewrite_that_differs_only_in_case_is_not_a_variant():
+    # META's alias `Meta` differs from its ticker only in case, so a byte-comparison called
+    # `META advertising revenue` a new variant while `hybrid.tokenize` lowercases both to the
+    # same term list — BM25 scored the identical candidate list twice and RRF counted every one
+    # of the original's votes twice. `Eli Lilly` -> `LLY` still differs in more than case.
+    assert normalised("Meta advertising revenue") is None
+    assert tokenize("Meta advertising revenue") == tokenize("META advertising revenue")
+    assert normalised("Eli Lilly revenue") == "LLY revenue"
 
 
 def test_the_longest_name_form_wins_so_a_legal_name_is_not_half_substituted():
