@@ -86,7 +86,9 @@ def answer_question(
         logger,
         "rag_answer",
         strategy=strategy.value,
-        k=k,
+        # `k` is deliberately absent: it is a *request*, and this layer may be holding
+        # `None` for "whatever `settings.retrieval_k` says". The `retrieval` event logs the
+        # resolved value, so reporting it again here could only disagree with it.
         contexts=len(contexts),
         grounded=bool(contexts),
         # Sizes and provenance, never the text of the question or the answer: these lines
