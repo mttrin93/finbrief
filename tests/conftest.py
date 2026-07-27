@@ -125,6 +125,40 @@ def empty_filings_store(tmp_path):
     )
 
 
+@pytest.fixture
+def agent_builds(monkeypatch):
+    """Stop an `AppTest` from constructing a real agent, and count the attempts.
+
+    Shared by both app-level test files because the app builds its agent under
+    `@st.cache_resource`, and an unpatched build would open a SQLite checkpoint file *in the
+    repo's `data/`* on any test that sends a message — a hermetic breach (CLAUDE.md) that no
+    assertion in either file would notice. Seam 3 stubs the agent entirely anyway: what the
+    app layer is tested for is which `thread_id` a turn lands on and what the page renders,
+    never what an agent does with either.
+
+    Clearing `st.cache_resource` on both sides is what keeps the stub honest: the cache is
+    keyed by qualified name, not by function identity, so without it one test's cached stub is
+    handed to the next — and a test asserting "the same agent survived" would pass on a stale
+    object from a previous test.
+
+    Yields the list of agents built, so a test can assert the cache built exactly one.
+    """
+    import streamlit as st
+
+    from finbrief.agent import agent as agent_module
+
+    st.cache_resource.clear()
+    built: list[object] = []
+
+    def fake_build_agent(**kwargs):
+        built.append(object())
+        return built[-1]
+
+    monkeypatch.setattr(agent_module, "build_agent", fake_build_agent)
+    yield built
+    st.cache_resource.clear()
+
+
 @pytest.fixture(autouse=True)
 def pristine_package_logger():
     """Restore the `finbrief` logger, so `configure_logging` in one test can't mute another."""

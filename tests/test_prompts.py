@@ -16,9 +16,11 @@ from __future__ import annotations
 from fakes import a_context
 
 from finbrief.prompts import (
+    AGENT_SYSTEM_PROMPT,
     DISCLAIMER,
     GROUNDING_SCOPE,
     NO_CONTEXT_FALLBACK,
+    SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
     format_contexts,
     user_message,
@@ -30,6 +32,24 @@ def test_the_model_is_told_the_same_scope_the_page_shows():
     # copy is always the one on screen. `app/Home.py` renders `GROUNDING_SCOPE` as its
     # caption; this is what says the persona reads from the same constant.
     assert GROUNDING_SCOPE in SYSTEM_PROMPT
+
+
+def test_the_verbatim_rule_is_stated_once_and_pointed_at_from_the_agents_prompt():
+    # The T4 review's finding: the tool's description and the agent's system prompt each
+    # carried the verbatim rule's *exception* in their own wording, and a rule a model reads
+    # twice in two wordings is a rule it can pick between — it picks the looser one. The
+    # description owns both halves; the prompt sends the model there and paraphrases neither.
+    assert "VERBATIM" in SEARCH_FILINGS_DESCRIPTION
+    assert "One exception" in SEARCH_FILINGS_DESCRIPTION
+    assert "pronoun" in SEARCH_FILINGS_DESCRIPTION
+
+    assert "verbatim" not in AGENT_SYSTEM_PROMPT.lower(), (
+        "the agent's prompt must not restate the rule it points at"
+    )
+    assert "pronoun" not in AGENT_SYSTEM_PROMPT.lower()
+    # It still has to send the model to the description, or nothing states the rule at all on
+    # the path that matters.
+    assert "description" in AGENT_SYSTEM_PROMPT
 
 
 def test_the_model_is_never_asked_to_remember_the_disclaimer():

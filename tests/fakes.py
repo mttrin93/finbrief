@@ -9,6 +9,9 @@ from __future__ import annotations
 import math
 
 from langchain_core.embeddings import Embeddings
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AnyMessage
+from pydantic import Field
 
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context
@@ -41,6 +44,39 @@ def a_context(
         distance=distance,
         rank=rank,
     )
+
+
+class ScriptedChatModel(GenericFakeChatModel):
+    """A chat model that returns pre-written replies and keeps the prompts it was handed.
+
+    Two reasons it is not `GenericFakeChatModel` itself. It answers `bind_tools`, which
+    `BaseChatModel` refuses by default — so a stock fake cannot drive an agent loop at all;
+    returning `self` puts the script, rather than the model, in charge of which tools fire
+    with which arguments, which is exactly what a test of the agent's *wiring* wants to
+    control. And it records `prompts`, because half of what there is to assert about memory
+    is what the model was *shown*: a follow-up whose prompt does not contain the earlier turn
+    has no conversation to resolve "its debt" against, however well it answers.
+
+    Nothing here checks the script against the bound tools, deliberately — a test that
+    scripts a call to a tool the agent does not have is testing error handling, and should be
+    able to.
+    """
+
+    #: Every message list this model has been called with, oldest call first.
+    prompts: list[list[AnyMessage]] = Field(default_factory=list)
+
+    #: The keyword arguments of every `bind_tools` call, oldest first. Recorded because some
+    #: of what the agent asks of a provider is expressed only there — `parallel_tool_calls`
+    #: is a request the binding makes, invisible in the messages and in the reply.
+    bind_kwargs: list[dict] = Field(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs):  # the script decides the calls, not the model
+        self.bind_kwargs.append(dict(kwargs))
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.prompts.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 #: The fake embedding's whole vocabulary: terms a 10-K question actually turns on, so a

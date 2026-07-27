@@ -1,10 +1,10 @@
 """The Streamlit layer via AppTest: rendering and the round-trip wiring only.
 
-The agent is stubbed entirely — no LLM calls, no retrieval (spec, testing seam 3).
-Session/thread_id behaviour arrives in Phase 3 as `test_app_state.py` (ADR-0008); this file
-is the CI smoke test that the page renders what a grounded answer needs — the answer, its
-citations' sources, the disclaimer, and the grounding-scope disclosure — and that a message
-reaches the agent seam.
+The agent is stubbed entirely — no LLM calls, no retrieval, no checkpoint file (spec, testing
+seam 3). This file is the CI smoke test that the page renders what a grounded answer needs —
+the answer, its citations' sources, the disclaimer, and the grounding-scope disclosure — and
+that a message reaches the agent seam. `test_app_state.py` owns session and thread_id
+behaviour (ADR-0008).
 """
 
 from pathlib import Path
@@ -14,11 +14,16 @@ from fakes import a_context
 from streamlit.testing.v1 import AppTest
 
 from finbrief.agent import agent
+from finbrief.agent.agent import AgentTurn, Search
 from finbrief.ingestion.model import Section
 from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK
-from finbrief.rag import GroundedAnswer
 
 APP = str(Path(__file__).parents[1] / "app" / "Home.py")
+
+
+@pytest.fixture(autouse=True)
+def never_build_a_real_agent(agent_builds):
+    """The app builds its agent to answer a message; here nothing may build a real one."""
 
 
 @pytest.fixture
@@ -35,19 +40,32 @@ def a_tesla_risk_context(rank: int):
     )
 
 
-def a_grounded_answer(text="Tesla identifies supply-chain concentration [1][2].", contexts=2):
-    return GroundedAnswer(
+def a_turn(
+    text="Tesla identifies supply-chain concentration [1][2].", contexts=2, *, query=None
+):
+    """A turn that searched once and got `contexts` chunks back."""
+    return AgentTurn(
         text=text,
-        contexts=tuple(a_tesla_risk_context(rank) for rank in range(1, contexts + 1)),
+        searches=(
+            Search(
+                query=query or "What are Tesla's risk factors?",
+                contexts=tuple(a_tesla_risk_context(rank) for rank in range(1, contexts + 1)),
+            ),
+        ),
     )
 
 
-def stub_answer(monkeypatch, answer=None):
-    """Replace the agent seam with a fixed grounded answer, recording the questions."""
-    asked = []
-    result = answer if answer is not None else a_grounded_answer()
+def a_turn_without_searching(text="Two risks, briefly: […]"):
+    """A turn answered from the conversation — no search, so nothing to cite and no banner."""
+    return AgentTurn(text=text, searches=())
 
-    def fake_answer(question):
+
+def stub_answer(monkeypatch, answer=None):
+    """Replace the agent seam with a fixed turn, recording the questions."""
+    asked = []
+    result = answer if answer is not None else a_turn()
+
+    def fake_answer(question, *, thread_id, agent):  # noqa: ARG001 — state is seam 3's other file
         asked.append(question)
         return result
 
@@ -192,9 +210,14 @@ def test_a_source_body_renders_the_filers_words_character_identical(
     body = a_dollar_bearing_body(recorded_filing)
     stub_answer(
         monkeypatch,
-        GroundedAnswer(
+        AgentTurn(
             text="Apple reports net sales by segment [1].",
-            contexts=(a_context(1, ticker="AAPL", section=Section.MDA, body=body),),
+            searches=(
+                Search(
+                    query="How did Apple's segments perform?",
+                    contexts=(a_context(1, ticker="AAPL", section=Section.MDA, body=body),),
+                ),
+            ),
         ),
     )
     app.run()
@@ -212,7 +235,7 @@ def test_an_answers_dollar_figures_survive_rendering(app, monkeypatch):
     # quantitative where the source is. Unescaped, `$416,161 million from $` is parsed as a
     # maths expression and both figures vanish from the answer.
     figures = "Net sales rose to $416,161 million from $391,035 million [1]."
-    stub_answer(monkeypatch, a_grounded_answer(text=figures))
+    stub_answer(monkeypatch, a_turn(text=figures))
     app.run()
 
     app.chat_input[0].set_value("How did Apple's net sales move?").run()
@@ -259,9 +282,9 @@ def test_the_sources_panel_survives_the_next_turn(app, monkeypatch):
 
 
 def test_an_ungrounded_answer_renders_no_empty_sources_panel(app, monkeypatch):
-    # `retrieve()` found nothing, so `rag` returned the fallback (spec §Tools, tiered error
+    # The search returned nothing, so the answer is the fallback (spec §Tools, tiered error
     # handling). An empty "Sources (0)" panel would suggest the answer was grounded.
-    stub_answer(monkeypatch, GroundedAnswer(text=NO_CONTEXT_FALLBACK, contexts=()))
+    stub_answer(monkeypatch, a_turn(text=NO_CONTEXT_FALLBACK, contexts=0))
     app.run()
 
     app.chat_input[0].set_value("What is Nestle's dividend?").run()
@@ -277,7 +300,7 @@ def test_retrieving_nothing_names_the_un_ingested_collection_as_the_cause(app, m
     # ingested, or the app is pointed at the wrong directory. The fallback text alone reads
     # as "your question was out of scope" and sends a reviewer who simply has not run ingest
     # looking for a retrieval bug (issue #5 review).
-    stub_answer(monkeypatch, GroundedAnswer(text=NO_CONTEXT_FALLBACK, contexts=()))
+    stub_answer(monkeypatch, a_turn(text=NO_CONTEXT_FALLBACK, contexts=0))
     app.run()
 
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
@@ -296,6 +319,39 @@ def test_a_grounded_answer_raises_no_setup_banner(app, monkeypatch):
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
     assert not app.warning
+
+
+def test_a_turn_answered_from_the_conversation_shows_no_panel_and_no_banner(app, monkeypatch):
+    # The agent decides whether to retrieve, so "summarise that" is answered from the
+    # conversation: no sources, and nothing wrong. Treated as an empty retrieval it would fire
+    # the un-ingested banner and send a reviewer to re-run a paid ingest because a follow-up
+    # worked; given an empty panel it would claim citations the answer does not make.
+    stub_answer(monkeypatch, a_turn_without_searching())
+    app.run()
+
+    app.chat_input[0].set_value("Summarise that in two lines.").run()
+
+    assert not app.exception
+    assistant = app.chat_message[1]
+    assert "Two risks, briefly: […]" in [md.value for md in assistant.markdown]
+    assert not assistant.expander
+    assert not app.warning
+    # The disclaimer is still owed — it is not a property of having retrieved something.
+    assert DISCLAIMER in [caption.value for caption in assistant.caption]
+
+
+def test_a_turn_that_did_not_search_replays_without_a_banner(app, monkeypatch):
+    # And it has to survive the next rerun as itself: without `searched` in the transcript row
+    # the replay cannot tell it from an empty retrieval, so the banner appears one turn late.
+    stub_answer(monkeypatch, a_turn_without_searching())
+    app.run()
+
+    app.chat_input[0].set_value("Summarise that in two lines.").run()
+    app.run()
+
+    assert not app.exception
+    assert not app.warning
+    assert app.session_state.messages[1]["searched"] is False
 
 
 def test_a_transcript_row_from_an_older_shape_replays(app, monkeypatch):
@@ -358,7 +414,7 @@ def test_a_bad_log_level_reports_a_clear_error_and_stops(app, monkeypatch):
 
 
 def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
-    def boom(question):
+    def boom(question, *, thread_id, agent):  # noqa: ARG001
         raise RuntimeError("upstream refused")
 
     monkeypatch.setattr(agent, "answer", boom)

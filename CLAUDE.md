@@ -63,6 +63,9 @@ or asserts against noise.
   (`HEADING_LINE_MAX_CHARS`, `POINTER_MAX_CHARS`, `POINTER_RESIDUE_MAX_WORDS`) and
   `CHUNK_OVERLAP_CHARS` in the chunker. Do not move them into `config.py` or make them
   env-overridable; each is calibrated against measured filings and documented where it sits.
+  `agent/agent.py`'s `MAX_AGENT_STEPS` is exempt on the same grounds — a ceiling on the
+  agent loop, next to the loop it guards. **This list is the exception**: a limit not
+  enumerated here belongs in `config.py`, or the exemption stops being narrow.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
 - `llm.py` is the only chat-model constructor; `retrieval/embeddings.py` the only
@@ -79,10 +82,22 @@ or asserts against noise.
   `GROUNDING_SCOPE_DETAILS`), and every count in them is derived from `config`/`Section`,
   never typed — a scope sentence written twice will disagree with itself, and the disagreeing
   copy is the one on screen. `tests/test_grounding_scope.py` binds the README's prose and the
-  committed ingest evidence to the derived values.
+  committed ingest evidence to the derived values. **A tool description is a prompt**, and
+  lives here too if it makes a scope claim: `SEARCH_FILINGS_DESCRIPTION` is `prompts.py`'s,
+  not the tool module's, and its Items and Universe count are derived like every other
+  (issue #7 review). A prompt-facing rule is also written **once** — the description owns the
+  verbatim-query contract *and its exception*, and `AGENT_SYSTEM_PROMPT` points at it rather
+  than restating it, because a rule the model reads in two wordings is one it can pick between.
 - `rag.answer_question` is the measured chain (ADR-0003) and must stay callable with no agent
   in the way. `GroundedAnswer.text` deliberately carries **no** disclaimer, so every surface
   that renders it owes a `prompts.DISCLAIMER` beside it.
+- `agent/citations.py` is the only place a citation number is assigned. `Context.rank` arrives
+  from `retrieve()` as 1…k per retrieval; an inline `[n]` has to name one chunk for a whole
+  conversation, so the register renumbers a thread's search replies in one sequential pass at
+  the `before_model` seam. It cannot be done in the tool — LangGraph hands every call in a step
+  the same state and then runs them concurrently, so two searches in one step both number from
+  `[1]` and nothing raises (issue #7 review). Anything that numbers sources by their position
+  in a list, or offsets ranks anywhere else, reintroduces that collision.
 - All structured logging goes through `log_event` — one JSON object per line, and never a
   secret in `fields`.
 
