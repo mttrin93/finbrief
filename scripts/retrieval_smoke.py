@@ -1,7 +1,7 @@
 """Run the five hand-written retrieval sanity queries against the ingested KB (#5).
 
-    uv run python scripts/retrieval_smoke.py        # run the five, rewrite the artifact
-    uv run python scripts/retrieval_smoke.py --k 8  # a different top-k, same queries
+    uv run python scripts/retrieval_smoke.py             # run the five, rewrite the artifact
+    uv run python scripts/retrieval_smoke.py --no-write  # print it, leave the artifact alone
 
 A script, not a test: it embeds each query through the paid model and reads the persisted
 `filings` collection, and the suite is hermetic by contract (CLAUDE.md). Never invoke it
@@ -28,7 +28,7 @@ from finbrief.config import get_settings
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.retrieval.retrieve import retrieve
 from finbrief.retrieval.smoke import SMOKE_QUERIES, SmokeCheck, render_smoke_report
-from finbrief.retrieval.vectorstore import build_filings_store
+from finbrief.retrieval.vectorstore import build_filings_store, holds_any_chunks
 
 #: The committed machine evidence of the most recent run. Relative to the working
 #: directory, so run this script from the repo root — same convention as the ingest report.
@@ -43,12 +43,8 @@ SMOKE_REPORT = Path("docs/verification/retrieval-smoke.md")
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--k",
-        type=int,
-        metavar="N",
-        help="Chunks to retrieve per query (default: FINBRIEF_RETRIEVAL_K).",
-    )
+    # No `--k` flag: `FINBRIEF_RETRIEVAL_K` is already the knob for it (`config.py` owns
+    # every knob), and a second one lets a run's report disagree with the app's own top-k.
     parser.add_argument(
         "--no-write",
         action="store_true",
@@ -62,13 +58,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
 
     settings = get_settings()
-    k = args.k if args.k is not None else settings.retrieval_k
+    k = settings.retrieval_k
     store = build_filings_store(settings)
 
     # Fail before spending anything on embeddings if the collection is empty: every verdict
     # below would be "retrieved nothing", which reads as a retrieval bug rather than as the
     # missing ingest it is.
-    if not store.get(limit=1, include=[])["ids"]:
+    if not holds_any_chunks(store):
         print(
             f"The '{settings.chroma_dir}' filings collection is empty. Run "
             f"`uv run python scripts/ingest_filings.py` first (ADR-0007).",

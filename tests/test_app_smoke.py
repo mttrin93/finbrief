@@ -10,13 +10,12 @@ reaches the agent seam.
 from pathlib import Path
 
 import pytest
+from fakes import a_context
 from streamlit.testing.v1 import AppTest
 
 from finbrief.agent import agent
-from finbrief.ingestion.model import Section
 from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK
 from finbrief.rag import GroundedAnswer
-from finbrief.retrieval.retrieve import Context
 
 APP = str(Path(__file__).parents[1] / "app" / "Home.py")
 
@@ -27,23 +26,18 @@ def app(monkeypatch):
     return AppTest.from_file(APP, default_timeout=10)
 
 
-def a_context(rank: int) -> Context:
-    return Context(
-        chunk_id=f"0001628280-26-003952:Item 1A:{rank}",
+def a_tesla_risk_context(rank: int):
+    return a_context(
+        rank,
         body=f"Tesla's risk factor number {rank}, in the filer's own words.",
-        ticker="TSLA",
-        filing_type="10-K",
-        section=Section.RISK_FACTORS,
-        fiscal_year=2025,
-        accession="0001628280-26-003952",
         distance=0.1 * rank,
-        rank=rank,
     )
 
 
 def a_grounded_answer(text="Tesla identifies supply-chain concentration [1][2].", contexts=2):
     return GroundedAnswer(
-        text=text, contexts=tuple(a_context(rank) for rank in range(1, contexts + 1))
+        text=text,
+        contexts=tuple(a_tesla_risk_context(rank) for rank in range(1, contexts + 1)),
     )
 
 

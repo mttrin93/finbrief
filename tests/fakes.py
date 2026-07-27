@@ -10,6 +10,39 @@ import math
 
 from langchain_core.embeddings import Embeddings
 
+from finbrief.ingestion.model import Section
+from finbrief.retrieval.retrieve import Context
+
+
+def a_context(
+    rank: int = 1,
+    *,
+    ticker: str = "TSLA",
+    section: Section = Section.RISK_FACTORS,
+    fiscal_year: int = 2025,
+    distance: float = 0.5,
+    body: str | None = None,
+    accession: str = "0001628280-26-003952",
+) -> Context:
+    """A retrieved chunk, for the callers that display or score one rather than fetch it.
+
+    Shared because three test modules were each writing their own (issue #5 review), and a
+    `Context` that drifts between them is a citation shape the UI and the smoke report can
+    disagree about while both suites stay green.
+    """
+    return Context(
+        chunk_id=f"{accession}:{section.value}:{rank}",
+        body=body if body is not None else f"{ticker} {section.value} body {rank}.",
+        ticker=ticker,
+        filing_type="10-K",
+        section=section,
+        fiscal_year=fiscal_year,
+        accession=accession,
+        distance=distance,
+        rank=rank,
+    )
+
+
 #: The fake embedding's whole vocabulary: terms a 10-K question actually turns on, so a
 #: query about supply chains lands on the chunk that discusses them.
 VOCAB = (

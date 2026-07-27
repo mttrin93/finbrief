@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 from finbrief.config import Settings, get_settings
@@ -55,6 +56,33 @@ def build_filings_store(
             persist_directory if persist_directory is not None else settings.chroma_dir
         ),
     )
+
+
+def nearest_chunks(store: Chroma, question: str, k: int) -> list[tuple[Document, float]]:
+    """The `k` chunks nearest `question`, nearest first, each with its distance.
+
+    The read side of this module's rule (CLAUDE.md: this is the only place the collection is
+    opened, written, or read). `retrieval/retrieve.py` owns *what a retrieval means* — the
+    strategy, the ranking contract, the `Context` shape — and calls this for the one Chroma
+    operation underneath it, so the collection's API stays crossed in a single file.
+
+    Distances are Chroma's, in the collection's own space (L2 for `filings`): **lower is
+    nearer**, and not a normalised similarity. Deliberately returned raw rather than through
+    `similarity_search_with_relevance_scores`, whose 0…1 rescaling assumes normalised
+    embeddings and would silently invent a similarity we have not verified.
+    """
+    return store.similarity_search_with_score(question, k=k)
+
+
+def holds_any_chunks(store: Chroma) -> bool:
+    """Whether the collection holds anything at all, without reading what.
+
+    `limit=1` and no `include`, so this stays an existence check on a 5,800-chunk
+    collection rather than a metadata scan. Exists so `scripts/retrieval_smoke.py` can tell
+    "retrieval is broken" from "nobody has ingested yet" before it spends anything on
+    embeddings.
+    """
+    return bool(store.get(limit=1, include=[])["ids"])
 
 
 def write_chunks(store: Chroma, chunks: Sequence[Chunk]) -> int:

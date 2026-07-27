@@ -37,6 +37,13 @@ class GroundedAnswer:
     The contexts travel *with* the answer rather than being fetched again for display: the
     sources panel must show the chunks this answer's `[n]` markers point at, and a second
     retrieval — even with the same question and `k` — is a second chance to disagree.
+
+    **`text` carries no disclaimer, on purpose — so every surface that shows it owes one.**
+    `prompts.DISCLAIMER` is rendered beside the answer by the caller (`app/Home.py` does),
+    not requested from the model and not baked in here: a disclaimer the model is asked for
+    goes missing on the turn that most needed it, and one baked into `text` would be scored
+    by RAGAs faithfulness as an unsupported claim. The cost of that split is this contract,
+    which Phase 3's agent and Phase 7's harness inherit (issue #5 review).
     """
 
     text: str
@@ -99,7 +106,10 @@ def answer_question(
         # are kept, and a question is user content.
         question_chars=len(question),
         answer_chars=len(text),
-        cited_sections=sorted({context.section.value for context in contexts}),
+        # `retrieved_`, not `cited_`: nothing here parses the answer's `[n]` markers, and a
+        # Phase-7 log reader given `cited_sections` would report citation behaviour it never
+        # measured (issue #5 review).
+        retrieved_sections=sorted({context.section.value for context in contexts}),
         tickers=sorted({context.ticker for context in contexts}),
         latency_ms=round((time.perf_counter() - started) * 1000),
     )

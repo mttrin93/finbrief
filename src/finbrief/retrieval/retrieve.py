@@ -28,7 +28,7 @@ from langchain_core.documents import Document
 from finbrief.config import RetrievalStrategy, Settings, get_settings
 from finbrief.ingestion.model import Section
 from finbrief.observability.logging_setup import log_event
-from finbrief.retrieval.vectorstore import build_filings_store
+from finbrief.retrieval.vectorstore import build_filings_store, nearest_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,11 @@ def retrieve(
     `store` is injectable so tests can run against a fixture collection, and so the
     evaluation harness can point at a throwaway index; production passes nothing.
     """
-    if strategy is not RetrievalStrategy.HYBRID and strategy is not RetrievalStrategy.VECTOR:
-        raise ValueError(f"unknown retrieval strategy {strategy!r}")
+    # Normalised rather than trusted: `RetrievalStrategy("vector")` accepts the enum member
+    # and the raw string alike, so a caller reading a strategy out of a config file lands on
+    # the same object the dispatch below compares against — and an unknown value raises
+    # `ValueError` here, naming the valid ones, instead of quietly taking the vector branch.
+    strategy = RetrievalStrategy(strategy)
     if strategy is RetrievalStrategy.HYBRID:
         raise NotImplementedError(
             "hybrid retrieval (query translation + BM25 + RRF) lands in Phase 4, "
@@ -93,7 +96,7 @@ def retrieve(
         store = store if store is not None else build_filings_store(settings)
 
     started = time.perf_counter()
-    hits = store.similarity_search_with_score(question, k=k)
+    hits = nearest_chunks(store, question, k)
     contexts = tuple(
         _as_context(document, distance, rank)
         for rank, (document, distance) in enumerate(hits, start=1)

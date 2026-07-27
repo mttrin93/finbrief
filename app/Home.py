@@ -99,7 +99,11 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message["role"] == "assistant":
-            render_sources(message["contexts"])
+            # `.get`, because a live session's transcript outlives a code reload: rows
+            # written by an older shape would otherwise `KeyError` on the first rerun after
+            # a deploy. The regression this could hide — a turn stored without its contexts
+            # — is what `test_the_sources_panel_survives_the_next_turn` is for.
+            render_sources(message.get("contexts", ()))
             st.caption(DISCLAIMER)
 
 if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):

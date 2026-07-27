@@ -8,13 +8,13 @@ suite is hermetic by contract (CLAUDE.md).
 
 from __future__ import annotations
 
+from fakes import a_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 from finbrief.config import RetrievalStrategy
 from finbrief.ingestion.model import Section
 from finbrief.prompts import NO_CONTEXT_FALLBACK, SYSTEM_PROMPT
 from finbrief.rag import answer_question
-from finbrief.retrieval.retrieve import Context
 
 
 class RecordingFakeChatModel(GenericFakeChatModel):
@@ -97,19 +97,7 @@ def test_the_chain_passes_its_strategy_and_k_to_retrieval(filings_store, monkeyp
 
     def fake_retrieve(question, *, strategy, k, store, settings=None):
         calls.append({"question": question, "strategy": strategy, "k": k})
-        return (
-            Context(
-                chunk_id="acc:Item 1A:0",
-                body="A risk factor.",
-                ticker="AAPL",
-                filing_type="10-K",
-                section=Section.RISK_FACTORS,
-                fiscal_year=2025,
-                accession="acc",
-                distance=0.1,
-                rank=1,
-            ),
-        )
+        return (a_context(ticker="AAPL", body="A risk factor."),)
 
     monkeypatch.setattr(rag, "retrieve", fake_retrieve)
 

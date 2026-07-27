@@ -10,30 +10,16 @@ the distance-floor deferral. Those are asserted here; PLAN.md §Phase 2 owns the
 from __future__ import annotations
 
 import pytest
+from fakes import a_context
 
 from finbrief.config import RetrievalStrategy
 from finbrief.ingestion.model import Section
-from finbrief.retrieval.retrieve import Context
 from finbrief.retrieval.smoke import (
     SMOKE_QUERIES,
     SmokeCheck,
     SmokeQuery,
     render_smoke_report,
 )
-
-
-def a_context(rank, *, ticker="TSLA", section=Section.RISK_FACTORS, distance=0.5):
-    return Context(
-        chunk_id=f"acc-{ticker}:{section.value}:{rank}",
-        body=f"{ticker} {section.value} body {rank}.",
-        ticker=ticker,
-        filing_type="10-K",
-        section=section,
-        fiscal_year=2025,
-        accession=f"acc-{ticker}",
-        distance=distance,
-        rank=rank,
-    )
 
 
 def a_check(*, query=None, contexts=None):
@@ -199,5 +185,5 @@ def test_the_report_defers_the_distance_floor_to_the_phase_4_7_evidence():
 def test_the_report_lists_every_retrieved_chunk_so_a_reader_can_check_it():
     report = render([a_check()])
 
-    assert "acc-TSLA:Item 1A:1" in report
+    assert "0001628280-26-003952:Item 1A:1" in report
     assert "TSLA Item 1A body 1." in report
