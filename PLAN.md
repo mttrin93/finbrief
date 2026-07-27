@@ -241,6 +241,10 @@ retrieval chain and land there)
   incorporation-by-reference excusal — ADR-0007 amendment.)*
 - Smoke test: top-k retrieval sanity checks for 5 hand-written queries — **not done**;
   lands with Phase 2.
+- The committed evidence under `docs/verification/` is the last full run's and predates the
+  post-run extractor, chunker and checklist-format fixes. Re-running ingestion re-renders
+  both files and re-embeds all fifteen once; ADR-0007's *Outcome* records row by row what
+  that changes and why no row moves for the chunker fix.
 
 **Phase 2 — Baseline RAG (P0, ~3 h)**
 - Vector-only retrieval chain, source citations, sources panel in UI

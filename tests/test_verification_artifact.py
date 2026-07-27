@@ -14,6 +14,10 @@ from finbrief.ingestion.reporting import checklist_tickers, render_section_start
 
 BODY = "The Company designs and sells devices to customers worldwide. " * 40
 
+#: The marker line as the renderer writes it, fence and all. Matching the bare marker would
+#: hit the preamble's mention of it first, and the fixtures here mean the row's.
+EXCERPT_OPENS = "<!-- excerpt -->\n```text"
+
 
 def a_filing(*, mda_prefix: str = ""):
     sections = {s: f"{s.value}. {s.heading}\n\n{BODY}" for s in Section}
@@ -112,6 +116,59 @@ def test_a_note_written_above_the_status_line_survives_a_rerender():
     item_1a = rerendered.split("### Item 1A.")[1].split("### Item 7.")[0]
     assert note in item_1a, "and under the row it was written for"
     assert rerendered.count(note) == 1
+
+
+def test_a_note_that_quotes_the_filing_in_a_fence_survives_whole():
+    # The evidence this artifact collects is "the filing says X" — and the natural way to
+    # write X down is a fenced quote, which the excerpts themselves model. Cutting the row
+    # at the first fence left in the remainder dropped the quote *and* everything the
+    # verifier wrote after it, keeping only the sentence that introduced it (issue #3
+    # review).
+    verified = tick_everything(render_section_starts([a_filing()]))
+    note = (
+        "**Finding (hand-verification):** the filing reads\n\n"
+        "```\nItem 1. Business\nThe Company designs, manufactures and markets...\n```\n\n"
+        "so the excerpt is one heading early."
+    )
+    with_quote = verified.replace(EXCERPT_OPENS, f"{note}\n\n{EXCERPT_OPENS}", 1)
+    assert with_quote != verified, "the fixture must actually place a note"
+
+    rerendered = render_section_starts([a_filing()], with_quote)
+
+    for line in note.splitlines():
+        assert line in rerendered, line
+    assert "so the excerpt is one heading early." in rerendered
+
+
+def test_a_notes_own_text_fence_is_not_mistaken_for_the_generated_excerpt():
+    # The other half of the same ambiguity. A verifier who copies the excerpt's own
+    # ```text style, above the excerpt, had their quote read *as* the excerpt — so the row
+    # compared unequal to itself and came back unticked and flagged **CHANGED** with the
+    # character count unmoved, sending a human back to re-verify text nothing had touched.
+    verified = tick_everything(render_section_starts([a_filing()]))
+    note = "Cross-check:\n\n```text\nItem 1. Business\n```\n\nmatches the source."
+    with_quote = verified.replace(EXCERPT_OPENS, f"{note}\n\n{EXCERPT_OPENS}", 1)
+
+    rerendered = render_section_starts([a_filing()], with_quote)
+
+    assert "**CHANGED**" not in rerendered
+    assert rerendered.count("- [x]") == len(Section)
+    assert "matches the source." in rerendered
+
+
+def test_a_checklist_written_before_the_markers_keeps_its_ticks():
+    # The committed sixty were rendered fence-only. Migrating the format must not be the
+    # thing that unticks them — an unmarked row is read the old way for the one re-render
+    # that gives it markers.
+    legacy = tick_everything(render_section_starts([a_filing()]))
+    legacy = legacy.replace(EXCERPT_OPENS, "```text").replace("```\n<!-- /excerpt -->", "```")
+    assert EXCERPT_OPENS not in legacy, "the fixture must actually strip the markers"
+
+    rerendered = render_section_starts([a_filing()], legacy)
+
+    assert rerendered.count("- [x]") == len(Section)
+    assert "**CHANGED**" not in rerendered
+    assert rerendered.count(EXCERPT_OPENS) == len(Section)
 
 
 def test_a_row_heading_is_never_carried_forward_as_if_it_were_a_note():

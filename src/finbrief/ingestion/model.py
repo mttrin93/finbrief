@@ -168,6 +168,13 @@ _REFERENCE_TARGET_PATTERNS = (
 #: SUBSIDIARIES"), and JNJ and PFE leave a two-to-three-word page footer. A single
 #: sentence of genuine market-risk prose already runs past fifteen words, so a truncated
 #: real Section cannot fit under this while a real pointer never comes near it.
+#:
+#: That measurement predates `section_start`, which now cuts GS's running header off
+#: before the excusal ever sees the text — so live pointers leave less residue than the
+#: number was set against, not more. The headroom is deliberate and stays: the recorded
+#: fixture still carries the header, the threshold has to hold for whatever furniture the
+#: next filer leads with, and tightening it toward the two-word footer would trade a
+#: measured margin for none (issue #3 review).
 POINTER_RESIDUE_MAX_WORDS = 15
 
 #: `Item 7.` mid-sentence is a cross-reference, not a full stop — JNJ's pointer reads

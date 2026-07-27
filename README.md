@@ -7,7 +7,10 @@ business overview, risk factors, current valuation, and recent news — in minut
 > **Status:** walking skeleton + knowledge base. A typed message makes an OpenRouter
 > round-trip and the reply renders, and the Phase-1 KB exists: curated 10-K Sections for
 > all fifteen Universe companies, fetched from EDGAR, gated, chunked, and persisted to a
-> Chroma `filings` collection (see *Building the knowledge base* below). Retrieval,
+> Chroma `filings` collection (see *Building the knowledge base* below). The two files
+> under `docs/verification/` are the last full run's evidence and predate the extractor
+> and chunker fixes made after it — ADR-0007's *Outcome* records exactly what the next
+> full run re-renders. Retrieval,
 > tools, and guardrails are the phases that follow. The plan lives in
 > [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in

@@ -254,6 +254,17 @@ now, so this change invalidates it on its own and no `--force` is needed to pick
 of it touches a Section *boundary*, so no checklist row moves because of it (issue #3
 review).
 
+One last change to the checklist's *format*, for the same reason the carry-forward exists.
+The parser told the generated excerpt from a verifier's notes by looking for a fence — but
+a fenced quote of the filing is exactly how a verifier writes down what they found, and the
+excerpts model the style. Such a note was read as the excerpt (unticking a row nothing had
+touched, `**CHANGED**` with the character count unmoved) or truncated at its own fence,
+losing the quote and everything written after it. The excerpt now sits between
+`<!-- excerpt -->` markers, so a row's generated half is stated rather than guessed, and a
+row without them is still read the old way for the one re-render that adds them — migrating
+a format must not untick sixty hand-checked boxes. Rows keep their ticks through it; only
+the markers appear (issue #3 review).
+
 The committed `docs/verification/ingest-report.md` is the evidence that §7 describes a real
 defect and not a hypothetical one: its gate table carries the *post*-repair character counts
 while all fifteen of its rows read `skipped (already ingested)`, so the 5,842 chunks it

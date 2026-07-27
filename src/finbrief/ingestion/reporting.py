@@ -32,10 +32,25 @@ from finbrief.ingestion.model import ExtractedFiling, Section
 #: sixty judgements to make by hand.
 SECTION_START_CHARS = 320
 
-#: The generated excerpt block. `_parse_prior` cuts it out of a row before reading what is
-#: left as hand-written notes — non-greedy, so it ends at its own closing fence rather than
-#: swallowing everything up to the last one in the file.
-_EXCERPT_BLOCK = re.compile(r"```text\n(.*?)\n```", re.DOTALL)
+#: The generated excerpt block, fenced and wrapped in markers. `_parse_prior` cuts it out
+#: of a row and reads everything left as hand-written notes, so the boundary between the
+#: two has to be unambiguous — and a fence alone is not, because a verifier quoting filing
+#: text writes one too. That is the natural way to record the evidence, and the excerpts
+#: themselves model the style. The markers are HTML comments: invisible where the artifact
+#: is read, exact where it is parsed (issue #3 review).
+_EXCERPT_OPEN = "<!-- excerpt -->"
+_EXCERPT_CLOSE = "<!-- /excerpt -->"
+_EXCERPT_BLOCK = re.compile(
+    rf"{re.escape(_EXCERPT_OPEN)}\n```text\n(.*?)\n```\n{re.escape(_EXCERPT_CLOSE)}",
+    re.DOTALL,
+)
+
+#: Rows rendered before the markers existed. The committed artifact is sixty of them, hand-
+#: checked, and unticking all sixty to migrate a format would cost precisely what the
+#: carry-forward exists to save — so an unmarked row is still read the old way, fence-only,
+#: for the one re-render that gives it markers. Non-greedy, so it ends at its own closing
+#: fence rather than swallowing everything up to the last one in the file.
+_LEGACY_EXCERPT_BLOCK = re.compile(r"```text\n(.*?)\n```", re.DOTALL)
 
 
 def render_gate_table(
@@ -204,7 +219,6 @@ def _parse_prior(markdown: str) -> dict[tuple[str, str], _PriorRow]:
             status = re.search(r"^- \[( |x)\] *(.*)$", chunk, re.MULTILINE | re.I)
             if not (section and status):
                 continue
-            excerpt = _EXCERPT_BLOCK.search(chunk)
             chars = re.search(r"([\d,]+) characters extracted", status.group(2))
             # Everything in the row that this renderer did not write is a note, wherever
             # the verifier put it — so the row minus the three things it did write: the
@@ -214,17 +228,26 @@ def _parse_prior(markdown: str) -> dict[tuple[str, str], _PriorRow]:
             # losses were silent, and the preamble promises neither (issue #3 review).
             head = chunk[: status.start()]
             above = head.split("\n", 1)[1] if "\n" in head else ""
-            body = _EXCERPT_BLOCK.sub("", f"{above}\n{chunk[status.end() :]}")
-            # A fence with no closing fence is a hand-edit gone wrong; the remainder is
-            # excerpt, not notes, and re-emitting it as one would corrupt the row.
-            notes = tuple(
-                line.strip() for line in body.split("```")[0].splitlines() if line.strip()
-            )
+            row = f"{above}\n{chunk[status.end() :]}"
+            marked = _EXCERPT_BLOCK.search(chunk)
+            if marked:
+                # The markers say exactly which fence this renderer wrote, so everything
+                # else is the verifier's — fenced quotes of the filing included, whole.
+                excerpt, body = marked.group(1), _EXCERPT_BLOCK.sub("", row)
+            else:
+                legacy = _LEGACY_EXCERPT_BLOCK.search(chunk)
+                excerpt = legacy.group(1) if legacy else ""
+                # Without markers the first fence is only *presumed* to be the excerpt, so
+                # a fence left in the remainder cannot be told from an unclosed one — a
+                # hand-edit gone wrong, whose tail is excerpt and would corrupt the row if
+                # re-emitted as a note. Truncating there is the old, lossy answer; it
+                # applies for one re-render, and only to rows written before the markers.
+                body = _LEGACY_EXCERPT_BLOCK.sub("", row).split("```")[0]
             prior[(ticker, section.group(1))] = _PriorRow(
                 ticked=status.group(1).lower() == "x",
                 chars=int(chars.group(1).replace(",", "")) if chars else None,
-                excerpt=excerpt.group(1) if excerpt else "",
-                notes=notes,
+                excerpt=excerpt,
+                notes=tuple(line.strip() for line in body.splitlines() if line.strip()),
             )
     return prior
 
@@ -282,7 +305,9 @@ def render_section_starts(
         "A re-render keeps every tick whose Section is byte-identical to the version that",
         "was verified, and unticks the rest. The rows flagged as changed, in bold on their",
         "status line, are the only ones needing another look. Anything you write inside a",
-        "row — above or below its excerpt — is carried through every re-render verbatim.",
+        "row — above or below its excerpt, fenced quotes of the filing included — is",
+        "carried through every re-render verbatim. Leave the `<!-- excerpt -->` markers",
+        "alone: they are how a re-render tells its own text from yours.",
         "",
         f"Generated by `scripts/ingest_filings.py --section-starts`. {len(filings)} "
         f"filing(s), {len(filings) * len(Section)} Sections to verify.",
@@ -343,9 +368,11 @@ def render_section_starts(
                 )
             lines += _carried_notes(was)
             lines.append("")
+            lines.append(_EXCERPT_OPEN)
             lines.append("```text")
             lines.append(excerpt)
             lines.append("```")
+            lines.append(_EXCERPT_CLOSE)
             lines.append("")
 
     return "\n".join(lines)
