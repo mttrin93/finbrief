@@ -446,9 +446,16 @@ def a_translated_turn():
     variants = ("What are Tesla's risk factors?", "Tesla supply chain concentration")
     surfaced_by_both = a_context(
         1,
+        # The chunk's distance is the nearest of its vector rows, so the one vector row below
+        # carries it — the coherence a real `fuse` would produce (`hybrid.fuse`).
+        distance=0.91,
         provenance=(
             Surfaced(
-                variant=variants[0], retriever=Retriever.VECTOR, rank=3, contribution=1 / 63
+                variant=variants[0],
+                retriever=Retriever.VECTOR,
+                rank=3,
+                contribution=1 / 63,
+                distance=0.91,
             ),
             Surfaced(
                 variant=variants[1], retriever=Retriever.BM25, rank=1, contribution=1 / 61
@@ -504,10 +511,103 @@ def test_the_panel_shows_which_variant_and_retriever_surfaced_each_chunk(app, mo
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
     text = " ".join(md.value for md in how_i_answered(app.chat_message[1]).markdown)
-    assert "| query | retriever | rank | RRF contribution |" in text
+    assert "| query | retriever | rank | RRF contribution | distance |" in text
     assert "| original | vector | 3 |" in text
     assert "| sub-query 1 | bm25 | 1 |" in text
     assert f"{1 / 61:.6f}" in text, "the contribution that was summed, not a recomputation"
+
+
+def test_the_panel_shows_each_rows_own_distance_and_an_em_dash_for_a_bm25_row(app, monkeypatch):
+    # ADR-0004 §7's mechanism argument is a *per-variant* distance comparison — the same chunk
+    # nearer under one surface form than another — so the row carries its own rather than the
+    # chunk's nearest. BM25 has no distance of its own (§3), and a stand-in would print a number
+    # no measurement produced.
+    stub_answer(monkeypatch, a_translated_turn())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    text = " ".join(md.value for md in how_i_answered(app.chat_message[1]).markdown)
+    assert "| original | vector | 3 | 0.015873 | 0.9100 |" in text
+    assert "| sub-query 1 | bm25 | 1 | 0.016393 | — |" in text
+
+
+def a_turn_with_a_variant_that_surfaced_nothing():
+    """Three variants, one of which no returned chunk credits — ADR-0004 §1's negative datum.
+
+    The case that justifies `retrieve()` returning a `Retrieval` at all: `sub-query 2` ran
+    through both retrievers and nothing it found survived fusion, which is a fact about the
+    retrieval that no chunk's provenance can carry.
+    """
+    variants = (
+        "What are Tesla's risk factors?",
+        "Tesla supply chain concentration",
+        "Tesla executive compensation",
+    )
+    fused = a_context(
+        1,
+        provenance=(
+            Surfaced(
+                variant=variants[0], retriever=Retriever.VECTOR, rank=1, contribution=1 / 61
+            ),
+            Surfaced(
+                variant=variants[1], retriever=Retriever.BM25, rank=2, contribution=1 / 62
+            ),
+        ),
+    )
+    return AgentTurn(
+        text="Tesla identifies supply-chain concentration [1].",
+        searches=(
+            Search(query=variants[0], contexts=(fused,), variants=variants, translated=True),
+        ),
+    )
+
+
+def test_the_panel_says_which_variant_surfaced_nothing(app, monkeypatch):
+    # ADR-0004 amendment §1 makes this datum the entire justification for widening the return
+    # shape: "the RAG-viz panel has to show a sub-query that surfaced **nothing**, and that is
+    # exactly the datum no chunk's provenance can carry". Listing the variant among the queries
+    # put it on screen without reporting it — a reader had to diff that list against every
+    # provenance table to notice (issue #6 review).
+    stub_answer(monkeypatch, a_turn_with_a_variant_that_surfaced_nothing())
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    panel = how_i_answered(app.chat_message[1])
+    captions = " ".join(caption.value for caption in panel.caption)
+    assert "Surfaced no chunk in the top-1" in captions
+    assert "`sub-query 2`" in captions
+    # And it does not accuse the variants that did contribute.
+    assert "`original`" not in captions
+    assert "`sub-query 1`" not in captions
+
+
+def test_a_reply_with_no_provenance_is_not_reported_as_every_variant_surfacing_nothing(
+    app, monkeypatch
+):
+    # "This query found nothing" and "we cannot say what this query found" are different
+    # claims. A reply checkpointed before Phase 4 carries variants with no provenance rows
+    # behind them, and reporting all of them as barren would invent a finding.
+    turn = AgentTurn(
+        text="Tesla identifies supply-chain concentration [1].",
+        searches=(
+            Search(
+                query="What are Tesla's risk factors?",
+                contexts=(a_context(1, provenance=()),),
+                variants=("What are Tesla's risk factors?", "Tesla supply chain"),
+                translated=True,
+            ),
+        ),
+    )
+    stub_answer(monkeypatch, turn)
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    captions = " ".join(c.value for c in how_i_answered(app.chat_message[1]).caption)
+    assert "Surfaced no chunk" not in captions
+    assert "Provenance was not recorded for this chunk." in captions
 
 
 def test_the_panel_says_when_a_chunk_has_no_vector_distance_rather_than_inventing_one(

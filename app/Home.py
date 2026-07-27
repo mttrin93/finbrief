@@ -203,6 +203,27 @@ def variant_labels(search: Search) -> dict[str, str]:
     return labels
 
 
+def barren_variants(search: Search) -> tuple[str, ...]:
+    """The variants this search ran that no returned chunk credits — ADR-0004 §1's datum.
+
+    A variant that surfaced nothing is the whole reason `retrieve()` returns a `Retrieval`
+    rather than a bare sequence of contexts: it is a fact about the retrieval that no chunk's
+    provenance can carry. The panel listed such a variant among the queries but said nothing
+    about it, leaving a reader to diff that list against every table to notice — which is the
+    datum being on screen without being reported (issue #6 review).
+
+    **Empty when no provenance was recorded at all**, rather than "every variant was barren".
+    A reply checkpointed before Phase 4, or a search the collection had nothing for, has no rows
+    to credit a variant with — and "this query found nothing" is a different claim from "we
+    cannot say what this query found". The empty-collection case has its own banner in
+    `render_sources`.
+    """
+    if not any(context.provenance for context in search.contexts):
+        return ()
+    credited = {row.variant for context in search.contexts for row in context.provenance}
+    return tuple(variant for variant in search.variants if variant not in credited)
+
+
 def render_how_i_answered(searches: tuple[Search, ...]) -> None:
     """The RAG-visualization panel (user story 5, ADR-0004): what ran, and what it surfaced.
 
@@ -261,12 +282,25 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                     continue
                 rows = "\n".join(
                     f"| {labels.get(row.variant, 'query')} | {row.retriever.value} "
-                    f"| {row.rank} | {row.contribution:.6f} |"
+                    f"| {row.rank} | {row.contribution:.6f} "
+                    # This row's own distance, not the chunk's nearest — which is what makes
+                    # ADR-0004 §7's "the recovery is embedding-side" readable off one turn: the
+                    # same chunk at two distances under two surface forms. An em dash for BM25,
+                    # which has no distance of its own (§3).
+                    f"| {'—' if row.distance is None else f'{row.distance:.4f}'} |"
                     for row in context.provenance
                 )
                 st.markdown(
-                    "| query | retriever | rank | RRF contribution |\n"
-                    "|---|---|---:|---:|\n" + rows
+                    "| query | retriever | rank | RRF contribution | distance |\n"
+                    "|---|---|---:|---:|---:|\n" + rows
+                )
+            if barren := barren_variants(search):
+                named = ", ".join(f"`{labels.get(variant, 'query')}`" for variant in barren)
+                st.caption(
+                    f"Surfaced no chunk in the top-{len(search.contexts)}: {named}. Each ran "
+                    "through every retriever this strategy uses; nothing they found survived "
+                    "fusion. Translation only ever *adds*, so a variant that contributes "
+                    "nothing costs a retrieval round and changes no ranking (ADR-0004)."
                 )
 
 

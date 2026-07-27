@@ -50,6 +50,10 @@ def a_context(
                 retriever=Retriever.VECTOR,
                 rank=rank,
                 contribution=rrf_contribution(rank),
+                # The row's own distance is the chunk's here, because there is one vector row:
+                # `Fused.distance` is the nearest of them, and with one it is that one. Keeping
+                # them consistent is the same reason `fused_score` is summed rather than typed.
+                distance=distance,
             ),
         )
     )
