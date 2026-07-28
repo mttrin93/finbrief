@@ -4,8 +4,10 @@ Tests must not depend on the developer's local `.env` or exported shell variable
 suite that passes only on a machine with a key is worse than no suite. Everything a test
 needs comes from `monkeypatch.setenv` or an explicit mapping.
 
-The no-network half is **enforced from here** rather than asserted (`_block_egress` below),
-because it had been asserted twice and had been false twice.
+The no-network half is **enforced from here** rather than asserted (`_install_egress_guard`
+below), because it had been asserted twice and had been false twice. The recorded market and
+news fixtures it makes unnecessary to fetch are loaded by `fakes.py`, which plain helper
+functions can reach as well as fixtures can.
 """
 
 import gzip
@@ -15,11 +17,11 @@ import os
 import socket
 from pathlib import Path
 
+import fakes
 import pytest
 from fakes import KeywordEmbeddings
 
 from finbrief import config
-from finbrief.finance.quotes import Close, Quote
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.observability.logging_setup import PACKAGE_LOGGER
 
@@ -115,14 +117,6 @@ _install_egress_guard()
 #: would think to invent.
 FIXTURES = Path(__file__).parent / "fixtures" / "edgar"
 
-#: Recorded market data and news, written by `scripts/record_market_fixtures.py`. Recorded for
-#: the same reason the EDGAR fixtures are — the suite reaches no network, and `_install_egress_
-#: guard` above makes that true rather than aspirational — and the failures worth testing are
-#: again ones nobody would invent: two banks reporting a gross margin of exactly `0.0` beside a
-#: 50% operating margin, Ford with no trailing P/E at all, and a headline summary with `<p>`
-#: tags in it.
-MARKET_FIXTURES = Path(__file__).parent / "fixtures" / "market"
-
 #: cl100k_base's BPE table, vendored.
 #:
 #: `tiktoken.get_encoding` does **not** resolve the table from its wheel — the wheel ships
@@ -195,38 +189,20 @@ def recorded_sections() -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def recorded_quotes() -> dict[str, Quote]:
+def recorded_quotes():
     """Every Universe company's real quote, parsed from its recorded `.info` and closes.
 
-    Parsed through `Quote.from_info` rather than hand-built, so what the ratio math and the tool
-    layer are tested against is the shape production actually produces — the absences included.
+    The loader lives in `fakes.py` because plain helper functions need it too — `test_agent`
+    builds a real agent outside any fixture — and two loaders would be two places the fixture
+    layout is known.
     """
-    quotes = {}
-    for path in sorted(MARKET_FIXTURES.glob("*-info.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        ticker = path.stem.removesuffix("-info").upper()
-        quotes[ticker] = Quote.from_info(
-            ticker,
-            raw["info"],
-            tuple(Close(date=row["date"], close=row["close"]) for row in raw["closes"]),
-        )
-    assert quotes, f"no recorded quotes in {MARKET_FIXTURES}; run record_market_fixtures.py"
-    return quotes
+    return fakes.recorded_quotes()
 
 
 @pytest.fixture(scope="session")
-def recorded_feeds() -> dict[str, bytes]:
-    """ticker -> the raw RSS bytes Yahoo served, verbatim.
-
-    Raw rather than parsed, unlike the quotes: `feedparser.parse` takes bytes, so the suite runs
-    the real parser and the real HTML stripper over a real feed and the whole path is covered.
-    """
-    feeds = {
-        path.stem.removesuffix("-headlines").upper(): path.read_bytes()
-        for path in sorted(MARKET_FIXTURES.glob("*-headlines.xml"))
-    }
-    assert feeds, f"no recorded feeds in {MARKET_FIXTURES}; run record_market_fixtures.py"
-    return feeds
+def recorded_feeds():
+    """ticker -> the raw RSS bytes Yahoo served, verbatim (see `fakes.recorded_feed_bytes`)."""
+    return fakes.recorded_feed_bytes()
 
 
 @pytest.fixture

@@ -16,18 +16,27 @@ survive the round trip would restart citation numbering at `[1]` in production o
 
 from __future__ import annotations
 
-from fakes import ScriptedChatModel
+from fakes import ScriptedChatModel, a_headline_source, a_quote_source
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from finbrief.agent.agent import (
     MAX_AGENT_STEPS,
     AgentTurn,
+    Step,
     answer,
     build_agent,
     build_checkpointer,
 )
-from finbrief.config import Settings
+from finbrief.config import TICKER_MAX_CHARS, Settings
 from finbrief.llm import build_chat_model
+from finbrief.tools.finance import (
+    FINANCE_TOOL_NAMES,
+    NEWS_TOOL_NAME,
+    RATIOS_TOOL_NAME,
+    STOCK_TOOL_NAME,
+    FailedCard,
+    QuoteCard,
+)
 from finbrief.tools.search_filings import TOOL_NAME
 
 #: The configuration these tests build the agent with. **`vector`, translation off**, and
@@ -73,10 +82,33 @@ def a_fan_out(*queries: str) -> AIMessage:
     )
 
 
+def a_quote_call(ticker: str, call_id: str = "call-1") -> AIMessage:
+    """The model's turn when it decides to look up a price."""
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": STOCK_TOOL_NAME, "args": {"ticker": ticker}, "id": call_id}],
+    )
+
+
+def a_fan_out_of(*calls: dict) -> AIMessage:
+    """The model's turn when it asks for several *different* tools in one step.
+
+    The shape `parallel_tool_calls=True` now asks a provider for, and the one demo step 4
+    depends on: a search and the finance tools in one round trip rather than four.
+    """
+    return AIMessage(content="", tool_calls=list(calls))
+
+
 def an_agent(
     tmp_path, store, script, *, name="checkpoints.sqlite", settings=None, planner=None
 ):
-    """The real agent, with a scripted model and a real checkpoint file."""
+    """The real agent, with a scripted model, a real checkpoint file and recorded market data.
+
+    The finance sources are injected from the recorded fixtures rather than reached for, which
+    is spec seam 2's split exactly: real `create_agent`, real tools, real store, external data
+    mocked. `conftest`'s egress guard would refuse a live fetch anyway; this is what makes the
+    refusal unnecessary.
+    """
     model = ScriptedChatModel(messages=iter(script))
     agent = build_agent(
         model=model,
@@ -84,6 +116,8 @@ def an_agent(
         store=store,
         checkpointer=build_checkpointer(path=str(tmp_path / name)),
         translation_model=planner,
+        quote=a_quote_source,
+        headlines=a_headline_source,
     )
     return agent, model
 
@@ -229,17 +263,22 @@ def test_a_fan_out_then_a_follow_up_keeps_the_register_climbing(tmp_path, filing
     assert [context.rank for context in second.contexts] == [7, 8, 9]
 
 
-def test_the_model_is_bound_against_parallel_tool_calls(tmp_path, filings_store):
-    # The primary, provider-side half of the same fix: one tool call per step, so the
-    # collision above does not arise with a real model. Asserted at the binding because that
-    # is the whole of our side of it — whether a given OpenRouter upstream honours the flag is
-    # not ours to assert, which is why the register above does not depend on it.
+def test_the_model_is_bound_to_allow_parallel_tool_calls(tmp_path, filings_store):
+    # T4 asserted the opposite here, and the inversion is the point (T5, #9). The flag was the
+    # *second* line of a two-line defence against two searches in one step reusing `[1]`; the
+    # first line — the register at the `before_model` seam — made that collision
+    # unrepresentable rather than unlikely, so the second line stopped paying for itself. What
+    # it costs is a model round trip per tool, and demo step 4 wants four tools.
+    #
+    # Asserted at the binding because that is the whole of our side of it: whether a given
+    # OpenRouter upstream honours the flag is not ours to assert, and the test above is what
+    # says the register does not care either way.
     agent, model = an_agent(tmp_path, filings_store, [AIMessage("…")])
 
     answer("What does Apple say about supply chains?", thread_id="t-1", agent=agent)
 
     assert model.bind_kwargs, "the agent binds its tools through `bind_tools`"
-    assert all(kwargs.get("parallel_tool_calls") is False for kwargs in model.bind_kwargs)
+    assert all(kwargs.get("parallel_tool_calls") is True for kwargs in model.bind_kwargs)
 
 
 def test_numbering_restarts_for_a_different_conversation(tmp_path, filings_store):
@@ -439,6 +478,211 @@ def test_the_agent_binds_the_knowledge_base_as_a_tool_not_as_a_chain(tmp_path, f
 
     assert MAX_AGENT_STEPS > 2, "a search and an answer are two steps; the cap must clear it"
     assert TOOL_NAME in agent.nodes["tools"].bound.tools_by_name
+
+
+# --- T5 (#9): the finance tools on the loop --------------------------------------------
+
+
+def test_the_agent_binds_all_four_tools(tmp_path, filings_store):
+    # The set T10's tool-calling eval selects from. With one tool the *selection* the loop
+    # exists for was trivial; with four it is the thing being measured.
+    agent, _ = an_agent(tmp_path, filings_store, [AIMessage("…")])
+
+    assert set(agent.nodes["tools"].bound.tools_by_name) == {
+        TOOL_NAME,
+        *FINANCE_TOOL_NAMES,
+    }
+
+
+def test_the_step_ceiling_clears_a_full_brief_made_one_tool_at_a_time():
+    # The arithmetic `MAX_AGENT_STEPS` is set from, asserted rather than left in a comment: one
+    # round of the loop is three super-steps (the register's `before_model` node, the model, the
+    # tool node), so a brief's four tool calls made serially cost 3 × 4 + 2 = 14. At T4's twelve
+    # the one demo query this ticket exists to deliver would have raised `GraphRecursionError`,
+    # and only for models that decline to fan out.
+    serial_full_brief = 3 * 4 + 2
+
+    assert serial_full_brief < MAX_AGENT_STEPS
+
+
+def test_a_finance_tool_result_comes_back_on_the_turn_as_a_card(tmp_path, filings_store):
+    # What the UI renders its charts from. On the turn rather than re-fetched, for the reason
+    # the contexts are: a second fetch through a TTL cache is a second chance to disagree with
+    # the answer, and it could return a different number.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_quote_call("NVDA"), AIMessage("NVIDIA trades at 196.51.")],
+    )
+
+    turn = answer("What is NVIDIA trading at?", thread_id="t-1", agent=agent)
+
+    (card,) = turn.cards
+    assert isinstance(card, QuoteCard)
+    assert card.quote.ticker == "NVDA"
+    assert card.quote.price == 196.51
+    assert turn.used_tools and not turn.searched, "a quote is not a retrieval"
+
+
+def test_a_turn_reports_a_search_and_a_quote_apart(tmp_path, filings_store):
+    # User story 11's shape: one question, two halves, one answer. They stay in separate fields
+    # because only one of them is numbered — a headline or a price must never get an `[n]`.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out_of(
+                {"name": TOOL_NAME, "args": {"query": "Apple supply chain risk"}, "id": "c1"},
+                {"name": STOCK_TOOL_NAME, "args": {"ticker": "AAPL"}, "id": "c2"},
+            ),
+            AIMessage("Apple flags concentration [1]; it trades at 336.91."),
+        ],
+    )
+
+    turn = answer("Apple's supply risk, and its price?", thread_id="t-1", agent=agent)
+
+    assert len(turn.searches) == 1
+    assert len(turn.cards) == 1
+    assert [context.rank for context in turn.contexts] == [1, 2, 3]
+
+
+def test_the_finance_cards_of_an_earlier_turn_are_not_re_reported(tmp_path, filings_store):
+    # The same rule the sources panel follows: the earlier card is already on screen above its
+    # own answer, and re-reporting it would render every chart the conversation ever had under
+    # the newest reply.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_quote_call("NVDA", "c1"),
+            AIMessage("196.51."),
+            a_quote_call("AMZN", "c2"),
+            AIMessage("231.39."),
+        ],
+    )
+
+    answer("NVIDIA's price?", thread_id="t-1", agent=agent)
+    second = answer("And Amazon's?", thread_id="t-1", agent=agent)
+
+    assert [card.quote.ticker for card in second.cards] == ["AMZN"]
+
+
+def test_a_turn_logs_which_finance_tools_it_used(tmp_path, filings_store, caplog):
+    # The tool-*selection* datum T4 could not report, because with one tool there was nothing to
+    # select. T10 (#11) reads it off the turn line rather than reassembling per-tool events.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out_of(
+                {"name": STOCK_TOOL_NAME, "args": {"ticker": "F"}, "id": "c1"},
+                {"name": RATIOS_TOOL_NAME, "args": {"ticker": "F"}, "id": "c2"},
+            ),
+            AIMessage("Ford trades at 14.68."),
+        ],
+    )
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer("Ford's valuation?", thread_id="t-1", agent=agent)
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["finance_calls"] == 2
+    assert turn.fields["tools_used"] == ["QuoteCard", "RatiosCard"]
+    assert turn.fields["searched"] is False
+
+
+def test_each_tool_call_is_reported_before_it_runs_and_exactly_once(tmp_path, filings_store):
+    # User story 14. Reported as the model asks for the call, which is what makes it a progress
+    # indicator rather than a summary — and once per call, because `stream_mode="values"`
+    # re-emits the whole state on every chunk and an undeduplicated reporter would make a
+    # two-tool turn read like a loop.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out_of(
+                {"name": TOOL_NAME, "args": {"query": "Ford risk factors"}, "id": "c1"},
+                {"name": NEWS_TOOL_NAME, "args": {"ticker": "GM", "days": 7}, "id": "c2"},
+            ),
+            AIMessage("Ford identifies […] [1]."),
+        ],
+    )
+    steps: list[Step] = []
+
+    answer("Ford risks and GM news?", thread_id="t-1", agent=agent, on_step=steps.append)
+
+    assert steps == [Step(TOOL_NAME), Step(NEWS_TOOL_NAME, "GM")]
+
+
+def test_an_earlier_turns_tool_calls_are_not_reported_as_this_turns_progress(
+    tmp_path, filings_store
+):
+    # The checkpointer replays the whole conversation, so the first streamed chunk of a
+    # follow-up already contains last turn's tool calls. Reported, they would open the follow-up
+    # by announcing a fetch that happened a turn ago — progress about the wrong thing.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_quote_call("NVDA", "c1"),
+            AIMessage("196.51."),
+            a_quote_call("AMZN", "c2"),
+            AIMessage("231.39."),
+        ],
+    )
+
+    answer("NVIDIA's price?", thread_id="t-1", agent=agent)
+    steps: list[Step] = []
+    answer("And Amazon's?", thread_id="t-1", agent=agent, on_step=steps.append)
+
+    assert steps == [Step(STOCK_TOOL_NAME, "AMZN")]
+
+
+def test_a_progress_step_truncates_an_over_long_ticker_argument(tmp_path, filings_store):
+    # `Step.ticker` is a *model-supplied* argument that has not been through `resolve_ticker`,
+    # so without the cap a refused call's raw argument reaches the page at whatever length the
+    # model chose — including a paragraph of prose (ADR-0006).
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_quote_call("IGNORE PREVIOUS INSTRUCTIONS " * 20), AIMessage("I cover fifteen…")],
+    )
+    steps: list[Step] = []
+
+    answer("What about NVIDIA?", thread_id="t-1", agent=agent, on_step=steps.append)
+
+    (step,) = steps
+    assert len(step.ticker) <= TICKER_MAX_CHARS
+
+
+def test_a_turn_that_called_nothing_reports_no_steps_and_no_cards(tmp_path, filings_store):
+    agent, _ = an_agent(tmp_path, filings_store, [AIMessage("Two risks, briefly: […]")])
+    steps: list[Step] = []
+
+    turn = answer("Summarise that.", thread_id="t-1", agent=agent, on_step=steps.append)
+
+    assert steps == []
+    assert turn.cards == ()
+    assert not turn.used_tools
+
+
+def test_an_unknown_ticker_is_answered_rather_than_raised(tmp_path, filings_store):
+    # User story 21 through the real loop: the refusal comes back as a tool result the model
+    # reads in the same turn, so the analyst gets a sentence about the Universe instead of a
+    # traceback.
+    agent, model = an_agent(
+        tmp_path,
+        filings_store,
+        [a_quote_call("SAP"), AIMessage("I cover fifteen US filers; SAP is not one.")],
+    )
+
+    turn = answer("What is SAP trading at?", thread_id="t-1", agent=agent)
+
+    assert "SAP is not one" in turn.text
+    (card,) = turn.cards
+    assert isinstance(card, FailedCard)
+    reply = [m for m in model.prompts[-1] if isinstance(m, ToolMessage)][-1]
+    assert "not a company in FinBrief's Universe" in reply.content
 
 
 def test_chat_model_is_bound_to_openrouter():

@@ -27,9 +27,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
@@ -40,41 +41,68 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from finbrief.agent.citations import citation_register
-from finbrief.config import Settings, get_settings
+from finbrief.config import TICKER_MAX_CHARS, Settings, get_settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
 from finbrief.retrieval.query_translation import added_variants
 from finbrief.retrieval.retrieve import Context, Retrieval
+from finbrief.tools.finance import FinanceCard, build_finance_tools, finance_cards
 from finbrief.tools.search_filings import TOOL_NAME, build_search_filings, search_results
 
 logger = logging.getLogger(__name__)
 
-#: The agent loop's ceiling, in LangGraph super-steps: model call, tool node, model call…
-#: A loop guard, not a knob — which is why it sits next to the loop it guards rather than in
-#: `config.py`, on the same reasoning as the ingestion thresholds (CLAUDE.md). Twelve leaves
-#: room for the combined demo queries (a search, then the finance tools T5 adds, then a
-#: synthesis) and still turns a model that has decided to search forever into one clear
-#: error instead of an unbounded bill.
-MAX_AGENT_STEPS = 12
+#: The agent loop's ceiling, in LangGraph super-steps. A loop guard, not a knob — which is why
+#: it sits next to the loop it guards rather than in `config.py`, on the same reasoning as the
+#: ingestion thresholds (CLAUDE.md).
+#:
+#: **Raised from 12 to 24 in T5 (#9), and the arithmetic is the reason.** A super-step is one
+#: node execution, and one round of the loop is *three* of them — `CitationRegister` (a
+#: `before_model` hook is a node), the model, the tool node. T4 had one tool, so a search plus
+#: an answer was five and twelve was generous. Demo step 4 wants four tool calls; a model that
+#: fans them out in one step still costs five, but a model that makes them one at a time costs 3
+#: × 4 + 2 = **14**, and at twelve the full brief would have died on `GraphRecursionError` — the
+#: one demo query the ticket exists to deliver, failing only for models that decline to fan out.
+#:
+#: Twenty-four leaves room for seven serial rounds: the four a brief needs, plus a retry after a
+#: refused ticker and headroom for a model that thinks in smaller pieces. It still turns a model
+#: that has decided to search forever into one clear error rather than an unbounded bill.
+MAX_AGENT_STEPS = 24
 
 
 @wrap_model_call
-def _one_tool_call_at_a_time(
+def _allow_parallel_tool_calls(
     request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
 ) -> ModelResponse:
-    """Ask the provider for at most one tool call per step (ADR-0003 amendment §5).
+    """Ask the provider to fan out several tool calls in one step (T5, #9).
 
-    Two reasons, one of which is measurement. A step that fans out into several searches makes
-    the `verbatim` verdict ambiguous — several queries against one question, none of them the
-    question — and the tool's description already forbids splitting a question up, because
-    decomposition is an optimization `retrieve()` owns (ADR-0004). This asks for the same thing
-    where a prompt cannot be declined.
+    **This inverts T4's `parallel_tool_calls=False`, and the reason it can be inverted is that
+    what justified the flag no longer needs it.** T4 set it against a citation-numbering hazard:
+    two `search_filings` calls in one step both numbered their chunks `[1…k]`, because LangGraph
+    builds every `ToolRuntime` from the same node input and *then* runs the calls concurrently.
+    Moving the register to the `before_model` seam made that collision **unrepresentable**
+    rather than merely unlikely — one sequential pass, one caller, no two callers computing a
+    number independently (`agent/citations.py`). The flag was the second line of a two-line
+    defence, and the first line is now total.
+    `test_two_searches_in_one_step_do_not_reuse_citation_numbers` keeps that true, and it does
+    not depend on this setting either way.
 
-    It is a *request*, though: `parallel_tool_calls` reaches OpenRouter, which fronts many
-    upstreams, and whether a given one honours it is not ours to know. So it is the second line
-    and not the first — `agent/citations.py` makes a collided citation number unrepresentable
-    regardless of what the provider does with this.
+    What the flag *costs* is latency, and with four tools that stopped being theoretical. Demo
+    step 4 ("give me the full brief") needs a search, a quote, a ratio comparison and a news
+    fetch; served one per step that is four model round trips and four sequential fetches, and
+    served in one step it is one of each. The ratios call already fans out internally — it reads
+    every peer through the shared cache — so the serial version is the odd case, not the norm.
+
+    The measurement concern ADR-0003 §5 raised survives and is narrower than it looks: a step
+    with two *searches* still makes the `verbatim` verdict ambiguous, since neither query is
+    the question. But that was never enforced by this flag — `agent.answer` logs one line per
+    search and T10 reports the rate — and the tool's own description is what forbids splitting
+    a question up. A step holding a search *and* a quote is not the ambiguous case at all:
+    those are two halves of one question, which is exactly what user story 11 asks for.
+
+    Still a *request*: `parallel_tool_calls` reaches OpenRouter, which fronts many upstreams,
+    and whether a given one honours it is not ours to know. Nothing here depends on the answer —
+    a provider that serialises is slower and identical.
 
     Set through `model_settings`, which `create_agent` spreads into `bind_tools`, and only when
     there are tools to bind: with none, that call becomes a bare `bind()` and the flag would
@@ -82,8 +110,36 @@ def _one_tool_call_at_a_time(
     """
     if not request.tools:
         return handler(request)
-    settings = {**request.model_settings, "parallel_tool_calls": False}
+    settings = {**request.model_settings, "parallel_tool_calls": True}
     return handler(request.override(model_settings=settings))
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One tool call the agent has decided to make, reported *before* it runs.
+
+    User story 14's datum. Named apart from the tool's result because the point is the interval
+    between the two: `answer()` reports a step as soon as the model asks for it, so the UI can
+    say "Fetching NVDA market data" during the fetch rather than after it.
+
+    It carries the tool's name and the argument worth naming, and **no phrasing** — the words on
+    screen are `app/Home.py`'s, because they are UI copy and this module is not the UI. What it
+    does own is the truncation: `ticker` is a *model-supplied* argument not yet through
+    `resolve_ticker`, so a refused call's raw argument would otherwise reach the page at
+    whatever length the model chose.
+    """
+
+    tool: str
+    ticker: str | None = None
+
+    @classmethod
+    def of(cls, call: Mapping[str, Any]) -> Step:
+        """A step from a LangChain tool call."""
+        raw = call.get("args", {}).get("ticker")
+        return cls(
+            tool=str(call.get("name", "")),
+            ticker=None if raw is None else str(raw).strip()[:TICKER_MAX_CHARS],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +190,17 @@ class AgentTurn:
 
     text: str
     searches: tuple[Search, ...]
+    #: The finance-tool results this turn produced, in call order — one card per reply (T5, #9).
+    #:
+    #: Defaulted rather than required for the reason every `from_payload` on this path tolerates
+    #: an older shape: a transcript row written before T5 replays through `app/Home.py` on the
+    #: first rerun after a deploy, and `AgentTurn(text=…, searches=…)` built those rows.
+    #:
+    #: Kept apart from `searches` rather than folded into a single "what the tools did" list,
+    #: because the two are consumed differently and by different code: `searches` feeds the
+    #: citation-bearing sources panel and the divergence log, cards feed the charts. Only one of
+    #: them is numbered, and conflating them is how a headline gets a `[n]`.
+    cards: tuple[FinanceCard, ...] = ()
 
     @property
     def contexts(self) -> tuple[Context, ...]:
@@ -149,6 +216,11 @@ class AgentTurn:
     def searched(self) -> bool:
         """Whether the knowledge base was consulted at all this turn."""
         return bool(self.searches)
+
+    @property
+    def used_tools(self) -> bool:
+        """Whether this turn called anything at all — a search or a finance tool."""
+        return bool(self.searches or self.cards)
 
     @property
     def grounded(self) -> bool:
@@ -186,6 +258,8 @@ def build_agent(
     store: Chroma | None = None,
     checkpointer: SqliteSaver | None = None,
     translation_model: BaseChatModel | None = None,
+    quote: Callable[[str], Any] | None = None,
+    headlines: Callable[[str], Any] | None = None,
 ) -> CompiledStateGraph:
     """Build the agent: one model, the tools it may call, and its memory.
 
@@ -205,14 +279,16 @@ def build_agent(
 
     Every collaborator is injectable so the suite can drive the real loop hermetically: a
     scripted chat model, a fixture collection with a fake embedding, a throwaway checkpoint
-    file. A `Settings` built with `from_env({...})` needs no real API key
-    (`tests/conftest.py` guarantees there isn't one).
+    file, and — since T5 — recorded quote and headline sources. A `Settings` built with
+    `from_env({...})` needs no real API key (`tests/conftest.py` guarantees there isn't one),
+    and `quote`/`headlines` are what keep spec seam 2's "real agent, external data mocked"
+    reachable without touching yfinance.
     """
     settings = settings or get_settings()
     return create_agent(
         model=model if model is not None else build_chat_model(settings),
-        # One tool in T4. `get_stock_data`, `calculate_ratios` and `get_recent_news` join it
-        # in T5 (#9), which is when the tool-*selection* this loop exists for starts mattering.
+        # Four tools since T5 (#9) — which is when the tool-*selection* this loop exists for
+        # started mattering, since T4's single tool made every selection decision trivial.
         tools=[
             build_search_filings(
                 strategy=settings.retrieval_strategy,
@@ -223,21 +299,29 @@ def build_agent(
                 # `retrieve()` so a hermetic test can script the decomposition without the
                 # agent's own scripted model being consumed by it.
                 translation_model=translation_model,
-            )
+            ),
+            *build_finance_tools(quote=quote, headlines=headlines),
         ],
         system_prompt=AGENT_SYSTEM_PROMPT,
-        # Two lines under the same invariant — an `[n]` names one chunk for a whole
-        # conversation. The register assigns the numbers where nothing else can collide with
-        # it; the binding asks the provider not to create the collision in the first place.
-        # Neither is sufficient: see each one's own docstring for which half it cannot cover.
-        middleware=[_one_tool_call_at_a_time, citation_register],
+        # The register is what makes a collided citation number unrepresentable; the binding now
+        # asks the provider *for* fan-out rather than against it, because the collision the flag
+        # used to guard is gone and four tools make the latency real. Each docstring carries its
+        # own half of that argument, and `test_two_searches_in_one_step_do_not_reuse_citation_
+        # numbers` is the regression that holds the register to it.
+        middleware=[_allow_parallel_tool_calls, citation_register],
         checkpointer=(
             checkpointer if checkpointer is not None else build_checkpointer(settings)
         ),
     )
 
 
-def answer(question: str, *, thread_id: str, agent: CompiledStateGraph) -> AgentTurn:
+def answer(
+    question: str,
+    *,
+    thread_id: str,
+    agent: CompiledStateGraph,
+    on_step: Callable[[Step], None] | None = None,
+) -> AgentTurn:
     """Answer one turn of the conversation `thread_id`, with what grounded it.
 
     Only the new question is passed in. The rest of the conversation comes from the
@@ -245,21 +329,47 @@ def answer(question: str, *, thread_id: str, agent: CompiledStateGraph) -> Agent
     keeping a second copy of the agent's memory, and the two would diverge on the first rerun
     Streamlit does not replay.
 
+    `on_step` is called once per tool call, **as the model asks for it and before it runs** —
+    user story 14's progress indicator, which is only worth anything if it arrives during the
+    wait. It is why this streams rather than invoking: `stream_mode="values"` yields the whole
+    state after each node, so the chunk following the model node holds the `AIMessage` whose
+    tool calls have not executed yet. The last chunk is the same state `invoke` would have
+    returned, so nothing about the result changes and there is one code path whether or not a
+    caller wants progress.
+
     Raises whatever the model, the tools or the store raise — including
     `GraphRecursionError` once a loop exceeds `MAX_AGENT_STEPS`. The caller renders the
     failure; tiered error handling lands in Phase 5.
     """
     started = time.perf_counter()
-    result = agent.invoke(
+    state: dict[str, Any] = {}
+    reported: set[str] = set()
+    for state in agent.stream(
         {"messages": [HumanMessage(question)]},
         config={
             "configurable": {"thread_id": thread_id},
             "recursion_limit": MAX_AGENT_STEPS,
         },
+        stream_mode="values",
+    ):
+        if on_step is not None:
+            _report_steps(state.get("messages", []), reported, on_step)
+    if not state:
+        # Defensive, and specific: an empty stream means the graph produced no state at all,
+        # which is not something a caller can render as an answer. A bare `state["messages"]`
+        # here would surface it as a `KeyError` from a dict comprehension three frames deep.
+        raise RuntimeError("the agent produced no state; nothing to answer with")
+
+    messages = state["messages"]
+    this_turn = _this_turn(messages)
+    searches = _searches_in(this_turn)
+    turn = AgentTurn(
+        text=messages[-1].text,
+        searches=searches,
+        # Read from this turn's messages only, for the reason `_this_turn` exists: the
+        # checkpointer replays every earlier turn, and their cards are already on screen above.
+        cards=finance_cards(this_turn),
     )
-    messages = result["messages"]
-    searches = _searches_in(_this_turn(messages))
-    turn = AgentTurn(text=messages[-1].text, searches=searches)
 
     # ADR-0003 §2: the divergence between what the agent asked and what the user asked is
     # *measured*, not assumed away — one line per search, so T10 (#11) can report how often
@@ -287,11 +397,42 @@ def answer(question: str, *, thread_id: str, agent: CompiledStateGraph) -> Agent
         contexts=len(turn.contexts),
         searched=turn.searched,
         grounded=turn.grounded,
+        # The tool-*selection* half, which T4 could not report because there was one tool.
+        # Counted per kind rather than as a total, so T10 (#11) can read tool choice off a turn
+        # line without reassembling it from the per-tool `tool_call` events.
+        finance_calls=len(turn.cards),
+        tools_used=sorted({type(card).__name__ for card in turn.cards}),
         question_chars=len(question),
         answer_chars=len(turn.text),
         latency_ms=round((time.perf_counter() - started) * 1000),
     )
     return turn
+
+
+def _report_steps(
+    messages: list[AnyMessage], reported: set[str], on_step: Callable[[Step], None]
+) -> None:
+    """Report each tool call *this turn* made, once, in the order the model asked for it.
+
+    Two filters, and both are load-bearing.
+
+    `reported` deduplicates by `tool_call_id`, because `stream_mode="values"` yields the
+    **whole** state on every chunk: the `AIMessage` that requested a call is still there on the
+    next chunk and on every one after it. Without the set a two-tool turn reports six steps,
+    and the status line reads like a loop.
+
+    `_this_turn` excludes the conversation the checkpointer replayed. Its tool calls are older
+    than this question, and reporting them would open a follow-up by announcing a fetch that
+    happened a turn ago — worse than no progress indicator, because it is progress about the
+    wrong thing.
+    """
+    for message in _this_turn(messages):
+        for call in getattr(message, "tool_calls", ()) or ():
+            identifier = str(call.get("id", ""))
+            if identifier in reported:
+                continue
+            reported.add(identifier)
+            on_step(Step.of(call))
 
 
 def _is_verbatim(question: str, query: str) -> bool:
