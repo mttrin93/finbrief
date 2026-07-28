@@ -1,14 +1,18 @@
-"""Test isolation: no `.env`, no cached settings, no leaked logger state.
+"""Test isolation: no `.env`, no cached settings, no network, no leaked logger state.
 
 Tests must not depend on the developer's local `.env` or exported shell variables — a
 suite that passes only on a machine with a key is worse than no suite. Everything a test
 needs comes from `monkeypatch.setenv` or an explicit mapping.
+
+The no-network half is **enforced from here** rather than asserted (`_block_egress` below),
+because it had been asserted twice and had been false twice.
 """
 
 import gzip
 import json
 import logging
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -17,6 +21,91 @@ from fakes import KeywordEmbeddings
 from finbrief import config
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.observability.logging_setup import PACKAGE_LOGGER
+
+# --------------------------------------------------------------------------------------
+# The no-network half of the hermetic contract, enforced (CLAUDE.md)
+# --------------------------------------------------------------------------------------
+
+#: Hosts a test may reach. Loopback only, and it is here for the local processes a test
+#: legitimately talks to (Streamlit's `AppTest` machinery, a Chroma client) — never for a
+#: data source.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "", "0.0.0.0"})
+
+
+class EgressBlocked(RuntimeError):
+    """A test tried to reach the network. That is a defect in the test, not in the guard."""
+
+
+def _install_egress_guard() -> None:
+    """Make an outbound connection raise, for the whole session, from collection onwards.
+
+    **Installed at conftest import rather than in a fixture, and deliberately.** A fixture
+    runs per test, and the breach worth catching is the one CLAUDE.md names explicitly — "never
+    add a test dependency that fetches data at import time" — which happens while pytest is
+    *collecting*, before any fixture exists. conftest is imported before the test modules it
+    collects, so this is the earliest hook there is.
+
+    **Why a guard at all, given the suite was already hermetic by contract.** Twice now a
+    ticket shipped a "hermetic" claim that was false in the same way: `tiktoken.get_encoding`
+    downloads its BPE table and caches it, so the author's warm cache passed and clean CI
+    egressed silently. Both times the fix was a vendored fixture; neither time was there
+    anything to stop the third instance. An assertion that the suite does not reach the network
+    is worth exactly as much as the author's cache state — this is the mechanism that makes it
+    worth more. `tests/test_hermetic_suite.py` is what says the guard itself works.
+
+    Four entry points, because a library may use any of them: `connect`/`connect_ex` on the
+    socket object (the low-level path), `create_connection` (what `urllib3`, and so `requests`
+    and `curl_cffi`, calls), and `getaddrinfo` — a DNS query is egress too, and blocking it
+    fails earlier and reads more clearly than a connect timeout. Anything with a non-tuple
+    address is left alone: that is an `AF_UNIX` path, not a host.
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    real_getaddrinfo = socket.getaddrinfo
+
+    def blocked(target: object) -> EgressBlocked:
+        return EgressBlocked(
+            f"the test suite tried to reach {target!r}. Tests are hermetic — no network "
+            f"(CLAUDE.md). Record a fixture for this data instead of fetching it: see "
+            f"scripts/record_market_fixtures.py and scripts/record_edgar_fixtures.py."
+        )
+
+    def local_host(host: object) -> bool:
+        return host is None or host in _LOOPBACK
+
+    def local_address(address: object) -> bool:
+        if not isinstance(address, tuple) or not address:
+            return True  # an AF_UNIX path, which never leaves the machine
+        return local_host(address[0])
+
+    def guarded_connect(self, address):
+        if not local_address(address):
+            raise blocked(address)
+        return real_connect(self, address)
+
+    def guarded_connect_ex(self, address):
+        if not local_address(address):
+            raise blocked(address)
+        return real_connect_ex(self, address)
+
+    def guarded_create_connection(address, *args, **kwargs):
+        if not local_address(address):
+            raise blocked(address)
+        return real_create_connection(address, *args, **kwargs)
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if not local_host(host):
+            raise blocked(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+    socket.create_connection = guarded_create_connection
+    socket.getaddrinfo = guarded_getaddrinfo
+
+
+_install_egress_guard()
 
 #: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
 #: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather

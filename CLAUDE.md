@@ -43,8 +43,14 @@ Never invoke any of these from a test.
 `load_dotenv` out, strips the managed env prefixes (including `LANGCHAIN_`/`LANGSMITH_`, so
 tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build configuration
 with `Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never
-add a test dependency that fetches data at import time. Three more mechanisms keep the
-no-network half true: tiktoken's cl100k_base table is vendored under
+add a test dependency that fetches data at import time. **The no-network half is enforced, not
+asserted**: `conftest.py` patches `connect`/`connect_ex`/`create_connection`/`getaddrinfo` at
+import time — before collection, which is when an import-time fetch happens — so any egress
+to a non-loopback host raises `EgressBlocked`. It is there because the claim had been asserted
+twice and had been false twice, both times through tiktoken's cache; `tests/test_hermetic_suite.py`
+is what says the guard itself works, since a guard that patched the wrong function blocks
+nothing while every test still passes. Three more mechanisms keep it true *without* leaning on
+the guard: tiktoken's cl100k_base table is vendored under
 `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
 `get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`
 are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`;
