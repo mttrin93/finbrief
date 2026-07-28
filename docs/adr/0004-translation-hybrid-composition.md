@@ -460,3 +460,87 @@ byte-identical). This restatement is itself **still pre-data**: it is written be
 it is a direction rather than a magnitude, and §7's number stands as the prediction of record. If
 T10 shows hybrid's margin unchanged from §7 on the semantic bucket, this paragraph was wrong and
 that is a finding worth reporting.
+
+---
+
+### 11. Cross-filer mention leakage: BM25 cannot separate "about company X" from "mentions company X"
+
+Observed live through the shipping default, **after §10's fix had landed** — so it is a second
+mechanism rather than a residue of the first. Recorded pre-data and pre-T9 for §10's reason: the
+golden set should not be authored against a leak nobody wrote down.
+
+**What happened.** `what are the main risk factors for Microsoft?`, `k=5`: four MSFT chunks and
+**NVDA `Item 1A:166` at rank 4**, BM25-only, no vector distance. The chunk in full — it is short,
+and its indexed text is quoted here rather than paraphrased:
+
+> `NVDA | FY2026 10-K | Item 1A. Risk Factors` … *"Delaware law and our certificate of
+> incorporation, bylaws and agreement with **Microsoft** could delay or prevent a change in
+> control."*
+
+**The match is correct, and that is the whole difficulty.** §10's leak matched `main`, `for`, `the`,
+`are` and *none* of the query's topic terms. This one matches the query's highest-IDF term on its
+literal surface form: `query_terms("what are the main risk factors for Microsoft?")` is
+`['risk', 'factors', 'microsoft']`, so the scaffolding is already stripped and what remains hits the
+chunk legitimately. Measured on the ingested collection:
+
+| token | chunks | where |
+|---|---:|---|
+| `microsoft` | 66 of 5,842 | **60 MSFT, 6 NVDA** |
+| `msft` | 237 of 5,842 | all 237 of MSFT's chunks — the provenance header again |
+
+MSFT's own name covers 60 of its 237 chunks (25 %) and leaks into 6 NVDA chunks, and BM25 is right
+about all 66 of them. **Nothing about the token is anomalous** — it is rare, it is an identifier,
+and it is present in the text. The fact that separates a chunk *about* Microsoft from a chunk
+*mentioning* Microsoft is not in the text at all: it is which filer filed it, which is metadata. So
+no lexical rule and no corpus statistic can draw the line, in the same way §10's `main` could not be
+separated from `nvda` by rarity.
+
+**And it is not a one-chunk curiosity.** Sweeping every name form in `config.TICKER_BY_COMPANY_NAME`
+over the same collection — counting chunks that carry *all* of a form's tokens, a conjunctive proxy
+that understates a disjunctive BM25 — five filers' names appear in another filer's text, and the
+largest instance is an order of magnitude bigger than the observed one:
+
+| name form | own chunks | chunks in *other* filers |
+|---|---|---|
+| `Apple` | 36 of AAPL's 152 | **45** — GS 21, JPM 16, META 7, LLY 1 |
+| `Microsoft` | 60 of MSFT's 237 | 6 — all NVDA |
+| `General Motors` | 61 of GM's 311 | 2 — GS |
+| `Goldman Sachs` | 215 of GS's 875 | 2 — LLY, AMZN |
+| `Tesla` | 33 of TSLA's 280 | 1 — NVDA (the leak §8 already noted in passing) |
+
+The `Apple` rows are not incidental prose either: they are **the Apple Card portfolio transaction**,
+discussed in JPM's and GS's `Item 7` with dollar amounts. So a lexical rule would have to suppress a
+term that is doing real work in two other filers' MD&A. (One measurement is an artifact and is
+excluded above rather than reported: `J&J` tokenizes to `['j', 'j']`, so it "matches" any chunk
+containing a standalone `j` — 29 of them in JPM, which writes *J.P. Morgan*. That is the tokenizer,
+not a mention, and the distinction is the same one §8's coverage table needed.)
+
+**Why the §10 fix must not be stretched to cover it: a company name may never enter
+`_SCAFFOLDING`.** §6's recovery *is* name → ticker identifier matching, and §7's ablation shows it is
+embedding-side; suppressing `microsoft` as a query term would destroy the matching §6 and §7 rest on
+in order to remove a match that is not wrong. §10's growth rule already excludes it — no word enters
+without a measured query it fixes, and there is no query this fixes — but the reason is worth stating
+on its own: this is the one class of word where an entry would be actively destructive rather than
+merely inert.
+
+**Candidate fix, deliberately not taken now: metadata filtering by ticker** when the question names a
+Universe company — the same `config.TICKER_BY_COMPANY_NAME` lookup `normalised()` already performs,
+applied as a Chroma `where` clause and a BM25 candidate mask instead of as a query rewrite. Two
+reasons it waits:
+
+1. **It changes the measured seam immediately before T9 (#4) and T10 (#11).** A filter moves every
+   arm's candidate set, so the golden set would be authored against one engine and the matrix run
+   against another. §6, §7 and §10 are all pre-registrations about the *unfiltered* composition.
+2. **A hard filter would break the multi-company comparison the demo's peer step requires.** The
+   filter can only admit the tickers the question spells, and a comparison against a peer cluster is
+   resolved from `config.PEERS` (ADR-0009), not from the question's wording — so a question that
+   names one company while its answer needs a peer's chunks would be answered from a slice that
+   excludes them, silently and with no error.
+
+**Recorded as Tier-2 / future work** (ADR-0001, ordered by ADR-0010), needing **its own ADR and its
+own per-bucket measurement**: a filter is a precision/recall trade, and correct-filer share is only
+one of the two numbers it moves. Until then this is a **known precision cost of the BM25 arm**, and
+#11's matrix is what quantifies it — §7 pre-registers hybrid's contribution to filer-level precision
+as positive, and this is the same effect's other sign: hybrid admits the wrong filer on a *correct*
+token. Both readings belong in the same cell of the report, and the bucket that carries them is
+`semantic`, where questions name companies by name.
