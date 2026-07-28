@@ -100,7 +100,7 @@ def test_every_planted_payload_has_something_to_detect() -> None:
 
 @pytest.mark.parametrize("payload", [p for p in corpus.PLANTED_PAYLOADS if p.canary])
 def test_every_canary_is_a_string_nothing_else_would_produce(payload) -> None:
-    """"Otherwise impossible", enforced — because one canary was the phrase `price target`.
+    """ "Otherwise impossible", enforced — because one canary was the phrase `price target`.
 
     Two assertions, and the second is the one that caught it. The shape is a nonsense word and
     four digits, which no model writes by accident. And the string must appear in neither answer
