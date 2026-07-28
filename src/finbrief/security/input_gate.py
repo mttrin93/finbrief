@@ -17,9 +17,12 @@ they run in:
    denylist the effective gate and layer 3 an optimisation.
 
 **One model call per turn, and the budget is reported rather than enforced.** `latency_ms` on
-every screening is what `docs/verification/security-gate.md` computes the ≤800ms p50 from
-(`config.GATE_LATENCY_BUDGET_MS`). Nothing here abandons a slow call to make the number look
-better; the only ceiling is the classifier's own circuit breaker.
+every screening is what `docs/verification/security-gate.md` computes the escalated p50 from,
+judged against `config.GATE_LATENCY_BUDGET_MS` — **1000 ms**, revised from a pre-registered 800
+(ADR-0006 T7 amendment §2), which five docstrings including this one went on quoting as the
+live figure while naming the constant that no longer held it (issue #8 review). Nothing here
+abandons a slow call to make the number look better; the only ceiling is the classifier's own
+circuit breaker.
 
 **Where this runs.** `app/Home.py`, before the question reaches `agent.answer` — the same door
 `config.MAX_QUESTION_CHARS` is checked at, and the only one a human types through. Deliberately
@@ -81,7 +84,8 @@ class Screening:
     #: Layer 3's verdict when it ran, `UNDECIDED` included, so a fail-open is visible to a
     #: reader of the result and not only to a reader of the log.
     classifier_verdict: Verdict | None = None
-    #: Wall-clock for the whole screening. The ≤800ms p50 is computed from these.
+    #: Wall-clock for the whole screening. The reported p50 is computed from these, and judged
+    #: against `config.GATE_LATENCY_BUDGET_MS`.
     latency_ms: int = 0
 
 

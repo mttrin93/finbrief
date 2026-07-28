@@ -455,6 +455,30 @@ GATE_CLASSIFIER_ATTEMPTS = 1
 #: eighth of `MAX_QUESTION_CHARS` — enough for the payload in a long paste, not the paste.
 GATE_LOGGED_INPUT_MAX_CHARS = 500
 
+#: How much of an **unparseable** classifier reply `gate_classifier_unparsed` records.
+#:
+#: A logged-input cap, which CLAUDE.md puts here rather than beside the rule — and this one
+#: had been an inline `token[:32]` in `security/classifier.py`, justified by a comment saying
+#: the value was "the classifier's own output vocabulary, not the analyst's text". That is true
+#: of a *compliant* model and false in the branch the field is logged from: the parser reaches
+#: it only when the reply was **not** one of the two labels, which is exactly when a confused
+#: or jailbroken classifier may be echoing the question back (issue #8 review). So it is
+#: bounded as user-derived text, at one short token — enough to tell "the model answered a
+#: sentence" from "the model answered nothing", which is all the field is for.
+GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS = 32
+
+#: The **answering** path's per-request ceiling and retry count — `llm.build_chat_model`'s
+#: defaults.
+#:
+#: Here rather than in `llm.py` because `GATE_TIMEOUT_SECONDS` and `GATE_CLASSIFIER_ATTEMPTS`
+#: above are the same knob for the other path, and a pair split across two files is a pair that
+#: drifts (issue #8 review). Generous on purpose, and the contrast with the gate's five seconds
+#: and no retry is the point: an answer is what the analyst is waiting for, so a retried 503 is
+#: cheaper than a failed turn — where a slow *classifier* call holds a turn in front of the
+#: refusal it was deciding about.
+ANSWER_TIMEOUT_SECONDS = 60
+ANSWER_MAX_RETRIES = 2
+
 #: How long a question may be before the app declines to send it (user story 21).
 #:
 #: A cost and abuse bound, not a linguistic one: no analyst's question is 4,000 characters, and

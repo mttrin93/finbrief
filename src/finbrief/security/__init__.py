@@ -7,7 +7,7 @@ Three of the four live here; the fourth is a framing this package assumes rather
     classifier.classify()      layer 3 — novel phrasings, one cheap model call
     input_gate.screen()        the front door: the three above, cheap-first
     advice.validate_answer()   the back door — Guardrails AI, no investment advice
-    markers.unresolved()       the back door's deterministic half — `[n]` naming no source
+    markers.markers()          the back door's deterministic half — `[n]` naming no source
 
 `prompts.py` owns the fourth: retrieved text is quarantined as data, which is what makes the
 back door necessary rather than sufficient (ADR-0006 amendment, ticket T3).

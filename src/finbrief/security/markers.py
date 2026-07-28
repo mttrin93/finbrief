@@ -54,11 +54,21 @@ from finbrief.observability.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
 
+#: How many characters a bracketed span may hold and still be read as a citation marker.
+#:
+#: **An assertion about the shape of a citation, not a knob** (CLAUDE.md's exemption list), and
+#: that is why it sits beside the rule rather than in `config.py`: nothing should be able to
+#: tune it from the environment, and its value is a claim about `[12]` and `[Yahoo Finance]`
+#: rather than a preference. Forty characters is generous for both and short enough that a stray
+#: `[` in prose cannot swallow a paragraph before finding its partner. It was an unnamed
+#: `{1,40}` inside the pattern, restated as prose lower down this file (issue #8 review).
+MARKER_SPAN_MAX_CHARS = 40
+
 #: Any bracketed span, numeric or not. Deliberately **not** `\[(\d+)\]` alone: the non-numeric
 #: case is half of what this module reports, and a pattern that only matched numbers could not
-#: see it. Bounded to 40 characters so a stray `[` in prose cannot swallow a paragraph, and to a
-#: single line for the same reason.
-_BRACKETED = re.compile(r"\[([^\[\]\n]{1,40})\]")
+#: see it. Bounded to `MARKER_SPAN_MAX_CHARS` so a stray `[` in prose cannot swallow a
+#: paragraph, and to a single line for the same reason.
+_BRACKETED = re.compile(rf"\[([^\[\]\n]{{1,{MARKER_SPAN_MAX_CHARS}}})\]")
 
 #: A marker's contents when it is a citation: one or more digits, nothing else. `[1][3]` is two
 #: markers by this reading, which is the compound form `_ANSWER_RULES` asks for.
@@ -142,8 +152,8 @@ def log_markers(report: MarkerReport, *, thread_id: str, sources: int) -> None:
     The numbers are the answer's own citation numbers and this module's counts — no prose, so
     nothing here is user content. `non_numeric` is the one field carrying model-written text,
     and it is a *count* here rather than the spans: `[Yahoo Finance]` is harmless, but the
-    pattern admits up to 40 characters of anything and these lines are kept. The spans reach the
-    reader on screen, where they belong.
+    pattern admits `MARKER_SPAN_MAX_CHARS` of anything and these lines are kept. The spans
+    reach the reader on screen, where they belong.
     """
     log_event(
         logger,

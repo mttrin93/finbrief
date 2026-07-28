@@ -358,7 +358,8 @@ def _latency_section(run: SuiteRun) -> str:
     return f"""\
 ## Latency — the escalated p50 (ADR-0006, T7 amendment §2)
 
-Measured from the `input_gate` structured log lines this run emitted, not asserted.
+Measured from the `Screening` this run produced for every question — the same value its
+`input_gate` log line carries — not asserted anywhere.
 
 - p50 over **every** screening: {_ms(overall)}
 - p50 over the **escalated** screenings — the ones that paid for the model call: \

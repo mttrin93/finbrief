@@ -9,7 +9,8 @@ a verdict.
 field from `chat_model` for the reason its docstring gives: the gate pays for one YES/NO per
 turn and the answering model is what a brief is worth. The call is narrowed at both ends — a
 5-second ceiling and no retry (`config.GATE_TIMEOUT_SECONDS`, `GATE_CLASSIFIER_ATTEMPTS`) —
-because it sits inside a ≤800ms p50 budget the answering path does not have.
+because it sits inside a p50 budget the answering path does not have
+(`config.GATE_LATENCY_BUDGET_MS`).
 
 **It fails open, and that is a decision with a cost.** A provider outage, a timeout, or a reply
 this module cannot parse produces `Verdict.UNDECIDED`, which `input_gate.screen` allows while
@@ -33,6 +34,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from finbrief.caching import build_once
 from finbrief.config import (
     GATE_CLASSIFIER_ATTEMPTS,
+    GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS,
     GATE_TIMEOUT_SECONDS,
     Settings,
     get_settings,
@@ -142,10 +144,14 @@ def _verdict(reply: str) -> Verdict:
         logger,
         "gate_classifier_unparsed",
         level=logging.WARNING,
-        # The label the model produced is the classifier's own output vocabulary, not the
-        # analyst's text, so it is safe to record — and it is the only way to tell a model that
-        # ignored the format from one that was never asked.
-        token=token[:32],
+        # **Bounded as user-derived text, not exempted as the model's own vocabulary.** The
+        # comment here used to say the token was "the classifier's own output vocabulary, not
+        # the analyst's text" — true of a compliant model, and false in this branch, which is
+        # reached only when the reply was *not* one of the two labels. That is precisely when a
+        # confused classifier may be echoing the question back (issue #8 review). It is kept
+        # because it is the only way to tell a model that ignored the format from one that was
+        # never asked, and capped in `config` like every other logged input.
+        token=token[:GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS],
         reply_chars=len(reply),
     )
     return Verdict.UNDECIDED

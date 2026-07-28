@@ -484,7 +484,7 @@ def planted_chunks() -> tuple[Chunk, ...]:
 #:
 #: Typed here rather than derived, because there is nothing to derive them from: the prompt is
 #: one long string and slicing it programmatically would pick spans that are not distinctive.
-#: What keeps them honest is that `tests/test_security_corpus.py` asserts every one of them
+#: What keeps them honest is that `tests/test_security_report.py` asserts every one of them
 #: still occurs verbatim in `AGENT_SYSTEM_PROMPT` — the same binding
 #: `tests/test_grounding_scope.py` puts on the README's prose. A reworded prompt therefore fails
 #: the suite rather than silently making the leak check unable to detect anything.

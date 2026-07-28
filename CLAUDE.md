@@ -139,12 +139,18 @@ assertion by default (issue #9 review).
   `CHUNK_OVERLAP_CHARS` in the chunker. Do not move them into `config.py` or make them
   env-overridable; each is calibrated against measured filings and documented where it sits.
   `agent/agent.py`'s `MAX_AGENT_STEPS` is exempt on the same grounds — a ceiling on the
-  agent loop, next to the loop it guards. So are two of T7's:
+  agent loop, next to the loop it guards. So are three of T7's:
   `security/denylist.py`'s `MAX_GAP_CHARS` (an assertion about how far apart a payload's words
-  sit, calibrated against `security/corpus.py`) and `security/advice.py`'s
-  `NEGATION_WINDOW_CHARS` (an assertion about the length of a clause). Every *other* gate knob —
-  the latency budgets, the classifier's timeout and attempt count, the logged-input cap — is in
-  `config.py`. **This list is the exception**: a limit not
+  sit, calibrated against `security/corpus.py`), `security/advice.py`'s
+  `NEGATION_WINDOW_CHARS` (an assertion about the length of a clause) and
+  `security/markers.py`'s `MARKER_SPAN_MAX_CHARS` (an assertion about the shape of a citation —
+  what `[12]` and `[Yahoo Finance]` look like — which nothing should be able to tune from the
+  environment). Every *other* gate knob — the latency budgets, the classifier's timeout and
+  attempt count, **both** logged-input caps (`GATE_LOGGED_INPUT_MAX_CHARS` and
+  `GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS`) and the answering path's `ANSWER_TIMEOUT_SECONDS` /
+  `ANSWER_MAX_RETRIES` — is in `config.py`. The last pair moved there from `llm.py` in issue #8's
+  review: the gate's twins were already in `config.py`, and a pair split across two files is a
+  pair that drifts. **This list is the exception**: a limit not
   enumerated here belongs in `config.py`, or the exemption stops being narrow.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
