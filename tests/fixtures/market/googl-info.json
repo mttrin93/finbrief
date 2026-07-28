@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Alphabet Inc.",
+    "longName": "Alphabet Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 326.56,
+    "regularMarketPrice": 326.56,
+    "previousClose": 319.74,
+    "regularMarketPreviousClose": 319.74,
+    "regularMarketChangePercent": 2.13299,
+    "marketCap": 3993807618048,
+    "trailingPE": 16.393574,
+    "forwardPE": 22.206022,
+    "trailingEps": 19.92,
+    "debtToEquity": 18.859,
+    "grossMargins": 0.60897,
+    "profitMargins": 0.54771,
+    "operatingMargins": 0.34033,
+    "totalDebt": 120790999040,
+    "totalRevenue": 445865984000,
+    "fiftyTwoWeekHigh": 408.61,
+    "fiftyTwoWeekLow": 187.82
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 353.6499938964844
+    },
+    {
+      "date": "2026-06-30",
+      "close": 357.3699951171875
+    },
+    {
+      "date": "2026-07-01",
+      "close": 361.2099914550781
+    },
+    {
+      "date": "2026-07-02",
+      "close": 359.9100036621094
+    },
+    {
+      "date": "2026-07-06",
+      "close": 366.4599914550781
+    },
+    {
+      "date": "2026-07-07",
+      "close": 367.0299987792969
+    },
+    {
+      "date": "2026-07-08",
+      "close": 361.9200134277344
+    },
+    {
+      "date": "2026-07-09",
+      "close": 358.8900146484375
+    },
+    {
+      "date": "2026-07-10",
+      "close": 357.17999267578125
+    },
+    {
+      "date": "2026-07-13",
+      "close": 352.510009765625
+    },
+    {
+      "date": "2026-07-14",
+      "close": 359.510009765625
+    },
+    {
+      "date": "2026-07-15",
+      "close": 370.9200134277344
+    },
+    {
+      "date": "2026-07-16",
+      "close": 354.4599914550781
+    },
+    {
+      "date": "2026-07-17",
+      "close": 346.7699890136719
+    },
+    {
+      "date": "2026-07-20",
+      "close": 351.989990234375
+    },
+    {
+      "date": "2026-07-21",
+      "close": 347.1499938964844
+    },
+    {
+      "date": "2026-07-22",
+      "close": 342.0899963378906
+    },
+    {
+      "date": "2026-07-23",
+      "close": 317.69000244140625
+    },
+    {
+      "date": "2026-07-24",
+      "close": 319.739990234375
+    },
+    {
+      "date": "2026-07-27",
+      "close": 326.55999755859375
+    }
+  ]
+}

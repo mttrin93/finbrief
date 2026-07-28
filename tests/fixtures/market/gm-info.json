@@ -1,0 +1,103 @@
+{
+  "info": {
+    "shortName": "General Motors Company",
+    "longName": "General Motors Company",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 87.04,
+    "regularMarketPrice": 87.04,
+    "previousClose": 82.64,
+    "regularMarketPreviousClose": 82.64,
+    "regularMarketChangePercent": 5.3243,
+    "marketCap": 78723465216,
+    "trailingPE": 36.88136,
+    "forwardPE": 5.966998,
+    "trailingEps": 2.36,
+    "debtToEquity": 202.341,
+    "grossMargins": 0.10177,
+    "profitMargins": 0.01051,
+    "operatingMargins": 0.03202,
+    "totalDebt": 128771997696,
+    "totalRevenue": 185527992320,
+    "fiftyTwoWeekHigh": 87.62,
+    "fiftyTwoWeekLow": 51.69
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 77.33999633789062
+    },
+    {
+      "date": "2026-06-30",
+      "close": 77.08000183105469
+    },
+    {
+      "date": "2026-07-01",
+      "close": 75.5199966430664
+    },
+    {
+      "date": "2026-07-02",
+      "close": 76.0
+    },
+    {
+      "date": "2026-07-06",
+      "close": 77.8499984741211
+    },
+    {
+      "date": "2026-07-07",
+      "close": 76.02999877929688
+    },
+    {
+      "date": "2026-07-08",
+      "close": 76.23999786376953
+    },
+    {
+      "date": "2026-07-09",
+      "close": 76.6500015258789
+    },
+    {
+      "date": "2026-07-10",
+      "close": 77.8499984741211
+    },
+    {
+      "date": "2026-07-13",
+      "close": 76.72000122070312
+    },
+    {
+      "date": "2026-07-14",
+      "close": 76.87000274658203
+    },
+    {
+      "date": "2026-07-15",
+      "close": 77.63999938964844
+    },
+    {
+      "date": "2026-07-16",
+      "close": 77.72000122070312
+    },
+    {
+      "date": "2026-07-17",
+      "close": 76.06999969482422
+    },
+    {
+      "date": "2026-07-20",
+      "close": 75.80000305175781
+    },
+    {
+      "date": "2026-07-21",
+      "close": 79.5199966430664
+    },
+    {
+      "date": "2026-07-22",
+      "close": 82.12999725341797
+    },
+    {
+      "date": "2026-07-23",
+      "close": 80.66999816894531
+    },
+    {
+      "date": "2026-07-27",
+      "close": 87.04000091552734
+    }
+  ]
+}

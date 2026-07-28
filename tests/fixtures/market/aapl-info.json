@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Apple Inc.",
+    "longName": "Apple Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 336.91,
+    "regularMarketPrice": 336.91,
+    "previousClose": 333.02,
+    "regularMarketPreviousClose": 333.02,
+    "regularMarketChangePercent": 1.1681,
+    "marketCap": 4948317175808,
+    "trailingPE": 40.30024,
+    "forwardPE": 34.926964,
+    "trailingEps": 8.36,
+    "debtToEquity": 79.548,
+    "grossMargins": 0.47862,
+    "profitMargins": 0.27152002,
+    "operatingMargins": 0.32275,
+    "totalDebt": 84710998016,
+    "totalRevenue": 451442016256,
+    "fiftyTwoWeekHigh": 339.57,
+    "fiftyTwoWeekLow": 201.5
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 281.739990234375
+    },
+    {
+      "date": "2026-06-30",
+      "close": 289.3599853515625
+    },
+    {
+      "date": "2026-07-01",
+      "close": 294.3800048828125
+    },
+    {
+      "date": "2026-07-02",
+      "close": 308.6300048828125
+    },
+    {
+      "date": "2026-07-06",
+      "close": 312.6600036621094
+    },
+    {
+      "date": "2026-07-07",
+      "close": 310.6600036621094
+    },
+    {
+      "date": "2026-07-08",
+      "close": 313.3900146484375
+    },
+    {
+      "date": "2026-07-09",
+      "close": 316.2200012207031
+    },
+    {
+      "date": "2026-07-10",
+      "close": 315.32000732421875
+    },
+    {
+      "date": "2026-07-13",
+      "close": 317.30999755859375
+    },
+    {
+      "date": "2026-07-14",
+      "close": 314.8599853515625
+    },
+    {
+      "date": "2026-07-15",
+      "close": 327.5
+    },
+    {
+      "date": "2026-07-16",
+      "close": 333.260009765625
+    },
+    {
+      "date": "2026-07-17",
+      "close": 333.739990234375
+    },
+    {
+      "date": "2026-07-20",
+      "close": 326.5899963378906
+    },
+    {
+      "date": "2026-07-21",
+      "close": 327.739990234375
+    },
+    {
+      "date": "2026-07-22",
+      "close": 325.8900146484375
+    },
+    {
+      "date": "2026-07-23",
+      "close": 321.6600036621094
+    },
+    {
+      "date": "2026-07-24",
+      "close": 333.0199890136719
+    },
+    {
+      "date": "2026-07-27",
+      "close": 336.9100036621094
+    }
+  ]
+}

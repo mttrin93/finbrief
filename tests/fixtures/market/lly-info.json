@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Eli Lilly and Company",
+    "longName": "Eli Lilly and Company",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 1197.53,
+    "regularMarketPrice": 1197.53,
+    "previousClose": 1196.03,
+    "regularMarketPreviousClose": 1196.03,
+    "regularMarketChangePercent": 0.125415,
+    "marketCap": 1067887099904,
+    "trailingPE": 42.55615,
+    "forwardPE": 26.563232,
+    "trailingEps": 28.14,
+    "debtToEquity": 139.015,
+    "grossMargins": 0.82832,
+    "profitMargins": 0.34986,
+    "operatingMargins": 0.49386,
+    "totalDebt": 43370000384,
+    "totalRevenue": 72248999936,
+    "fiftyTwoWeekHigh": 1249.45,
+    "fiftyTwoWeekLow": 623.78
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 1229.9300537109375
+    },
+    {
+      "date": "2026-06-30",
+      "close": 1199.4300537109375
+    },
+    {
+      "date": "2026-07-01",
+      "close": 1191.739990234375
+    },
+    {
+      "date": "2026-07-02",
+      "close": 1213.9100341796875
+    },
+    {
+      "date": "2026-07-06",
+      "close": 1200.06005859375
+    },
+    {
+      "date": "2026-07-07",
+      "close": 1235.56005859375
+    },
+    {
+      "date": "2026-07-08",
+      "close": 1215.8299560546875
+    },
+    {
+      "date": "2026-07-09",
+      "close": 1216.949951171875
+    },
+    {
+      "date": "2026-07-10",
+      "close": 1188.5799560546875
+    },
+    {
+      "date": "2026-07-13",
+      "close": 1181.8699951171875
+    },
+    {
+      "date": "2026-07-14",
+      "close": 1152.5400390625
+    },
+    {
+      "date": "2026-07-15",
+      "close": 1156.6300048828125
+    },
+    {
+      "date": "2026-07-16",
+      "close": 1169.1700439453125
+    },
+    {
+      "date": "2026-07-17",
+      "close": 1179.1099853515625
+    },
+    {
+      "date": "2026-07-20",
+      "close": 1146.9000244140625
+    },
+    {
+      "date": "2026-07-21",
+      "close": 1175.4100341796875
+    },
+    {
+      "date": "2026-07-22",
+      "close": 1163.010009765625
+    },
+    {
+      "date": "2026-07-23",
+      "close": 1185.8699951171875
+    },
+    {
+      "date": "2026-07-24",
+      "close": 1196.030029296875
+    },
+    {
+      "date": "2026-07-27",
+      "close": 1197.530029296875
+    }
+  ]
+}

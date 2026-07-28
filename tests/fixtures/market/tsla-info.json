@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Tesla, Inc.",
+    "longName": "Tesla, Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 309.22,
+    "regularMarketPrice": 309.22,
+    "previousClose": 313.03,
+    "regularMarketPreviousClose": 313.03,
+    "regularMarketChangePercent": -1.21713,
+    "marketCap": 1221279088640,
+    "trailingPE": 286.31482,
+    "forwardPE": 139.07028,
+    "trailingEps": 1.08,
+    "debtToEquity": 18.373,
+    "grossMargins": 0.18852,
+    "profitMargins": 0.03671,
+    "operatingMargins": 0.014099999,
+    "totalDebt": 16080000000,
+    "totalRevenue": 103619002368,
+    "fiftyTwoWeekHigh": 498.83,
+    "fiftyTwoWeekLow": 297.82
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 411.8399963378906
+    },
+    {
+      "date": "2026-06-30",
+      "close": 420.6000061035156
+    },
+    {
+      "date": "2026-07-01",
+      "close": 425.29998779296875
+    },
+    {
+      "date": "2026-07-02",
+      "close": 393.45001220703125
+    },
+    {
+      "date": "2026-07-06",
+      "close": 419.7699890136719
+    },
+    {
+      "date": "2026-07-07",
+      "close": 402.8999938964844
+    },
+    {
+      "date": "2026-07-08",
+      "close": 394.05999755859375
+    },
+    {
+      "date": "2026-07-09",
+      "close": 406.54998779296875
+    },
+    {
+      "date": "2026-07-10",
+      "close": 407.760009765625
+    },
+    {
+      "date": "2026-07-13",
+      "close": 394.760009765625
+    },
+    {
+      "date": "2026-07-14",
+      "close": 396.17999267578125
+    },
+    {
+      "date": "2026-07-15",
+      "close": 394.4599914550781
+    },
+    {
+      "date": "2026-07-16",
+      "close": 391.05999755859375
+    },
+    {
+      "date": "2026-07-17",
+      "close": 380.8399963378906
+    },
+    {
+      "date": "2026-07-20",
+      "close": 369.57000732421875
+    },
+    {
+      "date": "2026-07-21",
+      "close": 378.92999267578125
+    },
+    {
+      "date": "2026-07-22",
+      "close": 374.010009765625
+    },
+    {
+      "date": "2026-07-23",
+      "close": 319.69000244140625
+    },
+    {
+      "date": "2026-07-24",
+      "close": 313.0299987792969
+    },
+    {
+      "date": "2026-07-27",
+      "close": 309.2200012207031
+    }
+  ]
+}

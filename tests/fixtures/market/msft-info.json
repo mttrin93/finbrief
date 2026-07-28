@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Microsoft Corporation",
+    "longName": "Microsoft Corporation",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 389.1,
+    "regularMarketPrice": 389.1,
+    "previousClose": 381.7,
+    "regularMarketPreviousClose": 381.7,
+    "regularMarketChangePercent": 1.93869,
+    "marketCap": 2890404200448,
+    "trailingPE": 22.727802,
+    "forwardPE": 20.091343,
+    "trailingEps": 17.12,
+    "debtToEquity": 30.271,
+    "grossMargins": 0.68309,
+    "profitMargins": 0.39341998,
+    "operatingMargins": 0.46326,
+    "totalDebt": 125431996416,
+    "totalRevenue": 318272995328,
+    "fiftyTwoWeekHigh": 555.45,
+    "fiftyTwoWeekLow": 349.2
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 368.57000732421875
+    },
+    {
+      "date": "2026-06-30",
+      "close": 373.0199890136719
+    },
+    {
+      "date": "2026-07-01",
+      "close": 384.2799987792969
+    },
+    {
+      "date": "2026-07-02",
+      "close": 390.489990234375
+    },
+    {
+      "date": "2026-07-06",
+      "close": 386.739990234375
+    },
+    {
+      "date": "2026-07-07",
+      "close": 388.8399963378906
+    },
+    {
+      "date": "2026-07-08",
+      "close": 383.3399963378906
+    },
+    {
+      "date": "2026-07-09",
+      "close": 384.3599853515625
+    },
+    {
+      "date": "2026-07-10",
+      "close": 385.1000061035156
+    },
+    {
+      "date": "2026-07-13",
+      "close": 390.989990234375
+    },
+    {
+      "date": "2026-07-14",
+      "close": 384.92999267578125
+    },
+    {
+      "date": "2026-07-15",
+      "close": 395.6300048828125
+    },
+    {
+      "date": "2026-07-16",
+      "close": 401.1000061035156
+    },
+    {
+      "date": "2026-07-17",
+      "close": 393.82000732421875
+    },
+    {
+      "date": "2026-07-20",
+      "close": 402.2900085449219
+    },
+    {
+      "date": "2026-07-21",
+      "close": 397.75
+    },
+    {
+      "date": "2026-07-22",
+      "close": 390.3399963378906
+    },
+    {
+      "date": "2026-07-23",
+      "close": 381.5799865722656
+    },
+    {
+      "date": "2026-07-24",
+      "close": 381.70001220703125
+    },
+    {
+      "date": "2026-07-27",
+      "close": 389.1000061035156
+    }
+  ]
+}

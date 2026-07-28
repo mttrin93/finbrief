@@ -1,0 +1,103 @@
+{
+  "info": {
+    "shortName": "Goldman Sachs Group, Inc. (The)",
+    "longName": "The Goldman Sachs Group, Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 1048.23,
+    "regularMarketPrice": 1048.23,
+    "previousClose": 1061.23,
+    "regularMarketPreviousClose": 1061.23,
+    "regularMarketChangePercent": -1.22499,
+    "marketCap": 309235613696,
+    "trailingPE": 16.181383,
+    "forwardPE": 14.223534,
+    "trailingEps": 64.78,
+    "debtToEquity": 647.154,
+    "grossMargins": 0.82075995,
+    "profitMargins": 0.31039,
+    "operatingMargins": 0.42316002,
+    "totalDebt": 795999993856,
+    "totalRevenue": 67569999872,
+    "fiftyTwoWeekHigh": 1153.99,
+    "fiftyTwoWeekLow": 694.05
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 1020.2100219726562
+    },
+    {
+      "date": "2026-06-30",
+      "close": 1011.3699951171875
+    },
+    {
+      "date": "2026-07-01",
+      "close": 1019.6099853515625
+    },
+    {
+      "date": "2026-07-02",
+      "close": 1021.0
+    },
+    {
+      "date": "2026-07-06",
+      "close": 1055.2900390625
+    },
+    {
+      "date": "2026-07-07",
+      "close": 1042.97998046875
+    },
+    {
+      "date": "2026-07-08",
+      "close": 1029.6400146484375
+    },
+    {
+      "date": "2026-07-09",
+      "close": 1055.969970703125
+    },
+    {
+      "date": "2026-07-10",
+      "close": 1055.1800537109375
+    },
+    {
+      "date": "2026-07-13",
+      "close": 1045.9100341796875
+    },
+    {
+      "date": "2026-07-14",
+      "close": 1140.0
+    },
+    {
+      "date": "2026-07-15",
+      "close": 1152.0699462890625
+    },
+    {
+      "date": "2026-07-16",
+      "close": 1095.4599609375
+    },
+    {
+      "date": "2026-07-17",
+      "close": 1065.219970703125
+    },
+    {
+      "date": "2026-07-20",
+      "close": 1055.030029296875
+    },
+    {
+      "date": "2026-07-21",
+      "close": 1085.56005859375
+    },
+    {
+      "date": "2026-07-22",
+      "close": 1098.199951171875
+    },
+    {
+      "date": "2026-07-23",
+      "close": 1074.719970703125
+    },
+    {
+      "date": "2026-07-27",
+      "close": 1048.22998046875
+    }
+  ]
+}

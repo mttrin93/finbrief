@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Amazon.com, Inc.",
+    "longName": "Amazon.com, Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 231.39,
+    "regularMarketPrice": 231.39,
+    "previousClose": 232.11,
+    "regularMarketPreviousClose": 232.11,
+    "regularMarketChangePercent": -0.310198,
+    "marketCap": 2489087688704,
+    "trailingPE": 27.711376,
+    "forwardPE": 23.324945,
+    "trailingEps": 8.35,
+    "debtToEquity": 53.3,
+    "grossMargins": 0.50604,
+    "profitMargins": 0.12224,
+    "operatingMargins": 0.1314,
+    "totalDebt": 235540004864,
+    "totalRevenue": 742775980032,
+    "fiftyTwoWeekHigh": 278.56,
+    "fiftyTwoWeekLow": 196.0
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 240.13999938964844
+    },
+    {
+      "date": "2026-06-30",
+      "close": 238.33999633789062
+    },
+    {
+      "date": "2026-07-01",
+      "close": 241.6999969482422
+    },
+    {
+      "date": "2026-07-02",
+      "close": 242.6699981689453
+    },
+    {
+      "date": "2026-07-06",
+      "close": 244.16000366210938
+    },
+    {
+      "date": "2026-07-07",
+      "close": 245.97999572753906
+    },
+    {
+      "date": "2026-07-08",
+      "close": 243.6199951171875
+    },
+    {
+      "date": "2026-07-09",
+      "close": 247.0399932861328
+    },
+    {
+      "date": "2026-07-10",
+      "close": 245.33999633789062
+    },
+    {
+      "date": "2026-07-13",
+      "close": 247.30999755859375
+    },
+    {
+      "date": "2026-07-14",
+      "close": 247.49000549316406
+    },
+    {
+      "date": "2026-07-15",
+      "close": 254.9600067138672
+    },
+    {
+      "date": "2026-07-16",
+      "close": 249.88999938964844
+    },
+    {
+      "date": "2026-07-17",
+      "close": 247.22999572753906
+    },
+    {
+      "date": "2026-07-20",
+      "close": 249.99000549316406
+    },
+    {
+      "date": "2026-07-21",
+      "close": 247.5500030517578
+    },
+    {
+      "date": "2026-07-22",
+      "close": 244.85000610351562
+    },
+    {
+      "date": "2026-07-23",
+      "close": 233.66000366210938
+    },
+    {
+      "date": "2026-07-24",
+      "close": 232.11000061035156
+    },
+    {
+      "date": "2026-07-27",
+      "close": 231.38999938964844
+    }
+  ]
+}

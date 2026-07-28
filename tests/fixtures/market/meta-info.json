@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Meta Platforms, Inc.",
+    "longName": "Meta Platforms, Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 593.87,
+    "regularMarketPrice": 593.87,
+    "previousClose": 595.19,
+    "regularMarketPreviousClose": 595.19,
+    "regularMarketChangePercent": -0.221779,
+    "marketCap": 1507493412864,
+    "trailingPE": 21.595272,
+    "forwardPE": 16.045345,
+    "trailingEps": 27.5,
+    "debtToEquity": 35.608,
+    "grossMargins": 0.81941,
+    "profitMargins": 0.32837,
+    "operatingMargins": 0.40617,
+    "totalDebt": 86769000448,
+    "totalRevenue": 214962995200,
+    "fiftyTwoWeekHigh": 796.25,
+    "fiftyTwoWeekLow": 520.26
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 562.5999755859375
+    },
+    {
+      "date": "2026-06-30",
+      "close": 563.2899780273438
+    },
+    {
+      "date": "2026-07-01",
+      "close": 612.9099731445312
+    },
+    {
+      "date": "2026-07-02",
+      "close": 582.9000244140625
+    },
+    {
+      "date": "2026-07-06",
+      "close": 600.2899780273438
+    },
+    {
+      "date": "2026-07-07",
+      "close": 615.5800170898438
+    },
+    {
+      "date": "2026-07-08",
+      "close": 603.1199951171875
+    },
+    {
+      "date": "2026-07-09",
+      "close": 631.47998046875
+    },
+    {
+      "date": "2026-07-10",
+      "close": 669.2100219726562
+    },
+    {
+      "date": "2026-07-13",
+      "close": 656.72998046875
+    },
+    {
+      "date": "2026-07-14",
+      "close": 661.0399780273438
+    },
+    {
+      "date": "2026-07-15",
+      "close": 681.3099975585938
+    },
+    {
+      "date": "2026-07-16",
+      "close": 664.5399780273438
+    },
+    {
+      "date": "2026-07-17",
+      "close": 646.010009765625
+    },
+    {
+      "date": "2026-07-20",
+      "close": 645.8499755859375
+    },
+    {
+      "date": "2026-07-21",
+      "close": 643.8099975585938
+    },
+    {
+      "date": "2026-07-22",
+      "close": 627.1699829101562
+    },
+    {
+      "date": "2026-07-23",
+      "close": 606.0999755859375
+    },
+    {
+      "date": "2026-07-24",
+      "close": 595.1900024414062
+    },
+    {
+      "date": "2026-07-27",
+      "close": 593.8699951171875
+    }
+  ]
+}
