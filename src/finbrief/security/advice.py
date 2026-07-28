@@ -69,6 +69,30 @@ from finbrief.observability.logging_setup import log_event
 
 logger = logging.getLogger(__name__)
 
+# **Validate synchronously, and this is not a performance preference.**
+# `guardrails.validator_service.get_loop` runs on *every* `Guard.validate` and calls
+# `asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())` — replacing the whole process's
+# event loop policy as a side effect of validating one answer. In a Streamlit app that already
+# has loops of its own (and `chromadb`/`langchain` async paths beside them), a library swapping
+# the policy mid-process is a change nobody asked for; it also moves DNS resolution into libuv,
+# outside the reach of the suite's egress guard (`tests/conftest.py`'s
+# `_block_uvloop_resolution`, which exists anyway — a hole is a hole whether today's code walks
+# through it).
+#
+# `GUARDRAILS_RUN_SYNC` is guardrails' only switch for it, and it costs nothing: with one
+# validator, `SequentialValidatorService` is what runs either way — the async path already falls
+# back to it here, warning "Could not obtain an event loop", because Streamlit's script threads
+# have none. So this makes the behaviour explicit and removes the side effect and the warning
+# together. Measured both ways: without it the policy goes `asyncio.unix_events` -> `uvloop` on
+# the first `Guard.validate`; with it, it does not move.
+#
+# **At import rather than inside `_build_guard`** (issue #8 review): a process-wide environment
+# mutation hidden in a `build_once` constructor fires at an unpredictable moment — whenever some
+# caller happens to validate first — and anything that built its own `Guard` before that would
+# already have swapped the policy. Module import is the earliest deterministic point, and
+# guardrails reads the variable per-validate, so setting it here is in time for every path.
+os.environ["GUARDRAILS_RUN_SYNC"] = "true"
+
 #: The validator's name in Guardrails' registry. Namespaced, because the registry is global.
 VALIDATOR_NAME = "finbrief/no-investment-advice"
 
@@ -266,29 +290,13 @@ def _build_guard() -> Guard:
     from guardrails.classes.rc import RC
     from guardrails.settings import settings
 
-    # **Validate synchronously, and this is not a performance preference.**
-    # `guardrails.validator_service.get_loop` runs on *every* `Guard.validate` and calls
-    # `asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())` — replacing the whole process's
-    # event loop policy as a side effect of validating one answer. In a Streamlit app that
-    # already has loops of its own (and `chromadb`/`langchain` async paths beside them), a
-    # library swapping the policy mid-process is a change nobody asked for; it also moves DNS
-    # resolution into libuv, outside the reach of the suite's egress guard
-    # (`tests/conftest.py`'s `_block_uvloop_resolution`, which exists anyway).
-    #
-    # `GUARDRAILS_RUN_SYNC` is guardrails' only switch for it, and it costs nothing: with one
-    # validator, `SequentialValidatorService` is what runs either way — the async path already
-    # falls back to it here, warning "Could not obtain an event loop", because Streamlit's
-    # script threads have none. So this makes the behaviour explicit and removes the side effect
-    # and the warning together.
-    os.environ["GUARDRAILS_RUN_SYNC"] = "true"
-
     guard = Guard()
     guard.configure(allow_metrics_collection=False)
     settings.rc = RC(enable_metrics=False, use_remote_inferencing=False)
     return guard.use(NoInvestmentAdvice(on_fail=OnFailAction.EXCEPTION))
 
 
-#: The process-level handle, for the reason the other four singletons go through `build_once`:
+#: The process-level handle, for the reason the other **five** singletons use `build_once`:
 #: Guardrails' `Guard`, its validator registry and its telemetry singleton are process state,
 #: and `lru_cache` is atomic about its bookkeeping and not about the constructor it wraps.
 advice_guard = build_once(_build_guard)

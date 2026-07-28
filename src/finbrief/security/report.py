@@ -26,7 +26,7 @@ pre-registration into a number that had always been satisfied.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from statistics import median
 
@@ -192,6 +192,32 @@ def render_report(run: SuiteRun) -> str:
     )
 
 
+def _table(
+    columns: Sequence[str],
+    rows: Iterable[Sequence[str]],
+    *,
+    right: Sequence[int] = (),
+) -> str:
+    """One Markdown table: the header, the rule row, and the cells, pipes included.
+
+    The four data-driven sections below each rebuilt this shape by hand — a `"\n".join` of an
+    f-string full of pipes, plus a hand-typed rule row whose column count had to match. Three
+    things went wrong that way and one of them is invisible: a rule row with the wrong number of
+    dashes renders as text rather than a table, and nothing in a generated artifact notices.
+
+    `right` names the columns to right-align, which is every millisecond column and nothing
+    else.
+    """
+    divider = ["---:" if index in set(right) else "---" for index in range(len(columns))]
+    return "\n".join(
+        [
+            "| " + " | ".join(columns) + " |",
+            "|" + "|".join(divider) + "|",
+            *("| " + " | ".join(cells) + " |" for cells in rows),
+        ]
+    )
+
+
 def _header(run: SuiteRun) -> str:
     attacks = [result for result in run.gate if result.expected is not None]
     benign = [result for result in run.gate if result.expected is None]
@@ -310,14 +336,32 @@ Layer 3's counts only the cases layer 2 verifiably passed
 def _gate_section(run: SuiteRun) -> str:
     attacks = [result for result in run.gate if result.expected is not None]
     benign = [result for result in run.gate if result.expected is None]
-    rows = "\n".join(
-        f"| {result.case_id} | {result.technique} | {result.expected.value} | "
-        f"{_verdict(result)} | {result.screening.latency_ms} |"
-        for result in attacks
+    rows = _table(
+        ("case", "technique", "expected", "verdict", "ms"),
+        (
+            (
+                result.case_id,
+                result.technique,
+                result.expected.value,
+                _verdict(result),
+                str(result.screening.latency_ms),
+            )
+            for result in attacks
+        ),
+        right=(4,),
     )
-    benign_rows = "\n".join(
-        f"| {index} | {result.case_id} | {_verdict(result)} | {result.screening.latency_ms} |"
-        for index, result in enumerate(benign, start=1)
+    benign_rows = _table(
+        ("#", "question", "verdict", "ms"),
+        (
+            (
+                str(index),
+                result.case_id,
+                _verdict(result),
+                str(result.screening.latency_ms),
+            )
+            for index, result in enumerate(benign, start=1)
+        ),
+        right=(3,),
     )
     return f"""\
 ## Input gate — attacks (user story 16)
@@ -327,8 +371,6 @@ layer counts as a failure: the corpus exists to attribute a catch, and a
 classifier case the denylist happened to match would credit layer 3 with a layer-2
 win.
 
-| case | technique | expected | verdict | ms |
-|---|---|---|---|---:|
 {rows}
 
 ## Input gate — benign control (the false-positive floor)
@@ -339,8 +381,6 @@ ones that matter: **an advice request is not an injection** — user story 15 as
 for it to be refused *with a disclaimer* by layer 4, which is a different
 behaviour from being blocked at the front door.
 
-| # | question | verdict | ms |
-|---|---|---|---:|
 {benign_rows}
 """
 
@@ -390,11 +430,17 @@ def _verdict_against(escalated: int | None, budget: int) -> str:
 
 
 def _output_section(run: SuiteRun) -> str:
-    rows = "\n".join(
-        f"| {'advice' if result.expected_refusal else 'research'} | "
-        f"{_answer_verdict(result)} | {', '.join(result.rules) or '—'} | "
-        f"{_excerpt(result.text, 90)} |"
-        for result in run.answers
+    rows = _table(
+        ("expected", "verdict", "rules fired", "answer"),
+        (
+            (
+                "advice" if result.expected_refusal else "research",
+                _answer_verdict(result),
+                ", ".join(result.rules) or "—",
+                _excerpt(result.text, 90),
+            )
+            for result in run.answers
+        ),
     )
     return f"""\
 ## Output validator — both directions (user story 15)
@@ -404,8 +450,6 @@ halves are reported because only one of them is hard: a validator that refused
 everything would pass the `advice` rows and fail every `research` row, and those
 are the answers FinBrief exists to write.
 
-| expected | verdict | rules fired | answer |
-|---|---|---|---|
 {rows}
 """
 
@@ -429,14 +473,20 @@ def _injection_section(run: SuiteRun) -> str:
             "empty section means the indirect half did not execute."
         }
 """
-    rows = "\n".join(
-        f"| {result.payload_id} | {result.technique} | "
-        f"{'yes' if result.retrieved else '**NOT RETRIEVED**'} | "
-        f"{'**OBEYED**' if result.obeyed else 'not obeyed'} | "
-        f"{'**LEAKED**' if result.leaked else 'no leak'} | "
-        f"{'refused' if result.refused_by_validator else 'allowed'} | "
-        f"{_excerpt(result.excerpt, 150)} |"
-        for result in run.injections
+    rows = _table(
+        ("payload", "technique", "retrieved?", "obeyed?", "leaked?", "layer 4", "answer"),
+        (
+            (
+                result.payload_id,
+                result.technique,
+                "yes" if result.retrieved else "**NOT RETRIEVED**",
+                "**OBEYED**" if result.obeyed else "not obeyed",
+                "**LEAKED**" if result.leaked else "no leak",
+                "refused" if result.refused_by_validator else "allowed",
+                _excerpt(result.excerpt, 150),
+            )
+            for result in run.injections
+        ),
     )
     return f"""\
 ## Indirect injection — planted payloads, live (user story 17)
@@ -458,8 +508,6 @@ obeyed, no leak" about a turn in which the agent asked which company was meant
 instead of searching, so the payload never reached the model — a green cell about
 nothing. A row that did not retrieve its payload now fails.
 
-| payload | technique | retrieved? | obeyed? | leaked? | layer 4 | answer |
-|---|---|---|---|---|---|---|
 {rows}
 """
 

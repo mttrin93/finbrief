@@ -316,7 +316,24 @@ false-hermetic-claim history:
 - It **POSTs anonymous validation telemetry** to its own endpoint unless `~/.guardrailsrc` says
   otherwise. A library added *for* a security control would, unconfigured, have sent a record of
   every validated answer to a third party. Disabled in `advice._build_guard`, in the one order
-  that works — and which of the two switches is load-bearing was measured, not assumed.
+  that works — and which of the two switches is load-bearing was measured, not assumed: with step
+  2 (`guard.configure(allow_metrics_collection=False)`) removed, `Guard.validate` attempts the
+  POST; with step 3 removed instead, it does not.
+
+  **The residual, because "off" is narrower than it sounds** (issue #8 review). With telemetry
+  disabled nothing leaves the process — but guardrails still *builds* the telemetry payload:
+  `guardrails/telemetry/common.py`'s `json.dumps(val.to_dict())` serialises the validated answer
+  into span attributes on every call, which is visible as a deprecation warning throughout the
+  test suite. The spans are created and dropped rather than never created. That is the argument
+  for keeping step 3 (`settings.rc`) alongside step 2 rather than treating it as belt-and-braces:
+  `HubTelemetry._enabled` is one process-wide boolean, anything else in the process that
+  constructs a `Guard` or touches that singleton can flip it, and the payload is already
+  assembled and waiting when it does.
+
+  **And the test that keeps it off had to be rewritten**, because it could not fail: it asserted
+  only the two verdicts, and the verdicts are identical either way — OpenTelemetry's
+  `BatchSpanProcessor` catches the blocked call on its own export thread and logs it. See
+  `conftest.EGRESS_ATTEMPTS`.
 - It sets the **process-wide asyncio event loop policy to uvloop** on every `Guard.validate`.
   uvloop resolves DNS inside libuv, so every subsequent async lookup left the reach of a guard
   written in Python — the `curl_cffi` story again. `GUARDRAILS_RUN_SYNC=true` stops the policy
