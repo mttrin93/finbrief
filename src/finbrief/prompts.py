@@ -307,6 +307,9 @@ Combining them:
 valuation compare to its fundamentals" is a ratios call and a filings search, and "any news \
 about those risks" is a news call and a filings search. Call what you need in the same turn \
 rather than answering half and offering the rest.
+- A **valuation** question wants the quote *and* the peer comparison: call both \
+`get_stock_data` and `calculate_ratios`. "Is it expensive" is a multiple next to the cluster a \
+company trades against, and a P/E with no peer mean beside it is one a reader cannot judge.
 - Tie the halves together explicitly. Say which retrieved risk a headline bears on, or which \
 filing statement a ratio confirms or contradicts; two lists side by side is not a brief.
 - Asked for "the full brief", make **one** `search_filings` call, passing the analyst's \

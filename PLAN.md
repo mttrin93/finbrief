@@ -332,6 +332,16 @@ retrieval chain and landed with it — ticket T3, #5)
 - Deferred, and stated as deferred: Alpha Vantage as a fundamentals fallback. `alphavantage_enabled`
   and `ALPHAVANTAGE_API_KEY` remain unread configuration; the cache, the retry and the stale
   banner are how the free tier is survived instead of a second source.
+- A second finding of the same class, from #9's own code review: **AC-1's two-tool pairing had no
+  routing rule.** The acceptance criterion is that a valuation question fires `get_stock_data`
+  *and* `calculate_ratios`, and the prompt never said so — `calculate_ratios` already returns a
+  trailing P/E, so one call plausibly satisfies the model. A line now says it ("a valuation
+  question wants the quote *and* the peer comparison"), and it is recorded here as **measured, not
+  enforced**: a prompt line is not a guarantee, and this ticket alone has three instances of the
+  model declining one (the verbatim-query contract, the square-bracket rule, and the section
+  headings read as search terms). The golden set records **one tool per row**, so T10's
+  tool-calling eval will not score the pair either — noted on #11 so the gap is a known
+  measurement hole rather than an assumed pass.
 - Two findings from the first live run, recorded on the tickets that will use them: the model
   rephrased both queries despite the verbatim instruction (#11 — the rate is a reportable
   metric, and per ADR-0003 the prompt is not tuned against a paid model to move it), and the
