@@ -243,6 +243,67 @@ PEERS: Mapping[str, tuple[str, ...]] = _build_peers(CLUSTERS, UNIVERSE)
 
 
 # --------------------------------------------------------------------------------------
+# Finance tools: the free-tier budget and the input caps (T5, ADR-0009)
+# --------------------------------------------------------------------------------------
+
+#: How long a fetched quote is served without re-asking, in seconds.
+#:
+#: **Fifteen minutes, because the feed itself is fifteen minutes delayed.** Yahoo's free
+#: quote data is delayed for most venues, so a TTL shorter than that delay spends a call to
+#: re-fetch a number that cannot have changed — the cache would cost quota and buy nothing.
+#: PLAN §4 names the same figure from the other direction (yfinance is unofficial: cache
+#: aggressively), and ADR-0009 leans on this path for peers, so a `big_tech` ratio comparison
+#: costs six quotes per window rather than six per question.
+QUOTE_TTL_SECONDS = 900
+
+#: How long a fetched headline list is served without re-asking, in seconds.
+#:
+#: The same figure for a different reason: the RSS feeds are free and uncapped, so this is
+#: politeness to a public endpoint rather than budget, and a brief is not a ticker tape — a
+#: headline that broke four minutes ago changes no answer this assistant is qualified to give.
+NEWS_TTL_SECONDS = 900
+
+#: Attempts per fetch, and the first backoff. `0.5 · 2ⁿ` between attempts, so three attempts
+#: wait 0.5s then 1.0s and add **at most 1.5s** to a failing call.
+#:
+#: Calibrated against the characteristic yfinance failure, which is transient: a scrape of a
+#: private endpoint returns an empty body or a 429 and then works. Three attempts is what turns
+#: that into an invisible recovery instead of a stale banner; a fourth would spend 3.5s to
+#: convert a persistent outage into a slower stale banner, which is the wrong trade against
+#: ADR-0005's latency thinking.
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF_SECONDS = 0.5
+
+#: The `days` window `get_recent_news` uses when the model names none, and the ceiling it
+#: clamps to. A month is where "recent news" stops being recent; the default is a week because
+#: that is the window a pre-earnings brief is about.
+NEWS_DEFAULT_DAYS = 7
+NEWS_MAX_DAYS = 30
+
+#: The most headlines one call reports. A cap on the *prompt*, not on the feed: every headline
+#: is text the model pays to read, and a brief that lists twenty is not a brief.
+NEWS_MAX_HEADLINES = 8
+
+#: How long a raw ticker argument may be before it is rejected unread (user story 21).
+#:
+#: The whitelist in `TICKERS` is the real validation — this is the length cap in front of it,
+#: so a model (or an injection routed through a tool argument) cannot hand a lookup a kilobyte
+#: of prose and have it echoed back inside an error message. Five is the longest Universe
+#: ticker; the slack is for a suffix a model might append (`NVDA.US`) that is still worth a
+#: clear "not in the Universe" rather than a length complaint.
+TICKER_MAX_CHARS = 12
+
+#: How long a question may be before the app declines to send it (user story 21).
+#:
+#: A cost and abuse bound, not a linguistic one: no analyst's question is 4,000 characters, and
+#: what arrives at that length is a paste — often a document with instructions in it, which is
+#: ADR-0006's problem and cheaper to refuse here than to classify. Enforced in the UI because
+#: that is the only door a human types through; the agent's own inputs are bounded by the tool
+#: signatures.
+MAX_QUESTION_CHARS = 4000
+
+
+# --------------------------------------------------------------------------------------
 # Retrieval strategy switches (ADR-0004, ADR-0005)
 # --------------------------------------------------------------------------------------
 
