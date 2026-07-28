@@ -6,13 +6,20 @@ that patched the wrong function blocks nothing while every test still passes. Th
 notices — one test per egress path, because the guard is a denylist over the backends this repo
 can reach and not a proof that none exists.
 
-It exists because the failure has a history, now three instances long. Twice it was
+It exists because the failure has a history, now four instances long. Twice it was
 `tiktoken.get_encoding`, which downloads its BPE table and caches it under
 `TIKTOKEN_CACHE_DIR`, so the author's warm cache passed and clean CI egressed silently. The
 third was the *guard's own first draft*, which claimed to cover `curl_cffi` and did not — found
 by `test_curl_cffi_cannot_reach_out_even_though_it_bypasses_the_socket_layer` below, which
-returned a live HTTP 429 before the guard grew a second half. A per-backend test is what turns
-the next instance into a red test instead of a quiet packet.
+returned a live HTTP 429 before the guard grew a second half. The fourth was the guard's
+*second* draft, which patched `getaddrinfo` while a comment in **this file** asserted that
+`gethostbyname` routed through it; it does not, and the call returned a real address.
+
+Two lessons are built into the shape of this file. A per-backend test is what turns the next
+instance into a red test instead of a quiet packet — so a networking dependency without a case
+here is an uncovered path by default. And a *claim in a comment cannot fail*: three of the four
+instances were prose asserting coverage the code lacked, so each test below exercises the call
+it is about rather than reasoning about it.
 """
 
 from __future__ import annotations
@@ -32,12 +39,28 @@ def test_a_tcp_connection_to_a_real_host_is_blocked():
         socket.create_connection(("query1.finance.yahoo.com", 443), timeout=1)
 
 
-def test_a_dns_lookup_for_a_real_host_is_blocked():
+@pytest.mark.parametrize(
+    ("name", "lookup"),
+    [
+        ("getaddrinfo", lambda: socket.getaddrinfo("feeds.finance.yahoo.com", 443)),
+        ("gethostbyname", lambda: socket.gethostbyname("feeds.finance.yahoo.com")),
+        ("gethostbyname_ex", lambda: socket.gethostbyname_ex("feeds.finance.yahoo.com")),
+        ("gethostbyaddr", lambda: socket.gethostbyaddr("104.20.23.154")),
+    ],
+)
+def test_a_dns_lookup_for_a_real_host_is_blocked(name, lookup):
     # Blocked as well as `connect`, because a resolution is already a packet leaving the
     # machine — and because failing here names the host, where a connect timeout names a
-    # socket. `socket.gethostbyname` routes through `getaddrinfo`.
+    # socket.
+    #
+    # **Each resolver is called, not reasoned about.** This test's previous shape exercised
+    # `getaddrinfo` alone and carried a comment asserting "`socket.gethostbyname` routes through
+    # `getaddrinfo`" — which is false. Each of these is its own CPython C entry point into the
+    # platform resolver, and with only `getaddrinfo` patched `gethostbyname` returned a real
+    # address (issue #9 review). A comment cannot fail; a parametrised call can, so the claim
+    # now costs four lines and proves itself. Add a resolver to `conftest`, add a case here.
     with pytest.raises(EgressBlocked):
-        socket.getaddrinfo("feeds.finance.yahoo.com", 443)
+        lookup()
 
 
 def test_urllib_cannot_reach_out():
@@ -45,6 +68,41 @@ def test_urllib_cannot_reach_out():
     # backend `finance/news.py` uses for the RSS feed.
     with pytest.raises((EgressBlocked, OSError)) as caught:
         urllib.request.urlopen("https://query1.finance.yahoo.com/", timeout=1)  # noqa: S310
+    assert "hermetic" in str(caught.value) or isinstance(
+        caught.value.__cause__ or caught.value, EgressBlocked
+    )
+
+
+def test_httpx_cannot_reach_out():
+    # The backend the **paid** path uses, and the one with the most to lose: the `openai` SDK
+    # that `retrieval/embeddings.py` constructs speaks through `httpx`, and so does `chromadb`.
+    # It bottoms out in `create_connection` via its own transport, so the socket guard covers
+    # it — but "covered by inference" is what the `curl_cffi` hole was too, so it gets a test
+    # (issue #9 review).
+    httpx = pytest.importorskip("httpx")
+
+    with pytest.raises((EgressBlocked, httpx.HTTPError)) as caught:
+        httpx.get("https://query1.finance.yahoo.com/", timeout=1)
+    assert "hermetic" in str(caught.value) or isinstance(
+        caught.value.__cause__ or caught.value, EgressBlocked
+    )
+
+
+def test_aiohttp_cannot_reach_out():
+    # `aiohttp` arrives transitively and resolves through its own `ThreadedResolver`, which
+    # calls `getaddrinfo` in an executor rather than on the event loop — a different call path
+    # to `httpx`'s, and the reason it is worth its own test rather than being folded into one
+    # "async HTTP" case.
+    aiohttp = pytest.importorskip("aiohttp")
+    asyncio = pytest.importorskip("asyncio")
+
+    async def fetch():
+        async with aiohttp.ClientSession() as session:  # noqa: SIM117 — the nesting is the API
+            async with session.get("https://query1.finance.yahoo.com/"):
+                pass
+
+    with pytest.raises((EgressBlocked, aiohttp.ClientError, OSError)) as caught:
+        asyncio.run(fetch())
     assert "hermetic" in str(caught.value) or isinstance(
         caught.value.__cause__ or caught.value, EgressBlocked
     )

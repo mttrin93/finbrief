@@ -48,14 +48,20 @@ def _install_egress_guard() -> None:
     *collecting*, before any fixture exists. conftest is imported before the test modules it
     collects, so this is the earliest hook there is.
 
-    **Why a guard at all, given the suite was already hermetic by contract.** Three times now a
+    **Why a guard at all, given the suite was already hermetic by contract.** Four times now a
     ticket has shipped a "hermetic" claim that was false. Twice it was `tiktoken.get_encoding`,
     which downloads its BPE table and caches it, so the author's warm cache passed and clean CI
     egressed silently. The third time was **this function's own first draft**, whose docstring
-    claimed it covered `curl_cffi` and did not — see `_block_curl_cffi` below. An assertion that
-    the suite does not reach the network is worth exactly as much as the author's cache state;
-    this is the mechanism that makes it worth more, and `tests/test_hermetic_suite.py` is what
-    says the mechanism works, backend by backend.
+    claimed it covered `curl_cffi` and did not — see `_block_curl_cffi` below. The fourth was
+    **this function's second draft**, which patched `getaddrinfo` and left the three
+    `gethostby*` resolvers open — see the resolver note below. An assertion that the suite does
+    not reach the network is worth exactly as much as the author's cache state; this is the
+    mechanism that makes it worth more, and `tests/test_hermetic_suite.py` is what says the
+    mechanism works, backend by backend.
+
+    Three of the four were a *docstring or comment* claiming coverage the code lacked, which is
+    the pattern to distrust: prose about a guard cannot fail, so every claim one of these makes
+    now has a test that exercises the call rather than describing it.
 
     **What it is: a denylist over the egress backends this repo can reach, not a proof.**
     Python has no in-process way to stop a C library from opening a socket, so a guard like
@@ -66,14 +72,30 @@ def _install_egress_guard() -> None:
     backend tests, which is where the `curl_cffi` hole was found.
 
     This function covers the **Python socket layer** — `connect`/`connect_ex` (the low-level
-    path), `create_connection` (what `urllib3`, and so `requests`, calls), and `getaddrinfo`,
-    because a DNS query is egress too and blocking it fails earlier and reads more clearly than
-    a connect timeout. Anything with a non-tuple address is left alone: an `AF_UNIX` path.
+    path), `create_connection` (what `urllib3`, and so `requests`, calls), and the **four
+    resolver entry points**, because a DNS query is egress too and blocking it fails earlier and
+    reads more clearly than a connect timeout. Anything with a non-tuple address is left alone:
+    an `AF_UNIX` path.
+
+    **Why four resolvers and not just `getaddrinfo`.** This function's *second* draft patched
+    `getaddrinfo` alone and a comment in `test_hermetic_suite.py` asserted that
+    "`socket.gethostbyname` routes through `getaddrinfo`". It does not: `gethostbyname`,
+    `gethostbyname_ex` and `gethostbyaddr` are each their own CPython C entry point
+    (`socket_gethostbyname` and friends in `socketmodule.c`), calling the platform resolver
+    directly and touching the Python-level `getaddrinfo` this guard replaces not at all.
+    Measured with only `getaddrinfo` patched, `socket.gethostbyname("example.com")` returned
+    `104.20.23.154` — a real DNS query, from inside a suite advertised as hermetic. That is the
+    **fourth** false hermetic claim on this repo, and the third to be a docstring or comment
+    claiming coverage the code lacked, which is why the tests below now *call* each resolver
+    instead of asserting about it in prose (issue #9 review).
     """
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
     real_create_connection = socket.create_connection
     real_getaddrinfo = socket.getaddrinfo
+    real_gethostbyname = socket.gethostbyname
+    real_gethostbyname_ex = socket.gethostbyname_ex
+    real_gethostbyaddr = socket.gethostbyaddr
 
     def blocked(target: object) -> EgressBlocked:
         return EgressBlocked(
@@ -110,10 +132,31 @@ def _install_egress_guard() -> None:
             raise blocked(host)
         return real_getaddrinfo(host, *args, **kwargs)
 
+    def guarded_gethostbyname(hostname):
+        if not local_host(hostname):
+            raise blocked(hostname)
+        return real_gethostbyname(hostname)
+
+    def guarded_gethostbyname_ex(hostname):
+        if not local_host(hostname):
+            raise blocked(hostname)
+        return real_gethostbyname_ex(hostname)
+
+    def guarded_gethostbyaddr(ip_address):
+        # A reverse lookup queries a PTR record, so the address here is the *question* asked of
+        # the resolver rather than a host being connected to — but it is still a packet, and
+        # `local_host` reads it the same way.
+        if not local_host(ip_address):
+            raise blocked(ip_address)
+        return real_gethostbyaddr(ip_address)
+
     socket.socket.connect = guarded_connect
     socket.socket.connect_ex = guarded_connect_ex
     socket.create_connection = guarded_create_connection
     socket.getaddrinfo = guarded_getaddrinfo
+    socket.gethostbyname = guarded_gethostbyname
+    socket.gethostbyname_ex = guarded_gethostbyname_ex
+    socket.gethostbyaddr = guarded_gethostbyaddr
 
 
 def _block_curl_cffi() -> None:
