@@ -5,8 +5,8 @@
     "authored_by": "a different model than the answering pipeline (ADR-0002 decision 1)",
     "method": "Reference answers and passages were read directly out of the ingested Chroma collection's chunk text (data/chroma/chroma.sqlite3, embedding_metadata). retrieve() was never called and the app was never opened, so no reference is derived from retriever output.",
     "collection_ingest_run": "2026-07-27 08:51 UTC, 5842 chunks, docs/verification/ingest-report.md",
-    "verified_against_edgar": false,
-    "verification_note": "Every row carries its own verified_against_edgar flag, all false until the hand-verification pass against the primary source completes (ADR-0002 decision 1: candidates are hand-verified, never self-certified). Ingestion could in principle mis-parse a section, and a mis-parse would propagate straight into ground truth.",
+    "verified_against_edgar": true,
+    "verification_note": "The hand-verification pass against the primary source is COMPLETE: all 28 rows verified against their EDGAR filings, so the set-level flag reads true (ADR-0002 decision 1: candidates are hand-verified, never self-certified — the flag is bound to the conjunction of the rows by tests/test_golden_set.py, so it cannot read true over a partial pass). The record of what was checked, row by row and against which filing, is docs/golden-set-edgar-checklist.md: 10 rows figure-by-figure (S1's enumeration plus the 9 numeric rows) and the other 18 as a verbatim-quote pass. The pass exists because ingestion could in principle mis-parse a Section, and a mis-parse would propagate straight into ground truth; reading the ingested chunk back would not catch it, which is why the check is against EDGAR.",
     "excluded": "Guardrail and injection cases are deliberately absent (ADR-0002 decision 2) — faithfulness against a refusal is undefined. They live in the Phase-5 security suite as pass/fail assertions.",
     "fiscal_years": "One filing per company, the most recent, so the fiscal year is per filer: NVDA is FY2026, the other 14 are FY2025 (issue #4, T3 constraint b). Every year in a question and every citation matches that filer's own fiscal year.",
     "item_7a_pointer_filers": "BAC, GS, JNJ, JPM, LLY, PFE answer Item 7A by incorporating Item 7 by reference, so they have no Item 7A chunks. Their market-risk rows expect Item 7 grounding (config.ITEM_7A_POINTER_FILERS, ADR-0007 amendment).",
@@ -83,7 +83,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "S3",
@@ -159,7 +159,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false,
+      "verified_against_edgar": true,
       "authoring_note": "Wording is a judgment call, not ADR-0004 §11's text. §11 names S1 and S2 verbatim but only says Apple is \"worth a second labelled question\". This row deliberately does NOT reuse the `what are the main ... for X?` shape: three near-identical rows in a 7-question bucket would let one query shape dominate the bucket mean. The cost is that it drops the corpus-rare `main` and so is a weaker joint probe of §10 + §11."
     },
     {
@@ -184,7 +184,7 @@
       "recall_trivial_sections": ["MSFT Item 7A"],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "S5",
@@ -208,7 +208,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "S6",
@@ -236,7 +236,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "S7",
@@ -263,7 +263,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E1",
@@ -288,7 +288,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false,
+      "verified_against_edgar": true,
       "authoring_note": "The answer sentence sits at the tail of a chunk that is mostly talc litigation, so a k=5 retrieval that returns talc chunks is behaving well. Do not read a low context-precision score here as a miss without looking."
     },
     {
@@ -468,7 +468,7 @@
         "peer_set": null,
         "n": null
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T2",
@@ -497,7 +497,7 @@
         "peer_set": ["TSLA", "GM"],
         "n": 2
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T3",
@@ -527,7 +527,7 @@
         "peer_set": null,
         "n": null
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T4",
@@ -556,7 +556,7 @@
         "peer_set": null,
         "n": null
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T5",
@@ -585,7 +585,7 @@
         "peer_set": ["JNJ", "PFE"],
         "n": 2
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T6",
@@ -614,7 +614,7 @@
         "peer_set": null,
         "n": null
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T7",
@@ -646,7 +646,7 @@
         "peer_set": null,
         "n": null
       },
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M1",
@@ -683,7 +683,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M2",
@@ -760,7 +760,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M4",
@@ -793,7 +793,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M5",
@@ -830,7 +830,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M6",

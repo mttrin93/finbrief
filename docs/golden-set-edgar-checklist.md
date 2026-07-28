@@ -23,10 +23,12 @@ Two decisions, recorded so a future reader does not have to reconstruct them:
    be updated by hand, and nothing enforces that. Recorded as a known limitation rather than
    left as a surprise.
 
-Candidates live in `src/finbrief/evaluation/golden_set.json`, every row currently
-`verified_against_edgar: false`. `tests/test_golden_set.py` binds the set-level flag to the
-conjunction of the rows, so the set cannot claim verification until each box below is ticked and
-the flags flipped.
+**Status: the pass is complete.** All 94 boxes below are ticked, all 28 rows in
+`src/finbrief/evaluation/golden_set.json` carry `verified_against_edgar: true`, and the set-level
+`provenance.verified_against_edgar` is true — which `tests/test_golden_set.py` permits only
+because every row is. That test binds the set-level claim to the conjunction of the rows, so the
+flag could not have read true over a partial pass; it now confirms the pass rather than blocking
+it. The golden set is measurement-ready and may be cited (ADR-0002).
 
 **Scope: all 28 rows, in two sections with two different bars.** The numeric section below covers
 the 10 rows whose ground truth is a figure or an enumeration, figure by figure. *Prose rows
@@ -243,8 +245,8 @@ phrases below avoid them.
 
 Search: **"narrower product lines may let them be more effective in deploying technical"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -254,8 +256,8 @@ Search: **"narrower product lines may let them be more effective in deploying te
 
 Search: **"global supply chain is large and complex"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A** — and *not* in Goldman's or JPMorgan's Apple Card discussion, which is
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A** — and *not* in Goldman's or JPMorgan's Apple Card discussion, which is
       this row's 45 labelled false positives
 
 ---
@@ -266,8 +268,8 @@ Search: **"global supply chain is large and complex"**
 
 Search: **"monitor our foreign currency exposures daily to maximize the economic effectiveness"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7A**
 
 ---
 
@@ -280,8 +282,8 @@ Search: **"e-commerce services, web and infrastructure computing services"**
 The obvious phrase — "rapidly evolving and intensely competitive" — also appears in Alphabet's
 filing, so this longer one is used instead.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -291,8 +293,8 @@ filing, so this longer one is used instead.
 
 Search: **"positions held for market making for our clients and for our investing and financing activities"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7** — and Goldman's Item 7A is a pointer into Item 7, holding no market-risk
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7** — and Goldman's Item 7A is a pointer into Item 7, holding no market-risk
       text of its own. This is the row that asserts the pointer-filer rule, so the Item check *is*
       the substance here, not a formality.
 
@@ -307,8 +309,8 @@ Search: **"continued strain in U.S.-China relations"** (chunk `:69`)
 The row's other chunk `:7` carries a near-identical planning sentence; Ford states it twice, which
 is why the row cites both.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -318,8 +320,8 @@ is why the row cites both.
 
 Search: **"does not purchase third-party product liability insurance"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -329,8 +331,8 @@ Search: **"does not purchase third-party product liability insurance"**
 
 Search: **"data center scale AI infrastructure company reshaping all industries"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1**, in the **FY2026** 10-K
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1**, in the **FY2026** 10-K
 
 ---
 
@@ -343,8 +345,8 @@ Search: **"leverage framework that targets investment grade credit ratings"**
 Same chunk as E6, already checked for its figures above — this box is only the leverage-framework
 sentence T2's reference quotes.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7**
 
 ---
 
@@ -354,8 +356,8 @@ sentence T2's reference quotes.
 
 Search: **"thousands of parts purchased globally from hundreds of suppliers"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -365,8 +367,8 @@ Search: **"thousands of parts purchased globally from hundreds of suppliers"**
 
 Search: **"organized our operations into three segments"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1** — Amazon repeats the segment list in Item 7 and Item 8, so confirm the
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1** — Amazon repeats the segment list in Item 7 and Item 8, so confirm the
       hit is the Item 1 one
 
 ---
@@ -380,8 +382,8 @@ Search: **"cardiometabolic health products will continue to represent a signific
 Same chunk as E2, whose figures are checked above — this box is the qualitative sentence T5's
 reference adds.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -393,8 +395,8 @@ Search: **"presented on a basis consistent with our internal management reportin
 
 The segment names themselves recur throughout the filing, so this sentence is the anchor.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7**
 
 ---
 
@@ -404,8 +406,8 @@ The segment names themselves recur throughout the filing, so this sentence is th
 
 Search: **"reducing or pausing certain imports"** (chunk `:39`)
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -418,8 +420,8 @@ E4 above; these boxes are the liquidity and cyclicality prose plus the Item 1A h
 
 Search: **"overall growth has allowed our business to generally fund itself"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7**
 
 **TSLA Item 1A** `0001628280-26-003952:Item 1A:6`
 
@@ -427,8 +429,8 @@ Search: **"U.S. trade policy alterations in 2025"**
 
 Same chunk as T3 — one search covers both rows.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -438,15 +440,15 @@ Same chunk as T3 — one search covers both rows.
 
 Search: **"Unprecedented trade policy (including tariffs)"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 **GM** `0001467858-26-000013:Item 1A:38`, `:39` · https://www.sec.gov/Archives/edgar/data/1467858/0001467858-26-000013-index.html
 
 Search: **"cannot predict with complete precision the breadth of tariffs"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
@@ -459,8 +461,8 @@ substance of this row rather than a formality.
 
 Search: **"primarily within our Global Markets segment"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7**, and BAC's Item 7A is a pointer into Item 7
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7**, and BAC's Item 7A is a pointer into Item 7
 
 **GS** `0000886982-26-000091:Item 7:311` · https://www.sec.gov/Archives/edgar/data/886982/0000886982-26-000091-index.html
 
@@ -468,8 +470,8 @@ Search: **"adverse impact to our earnings due to changes in market conditions"**
 
 Same chunk as S6 — one search covers both rows.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 7**, and GS's Item 7A is a pointer into Item 7
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 7**, and GS's Item 7A is a pointer into Item 7
 
 ---
 
@@ -481,15 +483,15 @@ Search: **"patent-based or regulatory exclusivity expiries in 2026 through 2030"
 
 Pfizer states this twice (chunks `:14` and `:19`), which is why the row cites both.
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 **LLY** `0000059478-26-000013:Item 1A:40` · https://www.sec.gov/Archives/edgar/data/59478/0000059478-26-000013-index.html
 
 Search: **"Trulicity will lose significant patent and remaining data protections"**
 
-- [ ] the quoted passage appears in the filing
-- [ ] it is in **Item 1A**
+- [x] the quoted passage appears in the filing
+- [x] it is in **Item 1A**
 
 ---
 
