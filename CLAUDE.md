@@ -43,8 +43,12 @@ uv run python scripts/security_suite.py --gate-only # layers 1-4 only: no embedd
 agent turns) and exists because three of ADR-0006's claims cannot be met by a test: whether a
 real model recognises a *novel* payload, whether a real model *obeys* a planted one, and the
 latency p50, which is a measurement. It exits non-zero on a failing suite. `--gate-only` is a
-legitimate cheap check and says in the artifact which half it covered — never commit a partial
-run as a full one.
+legitimate cheap check and says in the artifact which half it covered — a **PARTIAL RUN** banner
+above the outcome line, and "planted payloads **not run**" in place of a count. Never commit a
+partial run as a full one. That promise was prose until issue #8's review: the artifact's only
+signal was `0/0 planted payload(s) resisted`, and because `all(())` is `True` a `SuiteRun` with
+nothing in it at all rendered **SUITE PASSED** and exited 0. `SuiteRun.passed` now requires that
+each half measured something, so an empty suite fails.
 
 Never invoke any of these from a test.
 

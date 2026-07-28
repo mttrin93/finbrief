@@ -137,9 +137,29 @@ class SuiteRun:
     generated: str
     classifier_model: str
     chat_model: str
+    #: Whether this run skipped the indirect-injection half (`--gate-only`).
+    #:
+    #: **On the run rather than inferred from an empty `injections`**, because those are
+    #: different facts: "the paid half was not run" is about coverage, and "the paid half found
+    #: no payloads" would be a defect. The artifact says which, and CLAUDE.md's promise that
+    #: `--gate-only` "says in the artifact which half it covered" is what this field keeps.
+    gate_only: bool = False
 
     @property
     def passed(self) -> bool:
+        """Whether this run measured what it claims and everything it measured passed.
+
+        **The emptiness checks are the point.** `all(())` is `True`, so a `SuiteRun` with
+        nothing in it rendered `SUITE PASSED — 0/0 attack(s) ... 0/0 planted payload(s)
+        resisted` and exited 0 — a green suite about nothing, which is this repo's named bug
+        class at the level of the whole artifact (issue #8 review). A suite is only passing if
+        it screened something, validated something, and — unless `--gate-only` was asked for —
+        planted something.
+        """
+        if not self.gate or not self.answers:
+            return False
+        if not self.gate_only and not self.injections:
+            return False
         return all(result.passed for result in (*self.gate, *self.answers, *self.injections))
 
 
@@ -186,16 +206,50 @@ This is a **pass/fail security suite, not an evaluation** (ADR-0002): injection
 cases are deliberately absent from the RAGAs table, because faithfulness against
 a refusal is undefined. Nothing here is a retrieval- or answer-quality claim.
 
-- Generated: {run.generated} · `scripts/security_suite.py`
+{_coverage(run)}- Generated: {run.generated} · `scripts/security_suite.py`
 - Models: classifier `{run.classifier_model}` · agent `{run.chat_model}`
 - Outcome: **{"SUITE PASSED" if run.passed else "SUITE FAILED"}** — \
 {sum(result.passed for result in attacks)}/{len(attacks)} attack(s) stopped by the \
 expected layer, {sum(result.passed for result in benign)}/{len(benign)} benign \
 question(s) allowed, {sum(result.passed for result in run.answers)}/\
-{len(run.answers)} answer verdict(s) correct, \
-{sum(result.passed for result in run.injections)}/{len(run.injections)} planted \
-payload(s) resisted
+{len(run.answers)} answer verdict(s) correct, {_planted_outcome(run)}
 """
+
+
+def _planted_outcome(run: SuiteRun) -> str:
+    """`n/n planted payload(s) retrieved and resisted`, or the reason there is no number.
+
+    "retrieved and resisted" rather than "resisted", because retrieval is half of what a pass
+    means here (`InjectionResult.passed`) and the shorter wording invited exactly the reading
+    the `retrieved` column exists to prevent. `--gate-only` prints words instead of `0/0`: an
+    absence is not a measurement (CLAUDE.md).
+    """
+    if not run.injections:
+        return (
+            "planted payloads **not run** (`--gate-only`)"
+            if run.gate_only
+            else "**no planted payloads measured** — a full run plants five"
+        )
+    passed = sum(result.passed for result in run.injections)
+    return f"{passed}/{len(run.injections)} planted payload(s) retrieved and resisted"
+
+
+def _coverage(run: SuiteRun) -> str:
+    """A banner naming the half a `--gate-only` run did not cover, or nothing at all.
+
+    Above the outcome line rather than below it, because the outcome is what a reader takes away
+    and "PASSED" means something different for half a suite. CLAUDE.md requires this: the cheap
+    run is legitimate and a partial run committed as a full one is not, and until issue #8's
+    review the only trace of the difference was a `0/0` that read like a suite with no payloads.
+    """
+    if not run.gate_only:
+        return ""
+    return (
+        "> **PARTIAL RUN — layers 1–4 only; indirect injection not run.** `--gate-only` skips\n"
+        "> the paid half: no embeddings, no throwaway collection, no agent turns. The planted\n"
+        "> payload counts below are therefore *unmeasured*, not zero, and this artifact\n"
+        "> must not be read — or committed — as a full run.\n\n"
+    )
 
 
 def _marginal_contribution(run: SuiteRun) -> str:
@@ -356,6 +410,24 @@ are the answers FinBrief exists to write.
 
 
 def _injection_section(run: SuiteRun) -> str:
+    if not run.injections:
+        # **The prose below describes a collection that was never built**, so it must not be
+        # printed. Until issue #8's review a `--gate-only` run rendered the whole section — the
+        # throwaway collection, the canaries, the `retrieved` argument — above an empty table,
+        # which reads as five payloads that happened not to be listed rather than a half that
+        # never ran.
+        return f"""\
+## Indirect injection — planted payloads, live (user story 17)
+
+{
+            "**Not run.** `--gate-only` skips this half, which needs the paid embedding "
+            "model and real agent turns. Nothing here was measured — see the banner above."
+            if run.gate_only
+            else "**No planted payloads were measured, and a full run plants five.** That is a "
+            "defect in the run, not a result: `corpus.PLANTED_PAYLOADS` is non-empty, so an "
+            "empty section means the indirect half did not execute."
+        }
+"""
     rows = "\n".join(
         f"| {result.payload_id} | {result.technique} | "
         f"{'yes' if result.retrieved else '**NOT RETRIEVED**'} | "

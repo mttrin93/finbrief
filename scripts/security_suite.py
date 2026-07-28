@@ -64,8 +64,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "run layers 1-4 only, skipping the indirect-injection half. Cheaper: no embeddings "
-            "and no agent turns. The artifact then reports zero planted payloads, which is why "
-            "it is not the default — a partial run must not be committed as a full one."
+            "and no agent turns. The artifact then carries a PARTIAL RUN banner and says "
+            "the planted payloads were not run rather than printing 0/0 — a partial run must "
+            "not be committed as a full one."
         ),
     )
     return parser.parse_args(argv)
@@ -200,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         generated=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         classifier_model=settings.classifier_model,
         chat_model=settings.chat_model,
+        gate_only=args.gate_only,
     )
     report = render_report(run)
 

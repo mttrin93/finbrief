@@ -213,7 +213,7 @@ def test_no_escalated_screening_reports_not_measured_rather_than_zero() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def a_run(*, gate=(), answers=(), injections=()) -> SuiteRun:
+def a_run(*, gate=(), answers=(), injections=(), gate_only=False) -> SuiteRun:
     return SuiteRun(
         gate=gate,
         answers=answers,
@@ -221,6 +221,34 @@ def a_run(*, gate=(), answers=(), injections=()) -> SuiteRun:
         generated="2026-07-28 12:00 UTC",
         classifier_model="openai/gpt-4o-mini",
         chat_model="openai/gpt-4o-mini",
+        gate_only=gate_only,
+    )
+
+
+def a_complete_run(**kwargs) -> SuiteRun:
+    """A run that measured something in every half — the baseline `SuiteRun.passed` requires.
+
+    Spelled out as a helper because `a_run()` is deliberately empty, and after issue #8's review
+    an empty run is a *failing* one: `all(())` is `True`, so a suite with nothing in it used to
+    render SUITE PASSED.
+    """
+    resisted = InjectionResult(
+        payload_id="p",
+        technique="t",
+        retrieved=True,
+        obeyed=False,
+        leaked=False,
+        refused_by_validator=False,
+        excerpt="Tesla identifies supply chain concentration.",
+    )
+    refused = AnswerResult(text="You should buy it.", expected_refusal=True, refused=True)
+    return a_run(
+        **{
+            "gate": (a_gate_result(),),
+            "answers": (refused,),
+            "injections": (resisted,),
+            **kwargs,
+        }
     )
 
 
@@ -270,7 +298,13 @@ def test_a_failing_run_says_so_in_its_own_header() -> None:
 
 
 def test_a_passing_run_says_so() -> None:
-    assert "SUITE PASSED" in render_report(a_run(gate=(a_gate_result(),)))
+    """A run that measured all three halves and passed them. `a_complete_run` is the baseline.
+
+    It used to be `a_run(gate=(a_gate_result(),))` — one screening, no answers, no payloads —
+    and that rendered SUITE PASSED, which is the emptiness hole from the other side (issue #8
+    review).
+    """
+    assert "SUITE PASSED" in render_report(a_complete_run())
 
 
 def test_the_marginal_contribution_table_counts_this_runs_catches() -> None:
@@ -324,6 +358,45 @@ def test_an_answer_containing_a_pipe_cannot_break_the_table() -> None:
     )
 
     assert "Buy \\| sell \\| hold now" in report
+
+
+def test_a_suite_that_measured_nothing_does_not_pass() -> None:
+    """`all(())` is `True`, which made an empty run render SUITE PASSED and exit 0.
+
+    The whole-artifact version of the bug class: 0/0 on every count, the injection section's
+    prose about a throwaway collection printed above an empty table, and a zero exit status
+    (issue #8 review). A suite is passing only if it screened, validated and planted something.
+    """
+    empty = a_run()
+
+    assert empty.passed is False
+    assert "SUITE FAILED" in render_report(empty)
+
+
+def test_a_gate_only_run_says_which_half_it_covered() -> None:
+    """CLAUDE.md's promise about `--gate-only`, which the artifact did not keep.
+
+    The cheap run is legitimate, so it must be able to pass — but it must not be mistakable for
+    a full one, and `0/0 planted payload(s) resisted` was the only difference. An absence is not
+    a measurement: "not run" and "found nothing" are different claims.
+    """
+    partial = a_complete_run(injections=(), gate_only=True)
+    report = render_report(partial)
+
+    assert partial.passed is True
+    assert "PARTIAL RUN" in report
+    assert "indirect injection not run" in report
+    assert "planted payloads **not run**" in report
+    # The prose about a collection that was never built must not be printed.
+    assert "throwaway collection built for this run" not in report
+
+
+def test_a_full_run_missing_its_planted_payloads_fails_rather_than_reading_empty() -> None:
+    """The other side of the coin: an empty `injections` without `--gate-only` is a defect."""
+    broken = a_complete_run(injections=())
+
+    assert broken.passed is False
+    assert "no planted payloads measured" in render_report(broken).lower()
 
 
 def test_the_report_states_what_it_does_not_establish() -> None:
