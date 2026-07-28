@@ -80,6 +80,25 @@ order; `a_context`, the shared `Context` builder) and conftest builds `filings_s
 searchable by the paid model that wrote it, so a test that reaches for it either needs a key
 or asserts against noise.
 
+**A check that cannot fail is the bug class this repo keeps hitting**, and it is worth naming as
+one because the instances look unrelated until they are listed: tiktoken's warm cache made a
+"hermetic" suite pass locally and egress in CI (twice); the guard's docstring claimed `curl_cffi`
+coverage it lacked; a comment claimed `gethostbyname` routed through `getaddrinfo`; and
+`MAX_AGENT_STEPS` was pinned by `serial_full_brief < MAX_AGENT_STEPS`, an inequality that 15, 20
+and 24 all satisfy. **Prefer a check that exercises the thing over one that describes it, and
+prefer an equality over a bound.**
+
+The newest instance is a Streamlit-specific trap, so it is written down rather than rediscovered:
+**`AppTest.get("...")` returns `[]` for an element type it does not know, instead of raising.**
+`st.bar_chart` and `st.line_chart` both reach the element tree as `vega_lite_chart`, for which
+`AppTest` ships no typed accessor — they arrive as `UnknownElement` — so
+`assert not app.get("arrow_bar_chart")` passes on a page rendering no charts *and* on a page
+rendering ten. Assert against `tests/test_app_smoke.py`'s `charts()` helper, which walks the tree
+for `type == "vega_lite_chart"`; it also descends into `st.columns`, which `app.chat_message[n]`
+does not, so a chart inside a column is invisible to the obvious lookup as well. A new
+`app.get(...)` against an element `AppTest` has no wrapper for is a vacuous assertion by default
+(issue #9 review).
+
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
 - `config.py` owns every knob, plus `CHUNK_SIZE_CHARS` — never copy the value. The
