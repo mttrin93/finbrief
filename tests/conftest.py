@@ -403,8 +403,10 @@ def planted_store(tmp_path):
     EDGAR one, and a payload written into the collection real questions are answered from would
     make every other test's fixture adversarial.
 
-    The filer is `ZZZ`, which is not in the Universe, and the accession is all zeroes — so a
-    chunk from here is identifiable on sight if one ever turns up where it should not.
+    A chunk from here is identifiable on sight by its provenance rather than its ticker: the
+    accession is all zeroes and the fiscal year is 1970. The ticker is deliberately a real
+    Universe member — `corpus.PLANTED_PAYLOADS` records why, and it is a finding rather than a
+    convenience.
     """
     from finbrief.retrieval.vectorstore import build_filings_store, write_chunks
     from finbrief.security.corpus import planted_chunks

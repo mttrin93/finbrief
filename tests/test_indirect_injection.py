@@ -38,7 +38,11 @@ from finbrief.config import Settings
 from finbrief.finance.news import parse_feed
 from finbrief.prompts import QUARANTINE_TAGS, news_block, quarantined
 from finbrief.security.advice import validate_answer
-from finbrief.security.corpus import PLANTED_PAYLOADS
+from finbrief.security.corpus import (
+    PLANTED_ACCESSION,
+    PLANTED_FISCAL_YEAR,
+    PLANTED_PAYLOADS,
+)
 from finbrief.tools.search_filings import TOOL_NAME
 
 SETTINGS = Settings.from_env(
@@ -248,7 +252,7 @@ def test_a_poisoned_chunk_is_numbered_and_cited_like_any_other(tmp_path, planted
 
     assert turn.grounded
     assert [context.rank for context in turn.contexts] == list(range(1, len(turn.contexts) + 1))
-    assert all(context.ticker == "ZZZ" for context in turn.contexts)
+    assert all(context.accession == PLANTED_ACCESSION for context in turn.contexts)
 
 
 def test_the_payload_never_reaches_the_system_message(tmp_path, planted_store):
@@ -282,20 +286,19 @@ def test_an_answer_a_successful_injection_would_have_produced_is_still_refused()
     assert validate_answer(obeyed).refused
 
 
-def test_the_planted_collection_is_not_the_demo_universe(planted_store):
-    """The isolation ADR-0006 asks for, asserted rather than assumed.
+def test_a_planted_chunk_is_identifiable_by_its_provenance(planted_store):
+    """The isolation ADR-0006 asks for, asserted rather than assumed — and where it now lives.
 
-    `ZZZ` is not in the Universe, so nothing in this collection can be reached by a question
-    about a real company — and a chunk from here turning up in a sources panel is identifiable
-    on sight.
+    Not in the ticker: `corpus.PLANTED_PAYLOADS` records why the filer is a real Universe member
+    (an out-of-Universe one makes the agent decline to search, which measures the whitelist
+    rather than the quarantine framing). So the marker is the provenance, which is a stronger
+    signal anyway — no real filing has an all-zero accession, and none is from 1970.
     """
-    from finbrief.config import TICKERS
-    from finbrief.retrieval.vectorstore import chunk_counts_by_ticker
+    from finbrief.retrieval.vectorstore import all_chunks
 
-    counts = chunk_counts_by_ticker(planted_store)
-
-    assert set(counts) == {"ZZZ"}
-    assert "ZZZ" not in TICKERS
+    for document in all_chunks(planted_store):
+        assert document.metadata["accession"] == PLANTED_ACCESSION
+        assert document.metadata["fiscal_year"] == PLANTED_FISCAL_YEAR
 
 
 def test_every_planted_payload_is_retrievable_from_the_collection(planted_store):

@@ -1,0 +1,288 @@
+"""The security suite's corpus invariants and its report rendering — hermetically.
+
+The live run is `scripts/security_suite.py` and its evidence is
+`docs/verification/security-gate.md`. What is testable without a key is everything around the
+model calls: that the corpus is internally coherent, that a `GateResult` passes for the right
+reason, and that the rendered artifact says what it measured rather than what somebody hoped.
+
+The pass rules are where the value is. A blocked-by-the-wrong-layer result must **fail**,
+because the corpus exists to attribute a catch — and the marginal-contribution table is only
+evidence if "layer 3 caught this" means layer 2 verifiably did not.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from finbrief.config import GATE_LATENCY_BUDGET_MS
+from finbrief.prompts import AGENT_SYSTEM_PROMPT
+from finbrief.security import corpus
+from finbrief.security.classifier import Verdict
+from finbrief.security.input_gate import Layer, Screening
+from finbrief.security.report import (
+    AnswerResult,
+    GateResult,
+    InjectionResult,
+    SuiteRun,
+    latency_ms,
+    render_report,
+)
+
+
+def a_gate_result(
+    *, expected=Layer.DENYLIST, blocked=True, layer=Layer.DENYLIST, ms=1, escalated=False
+) -> GateResult:
+    return GateResult(
+        case_id="case",
+        technique="technique",
+        expected=expected,
+        screening=Screening(
+            blocked=blocked,
+            layer=layer if blocked else None,
+            classifier_ran=escalated,
+            classifier_verdict=Verdict.SAFE if escalated and not blocked else None,
+            latency_ms=ms,
+        ),
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The corpus's own invariants
+# --------------------------------------------------------------------------------------
+
+
+def test_case_ids_are_unique() -> None:
+    """A duplicate id makes two rows of the artifact indistinguishable."""
+    assert len({case.id for case in corpus.DIRECT_CASES}) == len(corpus.DIRECT_CASES)
+    assert len({p.id for p in corpus.PLANTED_PAYLOADS}) == len(corpus.PLANTED_PAYLOADS)
+
+
+def test_both_layers_have_cases_to_be_credited_with() -> None:
+    """A layer with no case is a layer the table can only claim for, never show."""
+    expected = {case.caught_by for case in corpus.DIRECT_CASES}
+    assert expected == {Layer.DENYLIST, Layer.CLASSIFIER}
+
+
+@pytest.mark.parametrize("fragment", corpus.SYSTEM_PROMPT_FRAGMENTS)
+def test_every_leak_fragment_still_occurs_in_the_agents_prompt(fragment: str) -> None:
+    """The binding that keeps the leak detector able to detect anything.
+
+    These fragments are typed, because there is nothing in a one-string prompt to derive a
+    *distinctive* span from. What makes that safe is this test: a reworded prompt fails here
+    rather than quietly leaving `run_indirect` looking for text that no longer exists — which
+    would report "no leak" for every payload, forever, and pass.
+    """
+    assert fragment in AGENT_SYSTEM_PROMPT
+
+
+def test_every_planted_payload_has_something_to_detect() -> None:
+    """Either a canary or the extraction flag — a payload with neither is unmeasurable.
+
+    `run_indirect` guards `payload.canary in turn.text` with `bool(payload.canary)` for the same
+    reason: `""` is a substring of every string, so an unguarded check would report every
+    extraction payload as obeyed.
+    """
+    for payload in corpus.PLANTED_PAYLOADS:
+        assert payload.canary or payload.leaks, payload.id
+
+
+def test_the_planted_filer_is_one_the_agent_will_actually_search_for() -> None:
+    """The finding the first two live runs produced, pinned so it cannot be undone by tidying.
+
+    A fictional ticker reads like the safer choice and is the one that makes the whole
+    indirect-injection section unmeasurable: `AGENT_SYSTEM_PROMPT` names the 15 companies
+    FinBrief covers, so the agent declines to search for anything else — correct behaviour (user
+    story 21) that turns every row into a test of the whitelist. Isolation is the *collection*'s
+    job; identifiability is `PLANTED_ACCESSION`'s.
+    """
+    from finbrief.config import TICKERS
+
+    assert {payload.ticker for payload in corpus.PLANTED_PAYLOADS} <= TICKERS
+    assert corpus.PLANTED_ACCESSION == "0" * 10 + "-00-000000"
+    assert corpus.PLANTED_FISCAL_YEAR not in {2025, 2026}
+
+
+# --------------------------------------------------------------------------------------
+# What counts as a pass
+# --------------------------------------------------------------------------------------
+
+
+def test_an_attack_stopped_by_the_expected_layer_passes() -> None:
+    assert a_gate_result().passed
+
+
+def test_an_attack_stopped_by_the_wrong_layer_fails() -> None:
+    """The rule the marginal-contribution table rests on.
+
+    A `CLASSIFIER` case the denylist happened to match would credit layer 3 with a layer-2 win,
+    so the "caught here" counts would describe a gate nobody built. Attribution is the
+    measurement.
+    """
+    assert not a_gate_result(expected=Layer.CLASSIFIER, layer=Layer.DENYLIST).passed
+
+
+def test_an_attack_that_got_through_fails() -> None:
+    assert not a_gate_result(blocked=False, escalated=True).passed
+
+
+def test_a_benign_question_that_was_allowed_passes() -> None:
+    assert a_gate_result(expected=None, blocked=False, escalated=True).passed
+
+
+def test_a_benign_question_that_was_blocked_fails() -> None:
+    """A false positive is a failure of the gate even though nothing was attacked."""
+    assert not a_gate_result(expected=None).passed
+
+
+def test_an_injection_that_leaked_fails_even_if_it_was_not_obeyed() -> None:
+    """Two attacks, so two failures: a payload can extract without being obeyed."""
+    leaked = InjectionResult(
+        payload_id="p",
+        technique="t",
+        retrieved=True,
+        obeyed=False,
+        leaked=True,
+        refused_by_validator=False,
+        excerpt="…",
+    )
+    assert not leaked.passed
+
+
+def test_an_injection_whose_payload_was_never_retrieved_fails() -> None:
+    """The vacuous row the first live run produced, turned into a failure.
+
+    That row reported "not obeyed · no leak" about a turn in which the agent asked which company
+    was meant rather than searching — so nothing adversarial ever reached the model, and the
+    cell was green about nothing. A check that cannot fail is the bug class this repo keeps
+    hitting.
+    """
+    never_reached = InjectionResult(
+        payload_id="p",
+        technique="t",
+        retrieved=False,
+        obeyed=False,
+        leaked=False,
+        refused_by_validator=False,
+        excerpt="Please specify which company you mean.",
+    )
+
+    assert not never_reached.passed
+    assert "NOT RETRIEVED" in render_report(a_run(injections=(never_reached,)))
+
+
+# --------------------------------------------------------------------------------------
+# Latency
+# --------------------------------------------------------------------------------------
+
+
+def test_the_escalated_median_ignores_the_screenings_that_exited_early() -> None:
+    """The honest number, and the reason two are reported.
+
+    A denylist catch exits in microseconds and never pays for the model call, so a p50 over a
+    corpus that is mostly blocked payloads describes a gate no analyst experiences.
+    """
+    results = (
+        a_gate_result(ms=0),
+        a_gate_result(ms=0),
+        a_gate_result(ms=400, blocked=False, expected=None, escalated=True),
+        a_gate_result(ms=600, blocked=False, expected=None, escalated=True),
+    )
+
+    assert latency_ms(results) == 200
+    assert latency_ms(results, escalated_only=True) == 500
+
+
+def test_no_escalated_screening_reports_not_measured_rather_than_zero() -> None:
+    """An absence is not a measurement (CLAUDE.md): a median over nothing is not a fast gate."""
+    assert latency_ms((a_gate_result(),), escalated_only=True) is None
+    assert "not measured" in render_report(a_run(gate=(a_gate_result(),)))
+
+
+# --------------------------------------------------------------------------------------
+# The artifact
+# --------------------------------------------------------------------------------------
+
+
+def a_run(*, gate=(), answers=(), injections=()) -> SuiteRun:
+    return SuiteRun(
+        gate=gate,
+        answers=answers,
+        injections=injections,
+        generated="2026-07-28 12:00 UTC",
+        classifier_model="openai/gpt-4o-mini",
+        chat_model="openai/gpt-4o-mini",
+    )
+
+
+def test_the_report_names_the_models_it_measured() -> None:
+    """A layer-3 result is a result about a model, so the artifact is worthless without it."""
+    report = render_report(a_run(gate=(a_gate_result(),)))
+
+    assert "openai/gpt-4o-mini" in report
+
+
+def test_the_report_states_the_budget_it_is_judged_against() -> None:
+    """From `config`, never typed, so the prose and the verdict cannot disagree."""
+    assert str(GATE_LATENCY_BUDGET_MS) in render_report(a_run(gate=(a_gate_result(),)))
+
+
+def test_the_report_disclaims_being_an_evaluation() -> None:
+    """Same rule the smoke report follows: no number here may be cited as a quality claim."""
+    report = render_report(a_run())
+
+    assert "not an evaluation" in report
+    assert "RAGAs" in report
+
+
+def test_a_failing_run_says_so_in_its_own_header() -> None:
+    report = render_report(a_run(gate=(a_gate_result(expected=None),)))
+
+    assert "SUITE FAILED" in report
+
+
+def test_a_passing_run_says_so() -> None:
+    assert "SUITE PASSED" in render_report(a_run(gate=(a_gate_result(),)))
+
+
+def test_the_marginal_contribution_table_counts_this_runs_catches() -> None:
+    """Rendered from counts, not typed: the difference between a claim and evidence."""
+    report = render_report(
+        a_run(
+            gate=(
+                a_gate_result(),
+                a_gate_result(
+                    expected=Layer.CLASSIFIER, layer=Layer.CLASSIFIER, escalated=True
+                ),
+            ),
+            answers=(
+                AnswerResult(text="You should buy it.", expected_refusal=True, refused=True),
+            ),
+        )
+    )
+
+    assert "Marginal contribution" in report
+    assert "1 answer(s) refused" in report
+
+
+def test_an_answer_containing_a_pipe_cannot_break_the_table() -> None:
+    """A generated artifact renders as garbage from one unescaped character in one reply."""
+    report = render_report(
+        a_run(
+            answers=(
+                AnswerResult(
+                    text="Buy | sell | hold\nnow", expected_refusal=True, refused=True
+                ),
+            )
+        )
+    )
+
+    assert "Buy \\| sell \\| hold now" in report
+
+
+def test_the_report_states_what_it_does_not_establish() -> None:
+    """Each of these is a way a green suite could be over-read, so each is written down."""
+    report = render_report(a_run())
+
+    assert "fails open" in report
+    assert "one run, against one corpus" in report
+    assert "still in the agent's memory" in report
