@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from finbrief.config import (
     ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY,
     CLUSTERS,
@@ -231,7 +233,14 @@ def test_the_readmes_layer_counts_are_the_ones_the_code_has():
     assert f"{len(PLANTED_PAYLOADS)} poisoned" in readme
     # Layer 4's rule count is in the generated artifact rather than the README; the binding here
     # is only that the README does not name a *different* number of rules for it.
-    assert len(ADVICE_RULES) == len(RULES) or f"{len(ADVICE_RULES)} rules" not in readme
+    #
+    # **Guarded so the assertion cannot disable itself.** Written as
+    # `len(ADVICE_RULES) == len(RULES) or "…" not in readme`, the whole check evaporated on any
+    # day the two counts happened to coincide (issue #8 review). Skipping it explicitly says so.
+    if len(ADVICE_RULES) != len(RULES):
+        assert f"{len(ADVICE_RULES)} rules" not in readme
+    else:
+        pytest.skip("the two rule counts coincide, so the substring cannot distinguish them")
 
 
 def test_the_readme_names_both_latency_budgets():

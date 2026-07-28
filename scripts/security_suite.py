@@ -9,8 +9,10 @@ through the paid embedding model, and drives the real agent. The suite is hermet
 (CLAUDE.md) — **never invoke this from a test.** The corpus, the measurements and the report are
 `finbrief.security.corpus` and `finbrief.security.report`, which the suite does cover.
 
-It is the third non-hermetic entry point, and the cheapest of the three: ~35 one-word classifier
-completions plus a handful of agent turns.
+It is the third of the four non-hermetic entry points and the cheapest of the three that cost
+anything: ~35 one-word classifier completions — every corpus case the denylist does not catch,
+plus the whole benign set — and a handful of agent turns. Its *control flow* is hermetic and
+is covered by `tests/test_security_suite_script.py`.
 
 **What only a live run can establish**, and therefore why this exists rather than a bigger test
 file. Whether a real model recognises a *novel* payload is a property of that model, so layer

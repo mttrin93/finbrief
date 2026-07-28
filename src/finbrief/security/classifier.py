@@ -133,9 +133,26 @@ def _verdict(reply: str) -> Verdict:
     answer is not YES" — a parser that can be talked out of its verdict by the shape of a
     sentence. The prompt asks for exactly one word; a reply that is not one word is a reply this
     module does not understand, and an unparsed reply is `UNDECIDED` rather than a guess.
+
+    **Reduced to its letters, not stripped of a list of punctuation.** The strip list was
+    `.,:;!?"'`, so `**YES**`, `` `YES` `` and `- NO` all landed on `UNDECIDED` — and because
+    this layer fails open, a model that merely *bolds* its one-word answer disables layer 3 for
+    every turn, silently, with nothing but a warning in the log (issue #8 review). Keeping only
+    the alphabetic characters, and skipping a purely non-alphabetic lead token, cannot make the
+    parser more permissive about *which* word it read: the comparison is still against one whole
+    token and still against exactly two labels.
     """
-    first = reply.strip().split()[:1]
-    token = first[0].strip(".,:;!?\"'").upper() if first else ""
+    # The first token that has any letters in it — a leading `-`, `*` or `1.` is a bullet, not
+    # the model's answer. Tokens after that one are never considered, which is the discipline
+    # that keeps "the answer is not YES" unparsed rather than read as a verdict.
+    token = next(
+        (
+            letters.upper()
+            for word in reply.split()
+            if (letters := "".join(c for c in word if c.isalpha()))
+        ),
+        "",
+    )
     if token == CLASSIFIER_INJECTION_LABEL:
         return Verdict.INJECTION
     if token == CLASSIFIER_SAFE_LABEL:

@@ -97,12 +97,25 @@ def test_the_wrapper_keeps_the_constructors_identity():
 
 def test_the_retrieval_singletons_all_go_through_it():
     # Named individually rather than by a scan, because the list is the claim: these are the
-    # three cached constructors on the concurrent path (CLAUDE.md), and a fourth added without
-    # the guard is the same crash again. `cache_clear` is the observable signature.
+    # six cached constructors on the concurrent path (CLAUDE.md), and a seventh added without
+    # the guard is the same crash again. `cache_clear` is the observable signature — and it is
+    # the assertion that separates `build_once` from `lru_cache`, which an identity check
+    # (`f() is f()`) satisfies identically. The list held three while CLAUDE.md said six: T5's
+    # `bounded_session` and T7's two were never added (issue #8 review).
+    from finbrief.finance.quotes import bounded_session
     from finbrief.retrieval.hybrid import bm25_index
     from finbrief.retrieval.retrieve import _planner_model
     from finbrief.retrieval.vectorstore import default_filings_store
+    from finbrief.security.advice import advice_guard
+    from finbrief.security.classifier import classifier_model
 
-    for singleton in (default_filings_store, bm25_index, _planner_model):
+    for singleton in (
+        default_filings_store,
+        bm25_index,
+        _planner_model,
+        bounded_session,
+        classifier_model,
+        advice_guard,
+    ):
         assert hasattr(singleton, "cache_clear"), singleton
         assert singleton.__wrapped__ is not None, f"{singleton} is not a build_once wrapper"

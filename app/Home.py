@@ -751,7 +751,12 @@ def render_marker_note(report: MarkerReport) -> None:
             f"check {'them' if len(report.unresolved) > 1 else 'it'} against"
         )
     if report.non_numeric:
-        spans = ", ".join(f"`[{escaped(span)}]`" for span in report.non_numeric)
+        # `escaped()` and **not** a code span. Inside backticks Markdown is already inert, so
+        # the two together printed the backslashes: `[Reuters (2026)]` reached the reader as
+        # `[Reuters \(2026\)]`, and a span containing a backtick closed the span early and let
+        # model-written text restructure the warning (issue #8 review). One neutralisation, and
+        # it is the one that works on arbitrary text.
+        spans = ", ".join(f"[{escaped(span)}]" for span in report.non_numeric)
         problems.append(
             f"{spans} — square brackets are reserved for numbered filing excerpts, so this "
             f"is a publisher's name where a citation should be"
@@ -920,8 +925,11 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
             st.markdown(as_markdown(reply.text))
             # The citation-marker check (T3's finding, #5): every `[n]` against every number
             # this *conversation* has issued, not just this turn's — see `issued_ranks`. Logged
-            # on every turn rather than only on a violation, so T10 (#11) has a denominator for
-            # the rate.
+            # on every turn that renders an answer rather than only on a violation, so T10 (#11)
+            # has a denominator for the rate. **Not every turn**: the layer-4 branch above
+            # `st.stop()`s first, so a refused answer contributes to neither numerator nor
+            # denominator — which is the right denominator anyway, since the markers of an
+            # answer no reader saw are not a marker-resolution rate about anything.
             report = markers(
                 reply.text, ranks=issued_ranks() | {c.rank for c in reply.contexts}
             )

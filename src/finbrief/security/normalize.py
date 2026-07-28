@@ -17,8 +17,10 @@ blocked turn's log line (see `config.GATE_LOGGED_INPUT_MAX_CHARS`).
 `\\b` to avoid matching inside an unrelated word (`contract assets` must not trip an `act as`
 rule). `squeezed` removes them, which is the only thing that catches letter-by-letter spacing
 (`i g n o r e   a l l   …`), where every letter is its own token and no word-level rule can see
-the words at all. `denylist.py` scans both with one rule set; see its head-anchoring rule for
-what that costs a rule author.
+the words at all — anywhere in the message, not only at its start: `squeezed` has no word
+boundaries, so `denylist.py` scans it with the head anchor stripped off (see its rule 1, and the
+measurement that put it there). `denylist.py` scans both with one rule set; see its
+head-anchoring rule for what that costs a rule author.
 """
 
 from __future__ import annotations

@@ -99,10 +99,11 @@ VALIDATOR_NAME = "finbrief/no-investment-advice"
 #: How far back a negatable rule looks for a denial, in characters.
 #:
 #: **An assertion about a sentence, not a knob** (CLAUDE.md's exemption list). Sixty characters
-#: is about a clause: it reaches "I can't give a recommendation or a **price target**" and stops
-#: short of the previous sentence, which is the distance that matters — a denial two sentences
-#: back does not govern this one. The search is additionally bounded to the current sentence, so
-#: this is a ceiling rather than the mechanism.
+#: is about a clause: it reaches "I can't give a recommendation or a **price target**" and
+#: stops short of the previous sentence, which is the distance that matters — a denial two
+#: sentences back does not govern this one. The search is additionally bounded to the current
+#: clause (`_CLAUSE_START`), so this is a ceiling rather than the mechanism —
+#: `tests/test_advice_validator.py` pins the two apart.
 NEGATION_WINDOW_CHARS = 60
 
 #: The denials that make a *mention* of advice not an instance of it.
@@ -111,8 +112,17 @@ _NEGATION = re.compile(
     r"decline|refuse|avoid)\b"
 )
 
-#: A sentence boundary, for bounding the negation lookback to the clause it belongs to.
-_SENTENCE_END = re.compile(r"[.!?;]")
+#: Where the clause a match sits in begins, for bounding the negation lookback to it.
+#:
+#: Sentence punctuation, an em/en dash, and the contrastive conjunctions — because those are
+#: the three ways the hedge "I can't do X **but** here is X" joins its two halves, and a denial
+#: on the far side of any of them governs nothing on this side. A plain comma is deliberately
+#: absent: "I can't give a recommendation, a price target or a rating" is one denial over a
+#: list.
+_CLAUSE_START = re.compile(
+    r"[.!?;–—]|\b(?:but|however|although|though|that said|still|nonetheless"
+    r"|nevertheless|regardless)\b"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +150,26 @@ ADVICE_RULES: tuple[AdviceRule, ...] = (
         catches="Telling the reader to trade — 'you should buy', 'I would sell'.",
         # `\b…\b` around the verb, so `buybacks` and `holdings` — ordinary capital-allocation
         # vocabulary that appears in real filings — are not trades.
+        #
+        # **The modal is required, and it was optional** (issue #8 review). Optional, every
+        # element between pronoun and verb could be skipped, so a bare `we buy` matched —
+        # and a bare `we buy` is what a 10-K says in the filer's own first person. Measured:
+        # `Tesla states in Item 1A that "we buy raw materials from a limited number of
+        # suppliers"` was refused, and a refusal here destroys the answer *and* its panels
+        # (`app/Home.py`). Quoting a filer is the single most characteristic thing this
+        # application writes, so the rule may not fire on it.
+        #
+        # What that costs, stated rather than hidden: an unhedged first-person recommendation
+        # with no modal at all — "We buy Ford here." — now reaches the reader unless it also
+        # trips `imperative-trade` or `rating`. That is the same blind spot this layer already
+        # declares for novel phrasing, and it is the right side of the trade: a miss here leaves
+        # a disclaimer under the answer, where a false positive replaces a grounded brief with
+        # an accusation.
         pattern=re.compile(
-            r"\b(?:you|i|we)\b\s*(?:'d|'ll)?\s*"
-            r"(?:should|would|could|ought to|will|might want to|need to|do not|don't|"
-            r"wouldn't|shouldn't)?\s*(?:not\s+)?"
+            r"\b(?:you|i|we)\b"
+            r"(?:\s*'(?:d|ll)|\s+(?:should|would|could|ought to|will|might want to|need to|"
+            r"do not|don't|wouldn't|shouldn't))"
+            r"\s*(?:not\s+)?\s*"
             r"\b(?:buy|sell|hold|short|accumulate|divest|trim|exit|avoid|add to)\b",
             re.IGNORECASE,
         ),
@@ -162,9 +188,14 @@ ADVICE_RULES: tuple[AdviceRule, ...] = (
     AdviceRule(
         id="imperative-trade",
         catches="An imperative trade instruction opening a sentence — 'Hold Pfizer for now.'",
+        # `short` carries a negative lookahead because "Short interest stands at 3.1% of float"
+        # is ordinary equity-research vocabulary that happens to open a sentence with the verb
+        # (issue #8 review). The other verbs need no such guard — there is no noun phrase
+        # "buy interest" a brief would write sentence-initially.
         pattern=re.compile(
             r"(?:\A|[.!?]\s+|\n\s*[-*]?\s*)"
-            r"(?:buy|sell|hold|short|accumulate|avoid|divest|add to|take profits)\s",
+            r"(?:buy|sell|hold|short(?!\s+(?:interest|sellers?|positions?|float|squeeze))"
+            r"|accumulate|avoid|divest|add to|take profits)\s",
             re.IGNORECASE,
         ),
     ),
@@ -208,25 +239,38 @@ def advice_hits(answer: str) -> tuple[str, ...]:
     exits on a catch and logs one rule, where a refused answer is refused once and the
     interesting datum is *how many ways* it was advice — which is what tells a reader of the log
     whether the model slipped once or wrote a research note as a trade ticket.
+
+    **Every *occurrence* too, for a negatable rule, and that is the fix for the shape this layer
+    exists to catch.** This iterated `search` — the *first* match only — so a rule whose first
+    occurrence sat inside a denial was dropped for the whole answer, and every later un-denied
+    one was never looked at. "I can't give a price target. My price target is $260." therefore
+    passed, which is both the most natural hedged wording a model produces and exactly what an
+    obeyed indirect injection looks like (issue #8 review). A negatable rule now fires unless
+    **every** occurrence is denied.
     """
     return tuple(
         rule.id
         for rule in ADVICE_RULES
-        for match in [rule.pattern.search(answer)]
-        if match is not None and not (rule.negatable and _denied(answer, match.start()))
+        if any(
+            not (rule.negatable and _denied(answer, match.start()))
+            for match in rule.pattern.finditer(answer)
+        )
     )
 
 
 def _denied(answer: str, at: int) -> bool:
     """Whether the clause ending at `at` denies what the match after it says.
 
-    Bounded twice — to `NEGATION_WINDOW_CHARS` and to the current sentence — because a denial in
-    the *previous* sentence governs nothing here: "I can't do that. My price target is $260."
-    contains a denial and a price target, and only one of them is about the target.
+    Bounded twice — to `NEGATION_WINDOW_CHARS` and to the current clause — because a denial in
+    the *previous* clause governs nothing here: "I can't do that. My price target is $260."
+    contains a denial and a price target, and only one of them is about the target. The same
+    holds across a contrastive conjunction, which is why `_CLAUSE_START` is more than sentence
+    punctuation: "I can't give a price target, but fair value is $260" is the hedge, not a
+    denial.
     """
     window = answer[max(0, at - NEGATION_WINDOW_CHARS) : at]
-    # Everything after the last sentence break in the window is the clause the match sits in.
-    breaks = list(_SENTENCE_END.finditer(window))
+    # Everything after the last clause break in the window is the clause the match sits in.
+    breaks = list(_CLAUSE_START.finditer(window))
     clause = window[breaks[-1].end() :] if breaks else window
     return _NEGATION.search(clause) is not None
 
@@ -237,8 +281,10 @@ class NoInvestmentAdvice(Validator):
 
     Thin on purpose: the rule is a pure function so it can be tested and reported on without a
     `Guard` in the way, and this class is the adapter that gives it Guardrails' `on_fail`
-    semantics. The `error_message` names the rule ids because it is what
-    `ValidationError` carries out to `validate_answer`, which logs them.
+    semantics. The `error_message` names the rule ids so the raised `ValidationError` reads as
+    something rather than as "validation failed" — `validate_answer` does **not** parse it back
+    out, it re-runs `advice_hits`, because a log line derived from a library's error string is a
+    log line that changes when the library does.
     """
 
     def validate(self, value: str, metadata: dict | None = None) -> ValidationResult:  # noqa: ARG002 — the Validator signature
@@ -309,6 +355,14 @@ def validate_answer(answer: str) -> AdviceVerdict:
     not ceremony: what ADR-0006 chose was Guardrails' `on_fail` contract, so the shipped path
     has to exercise it — a `validate_answer` that skipped the Guard would leave the library in
     the dependency list and the decision untested.
+
+    **"Never raises" means every exception, not only `ValidationError`.** The caller is the
+    `else:` clause of `app/Home.py`'s turn, and Python does not route an `else:` exception to
+    that `try`'s handler — so anything *other* than a failed validation coming out of
+    `Guard.validate` (a guardrails internal, or a changed error type: the pin is `>=0.10.2`,
+    unbounded) reached the analyst as a raw traceback where user story 15 asks for a disclaimer
+    (issue #8 review). Those fail **open**, like the classifier's provider failures and for the
+    same reason, and are logged as a warning rather than swallowed.
     """
     try:
         advice_guard().validate(answer)
@@ -327,4 +381,15 @@ def validate_answer(answer: str) -> AdviceVerdict:
             error=type(exc).__name__,
         )
         return AdviceVerdict(refused=True, rules=rules)
+    except Exception as exc:  # noqa: BLE001 — every other library failure is one fail-open
+        # The exception *type*, never its message, for `classifier.classify`'s reason: a client
+        # error string can carry a request URL and a request URL can carry an API key.
+        log_event(
+            logger,
+            "output_validator_unavailable",
+            level=logging.WARNING,
+            error=type(exc).__name__,
+            answer_chars=len(answer),
+        )
+        return AdviceVerdict(refused=False)
     return AdviceVerdict(refused=False)

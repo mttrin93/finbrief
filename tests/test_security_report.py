@@ -442,3 +442,72 @@ def test_the_report_states_what_it_does_not_establish() -> None:
     assert "fails open" in report
     assert "one run, against one corpus" in report
     assert "still in the agent's memory" in report
+
+
+# --------------------------------------------------------------------------------------
+# Cell rendering, and the committed artifact
+# --------------------------------------------------------------------------------------
+
+
+def test_a_pipe_in_any_cell_is_escaped_and_does_not_split_the_row() -> None:
+    """The failure that is invisible in a generated artifact, closed at the one place it can be.
+
+    `_excerpt` escaped its own pipes and no other cell did — but a benign row's `case` cell *is*
+    a corpus question, so one `|` anywhere in the corpus silently split a row (issue #8 review).
+    Asserted through `render_report` rather than on the helper, because what matters is that the
+    table a reader gets still has the column count it declares.
+    """
+    piped = a_gate_result(expected=None, blocked=False)
+    run = a_complete_run(gate=(piped,), answers=(), injections=())
+    report = render_report(
+        SuiteRun(
+            gate=(
+                GateResult(
+                    case_id="Ford | GM | Tesla — which discloses most?",
+                    technique="benign | analyst question",
+                    expected=None,
+                    screening=piped.screening,
+                    folding_required=False,
+                ),
+            ),
+            answers=run.answers,
+            injections=run.injections,
+            generated=run.generated,
+            classifier_model=run.classifier_model,
+            chat_model=run.chat_model,
+        )
+    )
+    row = next(line for line in report.splitlines() if "which discloses most" in line)
+
+    columns = len(report.splitlines()[report.splitlines().index(row) - 2].split("|")) - 2
+    assert row.count("|") - row.count(r"\|") == columns + 1, row
+    assert r"Ford \| GM \| Tesla" in row
+
+
+def test_an_excerpt_longer_than_its_limit_is_truncated_with_an_ellipsis() -> None:
+    """`_excerpt`'s other half — only the escaping was covered."""
+    from finbrief.security.report import _excerpt
+
+    assert _excerpt("x" * 200, 90) == "x" * 89 + "…"
+    assert _excerpt("short", 90) == "short"
+    assert _excerpt("one\ntwo", 90) == "one two", "a newline would end the table row"
+
+
+def test_the_committed_artifact_is_a_full_run_that_passed() -> None:
+    """The evidence of record, bound to the two claims a reader takes from it at a glance.
+
+    `retrieval-smoke.md` is parsed and compared cell by cell because it had drifted from its
+    renderer; this one had no binding at all (issue #8 review). The counts are deliberately not
+    asserted here — they are the last paid run's measurements, and a corpus addition
+    legitimately makes them stale until the suite is re-run. What must *never* be true of a
+    committed
+    artifact is that it came from a partial run or a failing one, and that is what this pins.
+    """
+    from pathlib import Path
+
+    artifact = Path(__file__).parents[1] / "docs" / "verification" / "security-gate.md"
+    text = artifact.read_text(encoding="utf-8")
+
+    assert "PARTIAL RUN" not in text, "a --gate-only run was committed as a full one"
+    assert "SUITE PASSED" in text and "SUITE FAILED" not in text
+    assert "planted payloads **not run**" not in text

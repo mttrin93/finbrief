@@ -355,13 +355,24 @@ reader unable to resolve either.
 #: `</input>` was escaped and never denylisted (issue #8 review).
 QUARANTINE_TAGS: tuple[str, ...] = ("sources", "news", "input")
 
-#: An opening or closing tag for any of the above, however it is spaced or cased.
-#:
-#: Tolerant on purpose: `</sources>`, `</ sources >` and `</SOURCES>` all close a block as far
-#: as a *model* reading the prompt is concerned, because the model is doing pattern recognition
-#: on text and not parsing XML. A pattern that only matched the exact byte sequence this module
-#: emits would neutralise the literal forgery and pass the sloppy one straight through.
-_QUARANTINE_TAG = re.compile(rf"</?\s*(?:{'|'.join(QUARANTINE_TAGS)})\s*>", re.IGNORECASE)
+
+def tag_pattern(*names: str) -> re.Pattern[str]:
+    """An opening or closing tag for any of `names`, however it is spaced or cased.
+
+    Tolerant on purpose: `</sources>`, `</ sources >` and `</SOURCES>` all close a block as far
+    as a *model* reading the prompt is concerned, because the model is doing pattern recognition
+    on text and not parsing XML. A pattern that only matched the exact byte sequence this module
+    emits would neutralise the literal forgery and pass the sloppy one straight through.
+
+    **A function because `security/denylist.py` needs the same shape over a different set** —
+    the quarantine tags plus its own `<system>` extra. The *tuple* was already the single source
+    of truth; the tolerance was built twice, which is the axis the escaped and denylisted sets
+    drifted along the first time (issue #8 review). One derivation, two callers.
+    """
+    return re.compile(rf"</?\s*(?:{'|'.join(names)})\s*>", re.IGNORECASE)
+
+
+_QUARANTINE_TAG = tag_pattern(*QUARANTINE_TAGS)
 
 
 def quarantined(text: str) -> str:

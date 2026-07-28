@@ -1,10 +1,11 @@
 """`build_once` — a process-level singleton that survives being asked for concurrently.
 
 Not `finance/cache.py`, which is a TTL cache over *remote data* and answers "how stale is this
-number". This is about *construction*: four collaborators are expensive to build or unsafe to
+number". This is about *construction*: six collaborators are expensive to build or unsafe to
 build twice, and are therefore built once per process and shared — the Chroma handle, the BM25
-index, the sub-query planner's model, and the bounded yfinance session — and
-`functools.lru_cache` alone is not enough to promise that.
+index, the sub-query planner's model, the bounded yfinance session, and since T7 the input
+gate's classifier model and the output validator's `Guard` — and `functools.lru_cache` alone is
+not enough to promise that.
 
 **Why it is not enough, measured.** `lru_cache` is atomic about its bookkeeping and says
 nothing about the function it wraps: two threads that miss the same key both call through.
@@ -65,11 +66,11 @@ def build_once[**P, R](constructor: Callable[P, R], *, maxsize: int = 1) -> Buil
     That is left as it is, deliberately. Keying the lock means a second map from key to lock,
     which needs its own lock to populate safely, and getting *that* wrong reintroduces exactly
     the race this module exists to close — for a benefit nothing in this application can
-    observe: every one of the four singletons on this path is keyed on the frozen `Settings` or
-    on a store object, so two live keys means a configuration change mid-process, which the app
-    does not do. A correct coarse lock beats a subtly wrong fine one; if a caller ever does need
-    concurrent builds of different keys, keying it is the change to make, with a test that fails
-    without it.
+    observe: every one of the six singletons on this path is keyed on the frozen `Settings`,
+    on a store object, or on nothing at all, so two live keys means a configuration change
+    mid-process, which the app does not do. A correct coarse lock beats a subtly wrong fine
+    one; if a caller ever does need concurrent builds of different keys, keying it is the
+    change to make, with a test that fails without it.
 
     Returns a callable that also carries `cache_clear` and `cache_info`, forwarded from the
     underlying `lru_cache`, because those are part of the wrapped function's published

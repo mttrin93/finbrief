@@ -145,9 +145,11 @@ def markers(answer: str, *, ranks: Iterable[int]) -> MarkerReport:
 def log_markers(report: MarkerReport, *, thread_id: str, sources: int) -> None:
     """Record one turn's citation-marker verdict, for T10 (#11) to report a rate from.
 
-    Emitted on **every** turn that retrieved something, not only on a violation: a rate needs a
+    Emitted on every turn that **renders an answer**, not only on a violation: a rate needs a
     denominator, and a log that only carried the failures would let a reader compute "how often
-    is a marker unresolved" only against a count from somewhere else.
+    is a marker unresolved" only against a count from somewhere else. A turn layer 4 refused is
+    excluded — `app/Home.py` stops before this line — and deliberately: the reader saw no
+    answer, so its markers are not part of any rate about markers a reader could follow.
 
     The numbers are the answer's own citation numbers and this module's counts — no prose, so
     nothing here is user content. `non_numeric` is the one field carrying model-written text,

@@ -26,6 +26,7 @@ pre-registration into a number that had always been satisfied.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from statistics import median
@@ -207,15 +208,31 @@ def _table(
 
     `right` names the columns to right-align, which is every millisecond column and nothing
     else.
+
+    **Pipes are escaped here, not at the call sites.** `_excerpt` escaped them and the other
+    cells did not — but a benign row's `case` cell *is* a corpus question, and one `|` in a
+    corpus string splits the row silently, which is the same invisible failure the rule row was
+    (issue #8 review). Escaping in the one place that knows what a cell is means a new column
+    arrives covered.
     """
     divider = ["---:" if index in set(right) else "---" for index in range(len(columns))]
     return "\n".join(
         [
-            "| " + " | ".join(columns) + " |",
+            "| " + " | ".join(_cell(column) for column in columns) + " |",
             "|" + "|".join(divider) + "|",
-            *("| " + " | ".join(cells) + " |" for cells in rows),
+            *("| " + " | ".join(_cell(value) for value in cells) + " |" for cells in rows),
         ]
     )
+
+
+def _cell(value: str) -> str:
+    """One table cell, with the pipes escaped and the newlines flattened.
+
+    Idempotent against `_excerpt`, which escapes its own pipes on the way to a length limit it
+    has to measure *after* escaping: an already-escaped `\\|` is left alone rather than becoming
+    `\\\\|`.
+    """
+    return re.sub(r"(?<!\\)\|", r"\\|", " ".join(value.split()))
 
 
 def _header(run: SuiteRun) -> str:

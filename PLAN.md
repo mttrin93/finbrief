@@ -386,8 +386,10 @@ retrieval chain and landed with it — ticket T3, #5)
   no-advice validator** on the way out. `screen()` and `validate_answer()` are the two seams; the
   gate runs at the app's chat input and nowhere else.
 - Deliberately **not** an advice denylist: "should I buy X?" reaches the model and is refused with
-  a disclaimer at layer 4. Sixteen real analyst questions are a committed **false-positive control
-  set**, and a benign question blocked is a suite failure exactly as an attack that got through is.
+  a disclaimer at layer 4. Twenty-eight real analyst questions are a committed **false-positive
+  control set**, and a benign question blocked is a suite failure exactly as an attack that got
+  through is. Widening it is what found the shipped classifier's deterministic false positive
+  (ADR-0006 §2) and, later, three denylist rules that blocked ordinary disclosure vocabulary.
 - Indirect injection is **tested**: a dedicated collection built and destroyed per run (never the
   demo KB) with five poisoned chunks and canary strings, so obedience is *detected* rather than
   judged. The hermetic half asserts what is code — the payload arrives inside the quarantine block,

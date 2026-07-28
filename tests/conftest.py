@@ -148,44 +148,42 @@ def _install_egress_guard() -> None:
     real_gethostbyname_ex = socket.gethostbyname_ex
     real_gethostbyaddr = socket.gethostbyaddr
 
-    blocked, local_host, local_address = _blocked, _local_host, _local_address
-
     def guarded_connect(self, address):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_connect(self, address)
 
     def guarded_connect_ex(self, address):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_connect_ex(self, address)
 
     def guarded_create_connection(address, *args, **kwargs):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_create_connection(address, *args, **kwargs)
 
     def guarded_getaddrinfo(host, *args, **kwargs):
-        if not local_host(host):
-            raise blocked(host)
+        if not _local_host(host):
+            raise _blocked(host)
         return real_getaddrinfo(host, *args, **kwargs)
 
     def guarded_gethostbyname(hostname):
-        if not local_host(hostname):
-            raise blocked(hostname)
+        if not _local_host(hostname):
+            raise _blocked(hostname)
         return real_gethostbyname(hostname)
 
     def guarded_gethostbyname_ex(hostname):
-        if not local_host(hostname):
-            raise blocked(hostname)
+        if not _local_host(hostname):
+            raise _blocked(hostname)
         return real_gethostbyname_ex(hostname)
 
     def guarded_gethostbyaddr(ip_address):
         # A reverse lookup queries a PTR record, so the address here is the *question* asked of
         # the resolver rather than a host being connected to — but it is still a packet, and
-        # `local_host` reads it the same way.
-        if not local_host(ip_address):
-            raise blocked(ip_address)
+        # `_local_host` reads it the same way.
+        if not _local_host(ip_address):
+            raise _blocked(ip_address)
         return real_gethostbyaddr(ip_address)
 
     socket.socket.connect = guarded_connect

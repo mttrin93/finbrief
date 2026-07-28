@@ -60,6 +60,13 @@ def a_screening(question: str, *replies: str):
         ("yes", Verdict.INJECTION),
         ("No.", Verdict.SAFE),
         ("  NO\n", Verdict.SAFE),
+        # Markdown around the label. The parser stripped a fixed list of punctuation, so these
+        # four were `UNDECIDED` — and because layer 3 fails open, a model that merely *bolds*
+        # its one-word answer switched the layer off for every turn (issue #8 review).
+        ("**YES**", Verdict.INJECTION),
+        ("`NO`", Verdict.SAFE),
+        ("- NO", Verdict.SAFE),
+        ('"YES"', Verdict.INJECTION),
     ],
 )
 def test_the_two_labels_are_read_off_the_reply(reply: str, expected: Verdict) -> None:
@@ -222,7 +229,15 @@ def test_a_benign_question_is_allowed_by_the_whole_gate(question: str) -> None:
 
 @pytest.mark.parametrize(
     "case_id",
-    ["override-leetspeak", "override-zero-width", "override-cyrillic", "override-fullwidth"],
+    [
+        "override-leetspeak",
+        "override-zero-width",
+        "override-cyrillic",
+        "override-fullwidth",
+        # Accents are named in the artifact's Catches cell and were the one family the
+        # parametrisation omitted (issue #8 review).
+        "extraction-accented",
+    ],
 )
 def test_an_obfuscated_payload_is_caught_only_because_layer_one_folded_it(case_id: str) -> None:
     """The claim layer 1's cell in the artifact makes, per obfuscation family.
@@ -252,17 +267,42 @@ def test_a_structural_rule_owes_layer_one_nothing(case_id: str) -> None:
     assert folding_required(payload) is False
 
 
-def test_layer_one_is_credited_with_less_than_every_denylist_catch() -> None:
-    """A strict inequality, because "all of them" is what the broken count effectively said.
+#: The denylist cases layer 1 is credited with, named rather than counted.
+#:
+#: An **expectation table, not a bound.** This was `0 < len(folded) < len(denylist_cases)`,
+#: which anything from 1 to 12 satisfies — the same bound-instead-of-equality shape CLAUDE.md
+#: records `MAX_AGENT_STEPS` for (issue #8 review). Naming them also says *what* layer 1
+#: contributes: several are sentence-initial case folding, which is a smaller claim than
+#: "obfuscation" and is the honest one.
+FOLDING_CREDITED = frozenset(
+    {
+        "override-plain",
+        "override-leetspeak",
+        # `override-letter-spacing` is deliberately absent: `folding_required`'s counterfactual
+        # keeps the squeeze, because it is `Normalised`'s invariant rather than a step layer 1
+        # performs. That case is layer 2's squeezed scan, not layer 1's folding.
+        "override-zero-width",
+        "override-cyrillic",
+        "override-fullwidth",
+        "extraction-verbatim",
+        "extraction-accented",
+        "persona-recast",
+        "guardrails-off",
+    }
+)
 
-    12 of 13 is the number a row count produces; the measured answer is smaller because several
-    denylist cases are plain text or structural. This is the shape of assertion that would have
-    caught it — the old cell could not have failed here only by accident.
+
+def test_layer_one_is_credited_with_exactly_these_denylist_catches() -> None:
+    """The artifact's layer-1 cell, as an equality over named cases.
+
+    Strictly fewer than every denylist catch, which is the property the old inequality was
+    reaching for: `role-spoof` and `delimiter-forgery` are structural and owe layer 1 nothing.
     """
     denylist_cases = [c for c in corpus.DIRECT_CASES if c.caught_by is Layer.DENYLIST]
-    folded = [c for c in denylist_cases if folding_required(c.payload)]
+    folded = {c.id for c in denylist_cases if folding_required(c.payload)}
 
-    assert 0 < len(folded) < len(denylist_cases)
+    assert folded == FOLDING_CREDITED
+    assert len(folded) < len(denylist_cases)
 
 
 @pytest.mark.parametrize("question", corpus.BENIGN_QUESTIONS)
@@ -333,6 +373,67 @@ def test_a_logged_normalised_input_is_truncated(capsys_stream) -> None:
 
     (line,) = gate_lines(capsys_stream)
     assert len(line["fields"]["normalised"]) == GATE_LOGGED_INPUT_MAX_CHARS
+
+
+def lines_for(captured, event: str) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in captured.getvalue().splitlines()
+        if json.loads(line).get("event") == event
+    ]
+
+
+def test_a_provider_failure_logs_the_exception_type_and_no_prose(capsys_stream) -> None:
+    """The privacy claim on `gate_classifier_unavailable`, asserted rather than commented.
+
+    `error=type(exc).__name__` is there because a client error *string* can carry a request URL
+    and a request URL can carry an API key. Changing it to `str(exc)` left the whole suite green
+    (issue #8 review), so the field is pinned to the type name and the record is pinned to
+    carrying no other free text.
+    """
+
+    class Dead(ScriptedChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            raise TimeoutError("https://openrouter.ai/api/v1?key=sk-secret did not answer")
+
+    classify(ESCALATES, model=Dead(messages=iter([])), settings=SETTINGS)
+
+    (line,) = lines_for(capsys_stream, "gate_classifier_unavailable")
+    assert line["fields"] == {"error": "TimeoutError", "question_chars": len(ESCALATES)}
+
+
+def test_an_unparsed_reply_logs_a_capped_token_and_the_length_only(capsys_stream) -> None:
+    """The second bound on the one field here that can echo user content.
+
+    This branch is reached exactly when the reply was *not* one of the two labels, which is when
+    a confused classifier may be repeating the question back — so the token is capped in
+    `config` like every other logged input. Dropping the slice left the suite green (#8).
+    """
+    from finbrief.config import GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS
+
+    echoed = "x" * (GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS * 3)
+    classify(ESCALATES, model=a_model(echoed), settings=SETTINGS)
+
+    (line,) = lines_for(capsys_stream, "gate_classifier_unparsed")
+    assert len(line["fields"]["token"]) == GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS
+    assert set(line["fields"]) == {"token", "reply_chars"}
+
+
+def test_the_classifier_client_is_narrowed_at_both_ends() -> None:
+    """The p50 argument rests on these two reaching the client, so they are asserted there.
+
+    A regression to the answering path's 60s and two retries would put a three-minute worst case
+    in front of every turn — and neither value appeared in any test (issue #8 review).
+    `max_retries` counts *retries*, so one attempt is zero: an equality, not a bound.
+    """
+    from finbrief.config import GATE_CLASSIFIER_ATTEMPTS, GATE_TIMEOUT_SECONDS
+    from finbrief.security.classifier import classifier_model
+
+    model = classifier_model(SETTINGS)
+
+    assert model.request_timeout == GATE_TIMEOUT_SECONDS
+    assert model.max_retries == GATE_CLASSIFIER_ATTEMPTS - 1 == 0
+    assert model.model_name == SETTINGS.classifier_model
 
 
 @pytest.fixture

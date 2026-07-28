@@ -90,8 +90,10 @@ provider jitter, which makes 800 ms a budget the artifact would report as met or
 random. That is worse than a clean miss, because it makes the number uninformative.
 
 Two medians are reported, and only one of them is honest. A p50 over the whole corpus is
-**around 520 ms and comfortably within budget** — because 13 of the 19 attacks are caught by the
-denylist and exit in microseconds, never paying for the model call. The *escalated* median is
+**around 520 ms and comfortably within budget** — because 13 of the 20 attacks are caught by the
+denylist and exit in microseconds, never paying for the model call (13 of 19 when this
+paragraph's passes were measured; the reclassification in §2 below added the twentieth, to the
+classifier side). The *escalated* median is
 what an ordinary analyst question costs, since an ordinary question is exactly the one that
 escalates. The artifact reports both and says which to read.
 

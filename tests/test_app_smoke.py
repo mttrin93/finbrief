@@ -1426,6 +1426,12 @@ def test_a_gate_refusal_is_indistinguishable_from_the_personas_own(app, monkeypa
         element.value
         for element in [*app.markdown, *app.caption, *app.warning, *app.error, *app.info]
     )
+    # **The precondition first.** The three assertions below are all negations, and the stub
+    # answer contains none of those strings either — so without this line the test passed
+    # identically whether the gate fired or the answer was rendered (issue #8 review). A
+    # negation-only test about a security property is a test that stops checking it the moment
+    # the property goes away.
+    assert INJECTION_REFUSAL in page, "the gate did not fire, so the rest asserts nothing"
     assert "denylist" not in page
     assert "instruction-override" not in page and "prompt-extraction" not in page
 

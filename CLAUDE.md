@@ -39,7 +39,8 @@ uv run python scripts/security_suite.py             # the gate against the commi
 uv run python scripts/security_suite.py --gate-only # layers 1-4 only: no embeddings, no agent
 ```
 
-`security_suite.py` is the cheapest of the four (~35 one-word completions plus a handful of
+`security_suite.py` is the cheapest of the three that spend money (~35 one-word
+completions — every case the denylist does not catch, plus the whole benign set — plus a handful of
 agent turns) and exists because three of ADR-0006's claims cannot be met by a test: whether a
 real model recognises a *novel* payload, whether a real model *obeys* a planted one, and the
 latency p50, which is a measurement. It exits non-zero on a failing suite. `--gate-only` is a
@@ -106,6 +107,13 @@ against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py` hol
 shared `Context` builder) and conftest builds `filings_store` / `empty_filings_store` from them.
 Never point a test at the ingested `data/chroma`: it is only searchable by the paid model that
 wrote it, so a test that reaches for it either needs a key or asserts against noise.
+**Layer 3 is stubbed autouse**: `conftest.offline_injection_classifier` patches
+`input_gate.classify` to return `Verdict.SAFE` for any caller that names no model, leaving
+normalisation and the denylist real — so an app-level refusal test uses a *denylisted* payload
+and needs no scripting, and a test that means to exercise layer 3 passes
+`screen(question, model=...)`, which the stub delegates through. Autouse rather than opt-in
+because a forgotten fixture would fail open into a live call and still pass. `planted_store` is
+`security/corpus.py`'s injection collection as a fixture, over the same fake embedding.
 
 **A check that cannot fail is the bug class this repo keeps hitting**, and it is worth naming as
 one because the instances look unrelated until they are listed: tiktoken's warm cache made a
