@@ -394,6 +394,29 @@ def filings_store(tmp_path, recorded_filing):
 
 
 @pytest.fixture
+def planted_store(tmp_path):
+    """The **dedicated injection-test collection** ADR-0006 requires — never the demo KB.
+
+    Real Chroma, real chunking metadata, a fake embedding, and bodies that are attack payloads
+    (`finbrief.security.corpus.PLANTED_PAYLOADS`). Separate from `filings_store` on purpose: the
+    point of the exercise is that retrieval treats a poisoned chunk exactly as it treats an
+    EDGAR one, and a payload written into the collection real questions are answered from would
+    make every other test's fixture adversarial.
+
+    The filer is `ZZZ`, which is not in the Universe, and the accession is all zeroes — so a
+    chunk from here is identifiable on sight if one ever turns up where it should not.
+    """
+    from finbrief.retrieval.vectorstore import build_filings_store, write_chunks
+    from finbrief.security.corpus import planted_chunks
+
+    store = build_filings_store(
+        persist_directory=str(tmp_path / "planted-chroma"), embeddings=KeywordEmbeddings()
+    )
+    write_chunks(store, planted_chunks())
+    return store
+
+
+@pytest.fixture
 def empty_filings_store(tmp_path):
     """A `filings` collection with nothing in it — the retrieval-level fallback's input."""
     from finbrief.retrieval.vectorstore import build_filings_store
@@ -401,6 +424,43 @@ def empty_filings_store(tmp_path):
     return build_filings_store(
         persist_directory=str(tmp_path / "empty-chroma"), embeddings=KeywordEmbeddings()
     )
+
+
+@pytest.fixture(autouse=True)
+def offline_injection_classifier(monkeypatch):
+    """Stop the input gate's layer-3 model call, leaving layers 1 and 2 real (T7, #8).
+
+    **Autouse, because the gate is now in front of every question the app is asked.** Any
+    `AppTest` that sends a message reaches `screen()`, and without this it reaches a real
+    `ChatOpenAI` — which the egress guard blocks, so `classify` fails *open* and the app carries
+    on. That is the designed behaviour and exactly the wrong thing in a test: the layer under
+    the app's own tests would be silently absent, and the log would fill with
+    `gate_classifier_unavailable` on every page render.
+
+    **Only layer 3 is stubbed**, and the choice matters: normalisation and the denylist stay
+    real, so an app-level test of the refusal path uses a *denylisted* payload and is
+    deterministic without scripting anything. Patched at `input_gate`'s own name because that is
+    the binding `screen` calls; the module's `classify` is still what `tests/test_input_gate.py`
+    drives.
+
+    **The stub yields to an injected model**, which is what keeps it from hiding the gate's own
+    suite: `tests/test_input_gate.py` drives `screen(question, model=a_model("YES"))`, and a
+    blanket `lambda: SAFE` would have made every one of those tests assert about the stub. So
+    this delegates to the real `classify` whenever a caller named a model — a test that scripted
+    a reply means to exercise the layer — and answers `SAFE` only for the callers that named
+    none, which is the app. Being autouse rather than opt-in is deliberate for the reason
+    CLAUDE.md gives about checks that cannot fail: a new `AppTest` case that forgot to request a
+    fixture would make a live call and pass anyway.
+    """
+    from finbrief.security import input_gate
+    from finbrief.security.classifier import Verdict, classify
+
+    def offline(question, *, model=None, settings=None):
+        if model is not None:
+            return classify(question, model=model, settings=settings)
+        return Verdict.SAFE
+
+    monkeypatch.setattr(input_gate, "classify", offline)
 
 
 @pytest.fixture

@@ -48,13 +48,18 @@ from finbrief.config import (
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.prompts import (
+    ADVICE_REFUSAL,
     DISCLAIMER,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
 )
 from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
+from finbrief.security.advice import validate_answer
+from finbrief.security.input_gate import screen
+from finbrief.security.markers import MarkerReport, log_markers, markers
 from finbrief.tools.finance import (
     NEWS_TOOL_NAME,
     RATIOS_TOOL_NAME,
@@ -697,6 +702,66 @@ def render_context_reuse_note(*, used_tools: bool) -> None:
     )
 
 
+def issued_ranks() -> set[int]:
+    """Every citation number this conversation has handed out, from the display transcript.
+
+    **The valid set for a marker is the thread's, not the turn's**, and getting that wrong would
+    make the note below fire on correct answers. `agent/citations.py` numbers a thread's sources
+    in one running sequence, so a follow-up's first source is `[4]`; and a follow-up may
+    legitimately cite `[2]` from a source the *previous* turn retrieved, since the conversation
+    is in the checkpointer. Validated against `reply.contexts` alone — which `AgentTurn` scopes
+    to this turn — every such citation would read as unresolved, and the caption would tell an
+    analyst that a perfectly good citation points nowhere.
+
+    Read off the transcript rather than accumulated in a counter, because the transcript is
+    already the display source of truth and "Start over" clears it in one place. `getattr` on
+    `contexts` for the reason every reader on this path is tolerant: a row written by an older
+    shape replays here on the first rerun after a deploy.
+    """
+    return {
+        context.rank
+        for message in st.session_state.messages
+        if message["role"] == "assistant"
+        for context in getattr(message.get("turn"), "contexts", ())
+    }
+
+
+def render_marker_note(report: MarkerReport) -> None:
+    """Say which of the answer's `[n]` markers a reader cannot resolve (T3's finding, #5).
+
+    Nothing at all when every bracket resolves, which is the common case.
+
+    **Reported, not repaired** — `security/markers.py` argues that choice. What matters here is
+    that the two failures are described apart, because they are different things to a reader: an
+    unresolved number is a citation pointing at no panel entry, and a non-numeric bracket is the
+    `[Yahoo Finance]` T5 measured, which collides with the syntax that makes any citation
+    resolvable. A caption merging them would leave the reader unsure which of their `[n]`s to
+    distrust.
+
+    A warning rather than a caption, unlike `render_context_reuse_note`: context reuse is the
+    correct path, and this is the answer telling the reader to check something they cannot.
+    """
+    if report.clean:
+        return
+    problems = []
+    if report.unresolved:
+        numbers = ", ".join(f"[{number}]" for number in report.unresolved)
+        problems.append(
+            f"{numbers} — cited above but not in the sources panel, so there is nothing to "
+            f"check {'them' if len(report.unresolved) > 1 else 'it'} against"
+        )
+    if report.non_numeric:
+        spans = ", ".join(f"`[{escaped(span)}]`" for span in report.non_numeric)
+        problems.append(
+            f"{spans} — square brackets are reserved for numbered filing excerpts, so this "
+            f"is a publisher's name where a citation should be"
+        )
+    st.warning(
+        "Some markers in this answer do not resolve: " + "; ".join(problems) + ".",
+        icon=":material/link_off:",
+    )
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -754,9 +819,33 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
         )
         st.stop()
 
+    # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door a
+    # human types through, which is what the front door is about; a gate inside the agent loop
+    # would also screen the *model's* tool arguments as if an analyst had typed them, and a gate
+    # inside `rag.answer_question` would put a model call in front of the measured chain
+    # ADR-0003 keeps clean. `screen` never raises — a classifier outage fails open onto the
+    # other three layers — so there is no branch here for the gate itself failing.
+    screening = screen(prompt)
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(as_markdown(prompt))
+
+    if screening.blocked:
+        # The refusal is rendered as an ordinary assistant turn and stored as one, so it replays
+        # identically and reads exactly like the persona's own refusal. **Deliberately not
+        # labelled as a gate hit**: which layer fired and which pattern matched are in the
+        # gate-trigger log for a reviewer, and an attacker told which rule they tripped is an
+        # attacker told how to phrase the next attempt.
+        #
+        # It never reaches `answer()`, so the payload never enters the checkpointer — the
+        # display transcript holds a turn the agent has no memory of, which is the intended
+        # asymmetry: a follow-up cannot build on a question that was refused.
+        with st.chat_message("assistant"):
+            st.markdown(as_markdown(INJECTION_REFUSAL))
+            st.caption(DISCLAIMER)
+        st.session_state.messages.append({"role": "assistant", "content": INJECTION_REFUSAL})
+        st.stop()
 
     with st.chat_message("assistant"):
         try:
@@ -805,7 +894,41 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                 icon=":material/error:",
             )
         else:
+            # **The output validator (ADR-0006 layer 4).** The one layer whose input the
+            # attacker does not choose: an ordinary question can be answered with a
+            # recommendation nobody asked for, and a *successful* indirect injection — arriving
+            # through retrieved text that never passed the front door — shows up here or nowhere
+            # (user story 15, 17).
+            advice = validate_answer(reply.text)
+            if advice.refused:
+                # The refusal replaces the answer **and its panels**. Nothing else is rendered:
+                # the cards and the sources panel are the provenance *of an answer*, and there
+                # is no answer — a sources panel under a refusal invites a reader to think the
+                # refusal was grounded in them.
+                #
+                # A stated consequence, not a hidden one: `answer()` has already run, so the
+                # text this refuses is in the checkpointer and a follow-up can reference it.
+                # This layer guards the surface, not the memory. Recorded in ADR-0006's T7
+                # amendment and in the README's limitations.
+                st.markdown(as_markdown(ADVICE_REFUSAL))
+                st.caption(DISCLAIMER)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": ADVICE_REFUSAL}
+                )
+                st.stop()
+
             st.markdown(as_markdown(reply.text))
+            # The citation-marker check (T3's finding, #5): every `[n]` against every number
+            # this *conversation* has issued, not just this turn's — see `issued_ranks`. Logged
+            # on every turn rather than only on a violation, so T10 (#11) has a denominator for
+            # the rate.
+            report = markers(
+                reply.text, ranks=issued_ranks() | {c.rank for c in reply.contexts}
+            )
+            log_markers(
+                report, thread_id=st.session_state.thread_id, sources=len(reply.contexts)
+            )
+            render_marker_note(report)
             render_tool_cards(reply.cards)
             render_sources(reply.contexts, searched=reply.searched)
             render_how_i_answered(reply.searches)

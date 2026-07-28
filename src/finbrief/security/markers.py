@@ -63,6 +63,16 @@ _BRACKETED = re.compile(r"\[([^\[\]\n]{1,40})\]")
 #: markers by this reading, which is the compound form `_ANSWER_RULES` asks for.
 _NUMERIC = re.compile(r"\A\d+\Z")
 
+#: What a bracket must contain to be a *label* — something a reader could mistake for a
+#: citation.
+#:
+#: **`[…]`, `[...]` and `[ ]` are typography, not a collision**, and excluding them is not a
+#: softening of the rule. The defect being reported is that a reader cannot resolve a bracket
+#: that looks like a citation; nobody tries to resolve an ellipsis. Found by the app's own suite
+#: — a stub answer reading "Two risks, briefly: […]" tripped the caption, which is a false
+#: positive on ordinary prose and would have taught a reader to ignore the warning.
+_LABEL = re.compile(r"[0-9a-zA-Z]")
+
 
 @dataclass(frozen=True, slots=True)
 class MarkerReport:
@@ -106,7 +116,7 @@ def markers(answer: str, *, ranks: Iterable[int]) -> MarkerReport:
     for match in _BRACKETED.finditer(answer):
         inner = match.group(1).strip()
         if not _NUMERIC.match(inner):
-            if inner not in non_numeric:
+            if _LABEL.search(inner) and inner not in non_numeric:
                 non_numeric.append(inner)
             continue
         number = int(inner)

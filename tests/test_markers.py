@@ -88,6 +88,18 @@ def test_a_grounded_answer_with_no_markers_at_all_is_clean_but_visibly_uncited()
     assert report.resolved == 0
 
 
+def test_an_ellipsis_in_brackets_is_typography_and_not_a_citation_collision() -> None:
+    """A false positive the app's own suite caught, and the reason the label test exists.
+
+    A stub answer reading "Two risks, briefly: […]" tripped the caption. Nobody tries to resolve
+    an ellipsis, so flagging it reports a defect that is not one — and a warning that fires on
+    ordinary prose is a warning a reader learns to ignore, which costs the real ones their
+    effect.
+    """
+    assert markers("Two risks, briefly: […]", ranks=RANKS).clean
+    assert markers("Quoted with an omission [...] mid-sentence [1].", ranks=RANKS).clean
+
+
 def test_a_stray_bracket_in_prose_cannot_swallow_the_rest_of_the_answer() -> None:
     """Bounded to one line and 40 characters, so an unclosed `[` matches nothing."""
     report = markers("The filing says [ and then a great deal more text follows.", ranks=RANKS)
