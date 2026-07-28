@@ -212,7 +212,11 @@ assertion by default (issue #9 review).
   in (`sources`, `news`, and the classifier's own `input`). `quarantined()` neutralises all of
   them wherever a body is interpolated, and `security/denylist.py`'s `delimiter-forgery` rule
   derives its pattern from the same tuple — so a fourth block is escaped *and* denylisted the
-  moment it is declared. **A refusal names no layer and no rule**: which fired is in the
+  moment it is declared. **Both halves are parametrised over the tuple, and that is the point**:
+  this sentence was here while the rule hardcoded `(?:sources|news|system)`, so `</input>` was
+  escaped and never denylisted and `<system>` was denylisted while being no quarantine tag at all
+  — a rule in this file describing a derivation the code did not do (issue #8 review). `<system>`
+  survives as a *named* extra in `denylist.py`, with a test saying so. **A refusal names no layer and no rule**: which fired is in the
   gate-trigger log, and an attacker told which rule they tripped is one told how to phrase the
   next attempt. And `prompts.py` may not import from `retrieval/` at runtime:
   `query_translation.py` reads its prompt from here while `retrieve.py` imports *it*, so

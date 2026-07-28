@@ -347,8 +347,12 @@ reader unable to resolve either.
 #: Every tag this module wraps untrusted text in. **The single source of truth for which tags a
 #: quarantine block uses**, read by `sources_block`, `news_block`, the classifier's input frame,
 #: `quarantined` below, and — deriving its rule from the same tuple —
-#: `security/denylist.py`'s `delimiter-forgery`. A fourth block added here is escaped and
-#: denylisted the moment it is declared.
+#: `security/denylist.py`'s `delimiter-forgery`, which adds `<system>` as a named extra because
+#: this module frames nothing with it. A fourth block added here is escaped and denylisted the
+#: moment it is declared, and both halves are parametrised over this tuple
+#: (`tests/test_indirect_injection.py`, `tests/test_denylist.py`) rather than asserted in prose:
+#: the derivation claim was made in three places while the rule hardcoded a different set, so
+#: `</input>` was escaped and never denylisted (issue #8 review).
 QUARANTINE_TAGS: tuple[str, ...] = ("sources", "news", "input")
 
 #: An opening or closing tag for any of the above, however it is spaced or cased.

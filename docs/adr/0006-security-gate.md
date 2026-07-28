@@ -157,7 +157,11 @@ surprises.
    `agent/citations.py` rebuilds a reply's content on every renumber, so a live thread would
    see several tags. `QUARANTINE_TAGS` is the single source of truth: `sources`, `news` and the
    classifier's own `input`, and `denylist.py`'s `delimiter-forgery` rule derives from the same
-   tuple. **The news path is where this is exploitable today**, not latent: a filing comes from
+   tuple, adding `<system>` as a named extra because nothing here frames anything with it.
+   **That derivation was prose before it was code** — the rule hardcoded `(?:sources|news|system)`
+   while this section, `prompts.py` and CLAUDE.md all claimed otherwise, leaving `</input>`
+   escaped but not denylisted; both halves are now parametrised over the tuple (issue #8 review).
+   **The news path is where this is exploitable today**, not latent: a filing comes from
    EDGAR and is trusted by provenance (ADR-0007), where a headline comes from whoever got a
    post onto a syndicated feed.
 2. **`[n]` marker validation — taken, as report-not-repair** (`security/markers.py`).

@@ -30,7 +30,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from finbrief.prompts import QUARANTINE_TAGS
 from finbrief.security.normalize import Normalised
+
+#: The one tag in `delimiter-forgery`'s pattern that is **not** a declared quarantine block.
+#:
+#: `<system>` frames nothing in this repo — `prompts.py` puts the persona in a system
+#: *message*, never a tag — so there is nothing to derive it from. It is denylisted anyway,
+#: because a question carrying it forges a boundary a model reading *text* may well honour,
+#: which is the same attack as closing `</sources>` early. Named here rather than inlined so
+#: the pattern below reads as what it is: every declared block, plus this one, for this reason
+#: (issue #8 review).
+_FORGED_ROLE_TAG = "system"
 
 #: How far apart two words of one payload may sit and still match — ADR-0006's "bounded" gap.
 #:
@@ -175,7 +186,18 @@ RULES: tuple[Rule, ...] = (
         # finding). The prompt-side half of the same finding is `prompts.quarantined`, which
         # neutralises the tag wherever it appears in *content*; this catches the analyst-typed
         # case and, unlike the escaping, says so out loud.
-        pattern=re.compile(r"</?\s*(?:sources|news|system)\s*>", re.IGNORECASE),
+        #
+        # **Derived from `QUARANTINE_TAGS`, so the escaping and the denylisting cannot drift.**
+        # This was a hardcoded `(?:sources|news|system)` while three places — `prompts.py`,
+        # CLAUDE.md and ADR-0006 §4 — claimed it derived from the tuple. It did not, and the
+        # sets differed both ways: `input` was quarantined but not denylisted, and `system`
+        # is not a quarantine tag at all. So "a fourth block is escaped *and* denylisted the
+        # moment it is declared" was false either way (issue #8 review). Now it is true, and
+        # `tests/test_denylist.py` parametrises over the tuple so a fifth tag arrives covered.
+        pattern=re.compile(
+            rf"</?\s*(?:{'|'.join((*QUARANTINE_TAGS, _FORGED_ROLE_TAG))})\s*>",
+            re.IGNORECASE,
+        ),
         raw=True,
     ),
     Rule(
