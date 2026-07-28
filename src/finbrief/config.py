@@ -274,6 +274,28 @@ NEWS_TTL_SECONDS = 900
 FETCH_ATTEMPTS = 3
 FETCH_BACKOFF_SECONDS = 0.5
 
+#: The smallest response `finance/news.py` will accept as "a feed that answered and had nothing"
+#: rather than as a soft failure to retry.
+#:
+#: **Because an empty feed and a throttled one arrive identically at the parser**, and reporting
+#: one as the other is the absence-vs-measurement mistake in both directions: "no news this
+#: week" is a claim about the company; "the feed did not answer" is a claim about the feed.
+#: Until #9's review, *every* zero-entry response raised — so a genuinely quiet week reported as
+#: an outage, which is the inverse of the rule the same module draws elsewhere.
+#:
+#: 400 bytes, calibrated against the recorded fixtures: Yahoo's channel preamble — copyright,
+#: description, the `<image>` block — measures 541, 547 and 547 bytes in the three real feeds
+#: under `tests/fixtures/market/`, so a zero-item feed from this publisher still weighs ~565
+#: bytes. Anything materially under that is not a Yahoo channel.
+#:
+#: **What is measured and what is not**, because this is a threshold and thresholds invite
+#: over-trust: the *populated* side is measured (three real feeds, three consistent preambles).
+#: A real throttle response is **not** — nothing here has ever recorded one, so its size is an
+#: assumption. That is why size is only the second test: `finance/news.py` also asks whether the
+#: document parsed as a feed at all, which catches the HTML error page a blocked client gets
+#: however large it is.
+NEWS_MIN_FEED_BYTES = 400
+
 #: Alpha Vantage's free-tier daily call budget, as *documented by them* — not a knob, and not
 #: read by any fetch, because nothing calls Alpha Vantage (see `Settings.alphavantage_enabled`).
 #:

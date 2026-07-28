@@ -24,6 +24,10 @@ from finbrief.ingestion.model import Section
 from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK, unavailable_message
 from finbrief.retrieval.hybrid import Retriever, Surfaced
 from finbrief.tools.finance import (
+    _CARDS,
+    _DATA_CARDS,
+    _TOOL_BY_KIND,
+    FINANCE_TOOL_NAMES,
     FailedCard,
     Freshness,
     NewsCard,
@@ -1334,3 +1338,46 @@ def test_a_question_at_the_cap_is_answered(app, monkeypatch):
 
     assert len(asked) == 1
     assert not app.error
+
+
+# --------------------------------------------------------------------------------------
+# The card-kind dispatch, bound to the engine's (#9 review)
+# --------------------------------------------------------------------------------------
+
+
+def renderers_block() -> str:
+    """The text of `app/Home.py`'s `_RENDERERS` literal.
+
+    Read as source rather than imported, because importing `Home` *runs* it: it calls
+    `st.set_page_config`, `get_settings()` and `st.stop()` at module scope, so an import here
+    would need a key and would half-execute the page. Every other test in this file drives it
+    through `AppTest`, which is the supported way — but `AppTest` gives no handle on a
+    module-level dict, and the thing under test is precisely the completeness of that dict.
+    """
+    source = Path(APP).read_text(encoding="utf-8")
+    start = source.index("_RENDERERS = {")
+    return source[start : source.index("}", start)]
+
+
+def test_every_card_kind_the_engine_can_build_has_a_renderer():
+    # The two lists that have to agree, asserted against each other rather than kept in step by
+    # hand. There were three enumerations of the card kinds before this — the engine's `_CARDS`,
+    # its `_TOOL_BY_KIND`, and an `isinstance` cascade in the UI — so a fourth card meant three
+    # edits across two files with nothing to catch a missed one (issue #9 review). A card class
+    # the UI cannot draw now fails here instead of rendering an empty bordered box to a reader.
+    block = renderers_block()
+
+    for card in _CARDS.values():
+        assert f"{card.__name__}.KIND:" in block, (
+            f"{card.__name__} rebuilds from a payload but app/Home.py has no renderer for it"
+        )
+
+
+def test_the_tool_map_covers_every_data_card_and_not_the_failure_card():
+    # `_TOOL_BY_KIND` is derived from `_DATA_CARDS` rather than retyped, so this asserts the
+    # *shape* of the derivation: a `FailedCard` is the absence of a data card and has no tool of
+    # its own — it reads its label back from the kind that failed.
+    assert set(_TOOL_BY_KIND) == {card.KIND for card in _DATA_CARDS}
+    assert FailedCard.KIND not in _TOOL_BY_KIND
+    assert FailedCard.KIND in _CARDS, "it still has to rebuild from a payload"
+    assert set(_TOOL_BY_KIND.values()) == set(FINANCE_TOOL_NAMES)

@@ -35,6 +35,7 @@ from finbrief.config import (
     FETCH_BACKOFF_SECONDS,
     FETCH_TIMEOUT_SECONDS,
     NEWS_MAX_HEADLINES,
+    NEWS_MIN_FEED_BYTES,
     NEWS_TTL_SECONDS,
 )
 from finbrief.finance.cache import Fetched, TimedCache
@@ -154,12 +155,18 @@ def safe_link(url: str) -> str:
     return url
 
 
-def parse_feed(raw: str | bytes, *, ticker: str) -> tuple[Headline, ...]:
+def parse_feed(raw: bytes, *, ticker: str) -> tuple[Headline, ...]:
     """The headlines in an RSS document, newest first, stripped.
 
     Takes the document rather than a URL, which is what makes the whole parse path testable
     against a recorded fixture: `feedparser.parse` accepts bytes, so the suite runs the real
     parser over the real feed with no network (`tests/test_news_feed.py`).
+
+    **`bytes`, not `str | bytes`, and that is the point of the annotation** rather than a
+    tightening for its own sake: `feedparser.parse` treats a `str` that looks like a URL as a
+    URL and *fetches it*. A signature accepting `str` therefore offers a caller the one thing
+    module's docstring says it rules out — a network call from the parser — and the hermetic
+    guard would catch it only if a test happened to exercise that path (issue #9 review).
 
     A malformed document is not an error. `feedparser` sets `bozo` and returns whatever entries
     it recovered — which for a truncated response is most of them — and salvaging four headlines
@@ -251,12 +258,48 @@ def fetch_headlines(ticker: str) -> tuple[Headline, ...]:
     ) as response:
         raw = response.read()
     headlines = parse_feed(raw, ticker=ticker)
-    if not headlines:
-        # An empty feed is indistinguishable from a soft failure here — Yahoo serves an empty
-        # `<channel>` to a client it is throttling — and caching "no news" for a TTL window is
-        # the wrong answer to both. Raising hands it to the retry.
+    if not headlines and not served_a_feed(raw):
+        # A soft failure, handed to the retry. Not *every* empty response: see `served_a_feed`.
         raise LookupError(f"the headline feed returned no entries for {ticker}")
     return headlines
+
+
+def served_a_feed(raw: bytes) -> bool:
+    """Whether `raw` is a feed this publisher served, as opposed to a throttle or an error page.
+
+    **The discriminator between "no news this week" and "the feed did not answer"**, which reach
+    the parser identically — both are zero entries. Until #9's review every zero-entry response
+    raised, so a quiet week was reported as an outage: an absence reported as a failure, the
+    inverse of the rule this module draws for an undated headline two functions up. They are
+    different claims and only one of them is about the company.
+
+    Two tests, cheapest first, and neither alone is enough:
+
+    1. **Did it parse as a feed at all?** `feedparser` sets `version` to `rss20`/`atom10` for a
+       document with a feed root and to `""` for anything else. A blocked client gets an HTML
+       error page, which fails this however many kilobytes it runs to — so size alone would wave
+       it through.
+    2. **Is it big enough to be one of this publisher's channels?** Yahoo's preamble —
+       copyright, description, `<image>` — measures 541–547 bytes across the three recorded
+       feeds, so a zero-item channel still weighs ~565. `config.NEWS_MIN_FEED_BYTES` sits at
+       400. This is what catches a stub `<rss><channel/></rss>` that parses cleanly and says
+       nothing, which is the shape a cheap throttle takes.
+
+    Reparsing here rather than threading a flag out of `parse_feed` is deliberate: it runs only
+    on the empty branch, over a document that is by definition a few hundred bytes, and the
+    alternative is a second return value every caller has to carry for the one case in a hundred
+    that reads it.
+
+    **What is not measured**: a real throttle response. Nothing here has recorded one, so its
+    size is an assumption and its shape is a report of Yahoo's behaviour rather than a fixture.
+    The populated side *is* measured, which is why the size test is a floor under a known
+    quantity rather than a guess at an unknown one.
+    """
+    import feedparser
+
+    if len(raw) < NEWS_MIN_FEED_BYTES:
+        return False
+    return bool(feedparser.parse(raw).version)
 
 
 #: The process-level headline cache: one handle, one TTL window per ticker, shared by every

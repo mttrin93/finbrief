@@ -19,6 +19,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from finbrief.config import (
+    NEWS_DEFAULT_DAYS,
     NEWS_MAX_DAYS,
     NEWS_MAX_HEADLINES,
     PEERS,
@@ -655,6 +656,48 @@ def test_a_peer_figure_that_did_not_survive_is_dropped_not_read_as_zero(recorded
     (metric,) = [m for m in card.comparison.metrics if m.key == "trailing_pe"]
     assert metric.peers_compared == ("GM",), "the unreadable peer is gone, not zeroed"
     assert metric.peer_mean == pytest.approx(36.88136)
+
+
+def test_a_days_window_present_as_null_degrades_to_the_default(recorded_quotes):
+    # The two reads on this path that could still raise. `int(payload.get("days", DEFAULT))`
+    # defaults a *missing* key but throws `TypeError` on one present as `null` — and a
+    # `from_payload` that raises kills a live thread on the first rerun after a deploy, which is
+    # the failure every other reader in this module is written to avoid (issue #9 review).
+    built = tools(recorded_quotes)
+    _, artifact = call(built[NEWS_TOOL_NAME], ticker="TSLA", days=3)
+    artifact["days"] = None
+
+    card = NewsCard.from_payload(artifact)
+
+    assert card.days == NEWS_DEFAULT_DAYS, "the default window, not an exception"
+
+
+def test_a_days_window_outside_the_tools_bounds_is_clamped_on_the_way_back_in(recorded_quotes):
+    # A payload may not reintroduce a window `get_recent_news` would have refused: the card
+    # renders "last N day(s)", so an unclamped N puts a claim on screen the tool never made.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[NEWS_TOOL_NAME], ticker="TSLA", days=3)
+
+    artifact["days"] = 10_000
+    assert NewsCard.from_payload(artifact).days == NEWS_MAX_DAYS
+    artifact["days"] = 0
+    assert NewsCard.from_payload(artifact).days == 1
+    artifact["days"] = "a week"
+    assert NewsCard.from_payload(artifact).days == NEWS_DEFAULT_DAYS
+
+
+def test_an_age_present_as_null_reads_as_ageless_rather_than_raising(recorded_quotes):
+    # The other one. `float(raw.get("age_seconds", 0.0))` had the same shape, on the field a
+    # staleness banner is drawn from — so a null age would have taken down the page rather than
+    # dropped the banner.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[STOCK_TOOL_NAME], ticker="NVDA")
+    artifact["freshness"]["age_seconds"] = None
+
+    card = QuoteCard.from_payload(artifact)
+
+    assert card.freshness.age_seconds == 0.0
+    assert card.freshness.age_minutes == 0
 
 
 def test_a_companys_own_figure_that_did_not_survive_reads_as_not_reported(recorded_quotes):

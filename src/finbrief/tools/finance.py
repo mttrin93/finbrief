@@ -274,7 +274,10 @@ class NewsCard:
     def from_payload(cls, payload: Mapping[str, Any]) -> NewsCard:
         return cls(
             ticker=str(payload.get("ticker", "")),
-            days=int(payload.get("days", NEWS_DEFAULT_DAYS)),
+            # `_window_days`, not `int(payload.get("days", …))`: that form defaults a *missing*
+            # key and raises `TypeError` on one present as `null`, which is the one shape a
+            # checkpoint reader may not raise on (issue #9 review).
+            days=_window_days(payload.get("days")),
             headlines=tuple(
                 Headline(
                     title=str(row.get("title", "")),
@@ -334,19 +337,22 @@ class FailedCard:
 
 type FinanceCard = QuoteCard | RatiosCard | NewsCard | FailedCard
 
-_CARDS: Mapping[str, Any] = {
-    QuoteCard.KIND: QuoteCard,
-    RatiosCard.KIND: RatiosCard,
-    NewsCard.KIND: NewsCard,
-    FailedCard.KIND: FailedCard,
-}
+#: **The one place a card kind is enumerated.** Every mapping below is derived from it, and
+#: `app/Home.py` keys its renderers on the same `KIND` strings.
+#:
+#: There were three independent lists before: this one, a kind→tool map beside it, and an
+#: `isinstance` cascade in the UI — so adding a fourth card meant three edits in two files with
+#: nothing to catch a missed one (issue #9 review). Each card already carries its own `KIND` and
+#: `TOOL`, so both maps are a comprehension over the classes rather than a second copy of the
+#: correspondence. `FailedCard` is not in here: it is the *absence* of one of these, has no tool
+#: of its own, and reads its label back through `_TOOL_BY_KIND` from the kind that failed.
+_DATA_CARDS: tuple[Any, ...] = (QuoteCard, RatiosCard, NewsCard)
+
+#: card kind -> the class that rebuilds it from a checkpointed payload.
+_CARDS: Mapping[str, Any] = {card.KIND: card for card in (*_DATA_CARDS, FailedCard)}
 
 #: card kind -> the tool that produces it, so a `FailedCard` can still name its tool.
-_TOOL_BY_KIND: Mapping[str, str] = {
-    QuoteCard.KIND: STOCK_TOOL_NAME,
-    RatiosCard.KIND: RATIOS_TOOL_NAME,
-    NewsCard.KIND: NEWS_TOOL_NAME,
-}
+_TOOL_BY_KIND: Mapping[str, str] = {card.KIND: card.TOOL for card in _DATA_CARDS}
 
 #: `Quote`'s optional numeric fields, in `Quote`'s own order — the ones `QuoteCard.from_payload`
 #: reads back through `_optional_float`.
@@ -377,6 +383,24 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
+
+
+def _window_days(value: object) -> int:
+    """A `days` window off a payload, degraded to the default rather than raised on.
+
+    The counterpart to `_optional_float` for the one integer that crosses the checkpoint, and it
+    exists for the same reason: this is a **reader of a payload written by an older shape**, and
+    its honest absence value is the default window rather than an exception. A day count has no
+    "not reported" — the card renders "last N day(s)" and needs an N — so unlike a figure this
+    falls back to `NEWS_DEFAULT_DAYS`, which is what the tool would have used had the model
+    named no window at all.
+
+    Clamped to the bounds the tool enforces on the way in, so a payload cannot reintroduce a
+    window `get_recent_news` would have refused.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return NEWS_DEFAULT_DAYS
+    return max(1, min(int(value), NEWS_MAX_DAYS))
 
 
 class _UnreadableCard(ValueError):
@@ -518,11 +542,17 @@ def _freshness_from(payload: Mapping[str, Any]) -> Freshness:
     no staleness, so claiming it was stale would put a banner on a card nobody measured, and
     claiming an age would invent a number. "We recorded nothing about this" reads closest to
     `stale=False, age=0`, and the card's figures are what the answer above it was written from.
+
+    `age_seconds` reads through `_optional_float` for the same reason every figure on a
+    `QuoteCard` does: `float(raw.get("age_seconds", 0.0))` defaults a *missing* key but raises
+    `TypeError` on one present as `null` — which made it one of only two reads on this path that
+    could kill a thread in flight, the failure every other `from_payload` here is written to
+    avoid (issue #9 review). Unreachable from any writer today; a checkpoint reader does not get
+    to assume that.
     """
     raw = payload.get("freshness") or {}
-    return Freshness(
-        stale=bool(raw.get("stale", False)), age_seconds=float(raw.get("age_seconds", 0.0))
-    )
+    age = _optional_float(raw.get("age_seconds"))
+    return Freshness(stale=bool(raw.get("stale", False)), age_seconds=age or 0.0)
 
 
 def finance_cards(messages: Iterable[AnyMessage]) -> tuple[FinanceCard, ...]:
@@ -808,6 +838,11 @@ def _news_text(card: NewsCard) -> str:
     An empty window is a **fact**, not a failure, and says so in those terms: the feed answered
     and had nothing inside the days asked for, which is different from the feed not answering
     (`unavailable_message`). Conflating them has the model report an outage as quiet news.
+
+    This branch reaches the model two ways now, and did only one before. A feed whose entries
+    all fall outside `days` was always this case; a feed that served **zero entries** used to
+    raise in `fetch_headlines` and arrive as an outage, so a quiet week read as a broken feed.
+    `news.served_a_feed` separates those, and this sentence is the honest half (#9 review).
     """
     if not card.headlines:
         return (

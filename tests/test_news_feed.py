@@ -16,8 +16,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from finbrief.config import NEWS_MAX_HEADLINES
-from finbrief.finance.news import Headline, parse_feed, safe_link, strip_html, within_days
+from finbrief.config import NEWS_MAX_HEADLINES, NEWS_MIN_FEED_BYTES
+from finbrief.finance.news import (
+    Headline,
+    parse_feed,
+    safe_link,
+    served_a_feed,
+    strip_html,
+    within_days,
+)
 
 
 def a_headline(title: str, published: str | None, *, summary: str = "") -> Headline:
@@ -101,6 +108,69 @@ def test_an_unparseable_document_salvages_what_it_can_rather_than_failing():
 
 def test_a_document_with_no_entries_parses_to_nothing_rather_than_raising():
     assert parse_feed(b"<rss><channel></channel></rss>", ticker="F") == ()
+
+
+# --- an empty feed vs. a throttled one (#9 review) --------------------------------------
+
+
+def a_zero_item_yahoo_feed(raw: bytes) -> bytes:
+    """A recorded feed with its `<item>` elements removed — a real channel, no stories.
+
+    Built from a fixture rather than hand-written, because the whole question `served_a_feed`
+    answers is what one of *this publisher's* channels weighs, and a hand-written shell would
+    only test the threshold against itself.
+    """
+    return raw[: raw.index(b"<item>")] + b"</channel>\n</rss>\n"
+
+
+def test_a_real_channel_with_no_stories_is_a_feed_that_answered(recorded_feeds):
+    # The case that used to report as an outage. A quiet week is a fact about the company; a
+    # dead feed is a fact about the feed, and reporting one as the other is the inverse of the
+    # absence-vs-measurement rule this module draws for an undated headline.
+    empty = a_zero_item_yahoo_feed(recorded_feeds["TSLA"])
+
+    assert parse_feed(empty, ticker="TSLA") == ()
+    assert served_a_feed(empty), "the channel is real; it simply had nothing in it"
+
+
+def test_every_recorded_feed_is_comfortably_over_the_size_floor(recorded_feeds):
+    # The floor is calibrated against these, so they are what it is checked against. The margin
+    # matters as much as the pass: a threshold a real feed only just clears is one a slow news
+    # week turns into an outage.
+    for ticker, raw in recorded_feeds.items():
+        assert served_a_feed(raw), ticker
+        assert len(a_zero_item_yahoo_feed(raw)) > NEWS_MIN_FEED_BYTES * 1.25, (
+            f"{ticker}: even stripped of every story this feed must clear the floor with room"
+        )
+
+
+def test_a_stub_channel_too_small_to_be_a_feed_is_a_soft_failure():
+    # The shape a cheap throttle takes: valid XML, parses clean, says nothing — not tellable
+    # from a quiet week by entry count alone, which is why size is the second test.
+    assert not served_a_feed(b"<rss><channel></channel></rss>")
+
+
+def test_an_html_error_page_is_a_soft_failure_however_large_it_is():
+    # And why size cannot be the *only* test. A blocked client gets HTML, which can run to
+    # kilobytes and would sail over any byte floor; it has no feed root, so `version` is empty.
+    page = (
+        b"<html><body><h1>429 Too Many Requests</h1>"
+        + b"<p>padding</p>" * 200
+        + b"</body></html>"
+    )
+
+    assert len(page) > NEWS_MIN_FEED_BYTES, "the point of this case is that it is not small"
+    assert not served_a_feed(page)
+
+
+def test_a_truncated_feed_that_salvaged_nothing_is_still_a_feed(recorded_feeds):
+    # `parse_feed` salvages what it can and flags `bozo`; a truncation landing before the first
+    # `<item>` salvages nothing. It is still a response this publisher served, so it is not
+    # retried as an outage — the honest answer is "no headlines", not "the feed is down".
+    truncated = recorded_feeds["MSFT"][:600]
+
+    assert parse_feed(truncated, ticker="MSFT") == ()
+    assert served_a_feed(truncated)
 
 
 # --- the stripper, against what an attacker would send --------------------------------
