@@ -37,6 +37,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from langchain_core.messages import AnyMessage, ToolMessage
@@ -379,7 +380,23 @@ def _payload(kind: str, card: object) -> Artifact:
 
 
 def _jsonable(value: Any) -> Any:
-    """`value` with every tuple turned into a list, recursively. See `_payload`."""
+    """`value` reduced to JSON primitives: tuples become lists, enums become their values.
+
+    **The enum branch is the one a test could not have found, and a live run did.** `asdict`
+    leaves an enum member as an enum member, so a `RatiosCard` artifact carried
+    `PeerCluster.AUTOS` and five `Unit`s into the checkpoint. `json.dumps` accepted them
+    without complaint — a `StrEnum` *is* a `str` — and `json.loads` gave back plain strings
+    that compared equal, so the round-trip assertion passed while LangGraph's serialiser
+    printed *"Deserializing unregistered type finbrief.config.PeerCluster from checkpoint. This
+    will be blocked in a future version."* Exactly the hazard `Context.as_payload` documents
+    and hand-writes its way around: what comes back out of the strict serialiser is an untyped
+    dict, and what comes back out of the lenient one is a warning with an expiry date on it.
+
+    Checked before `str`, because a `StrEnum` passes an `isinstance(..., str)` test and would
+    otherwise fall through to the last line unchanged — which is how it got here.
+    """
+    if isinstance(value, Enum):
+        return value.value
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}
     if isinstance(value, list | tuple):

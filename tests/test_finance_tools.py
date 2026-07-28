@@ -448,6 +448,41 @@ def test_a_dead_feed_is_reported_as_an_outage(recorded_feeds):
 # --- the cards, and what survives a checkpoint ------------------------------------------
 
 
+def test_every_card_payload_holds_only_json_primitives(recorded_quotes, recorded_feeds):
+    # Asserted on the leaves' **types**, not on a `json.dumps` round trip, and the difference is
+    # a bug this file shipped: `asdict` leaves an enum member as an enum member, so a ratios
+    # artifact carried `PeerCluster.AUTOS` and five `Unit`s into the checkpoint. `json.dumps`
+    # took them without complaint — a `StrEnum` *is* a `str` — and `json.loads` gave back
+    # equal-comparing plain strings, so the round-trip assertion below passed while LangGraph
+    # printed "Deserializing unregistered type finbrief.config.PeerCluster ... will be blocked
+    # in a future version" on every live turn. Only a type check catches that.
+    built = tools(recorded_quotes, feeds=a_feed(recorded_feeds))
+    for name, arguments in (
+        (STOCK_TOOL_NAME, {"ticker": "NVDA"}),
+        (RATIOS_TOOL_NAME, {"ticker": "F"}),
+        (NEWS_TOOL_NAME, {"ticker": "TSLA"}),
+        (STOCK_TOOL_NAME, {"ticker": "SAP"}),
+    ):
+        _, artifact = call(built[name], **arguments)
+        for path, leaf in _leaves(artifact):
+            assert type(leaf) in (str, int, float, bool, type(None)), (
+                f"{name} carries a {type(leaf).__name__} at {path}; a checkpoint takes "
+                f"primitives only, and a subclass of str is not one"
+            )
+
+
+def _leaves(value, path="artifact"):
+    """Every leaf in a nested payload, with the path to it — for the type assertion above."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _leaves(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _leaves(item, f"{path}[{index}]")
+    else:
+        yield path, value
+
+
 def test_every_card_payload_is_json_safe(recorded_quotes, recorded_feeds):
     # The assertion `_payload`'s use of `asdict` buys its convenience with: every artifact
     # crosses the agent's checkpoint as JSON (ADR-0008), and a field that stopped being a
