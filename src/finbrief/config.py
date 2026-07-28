@@ -376,6 +376,51 @@ NEWS_MAX_HEADLINES = 8
 #: clear "not in the Universe" rather than a length complaint.
 TICKER_MAX_CHARS = 12
 
+# --------------------------------------------------------------------------------------
+# The security gate (T7, ADR-0006)
+# --------------------------------------------------------------------------------------
+
+#: The p50 the input gate is budgeted at, in milliseconds — ADR-0006's figure, in one place.
+#:
+#: **A target to report against, not a timeout to enforce**, and the distinction is the whole
+#: reason it is a constant here rather than a branch somewhere: the acceptance criterion is that
+#: the gate *is* this fast, measured from the structured logs over a real run, and a gate that
+#: enforced it by abandoning slow calls would satisfy the number by not doing the work.
+#: `security/report.py` compares the measured p50 against this and the README quotes it, so the
+#: prose and the verdict cannot disagree.
+GATE_LATENCY_BUDGET_MS = 800
+
+#: How long the classifier's single model call may take before it is abandoned, in seconds.
+#:
+#: Five, which is deliberately far above the p50 budget above and far below the answering path's
+#: 60. It is a **circuit breaker, not a budget**: the budget is a median to report, and this is
+#: the point past which a hung provider stops being a slow gate and starts being a hung app.
+#: Tighter would convert ordinary jitter into a fail-open (see `classifier.classify`), which
+#: trades a rare slow turn for a routinely-skipped layer.
+GATE_TIMEOUT_SECONDS = 5
+
+#: Retries on the classifier's call. **One attempt, no retry**, unlike every other fetch in this
+#: codebase — because a retry multiplies the worst case inside a latency budget, and the failure
+#: mode here is already survivable: the gate fails open onto three other layers, where a retried
+#: fetch in `finance/` is the difference between a figure and no figure.
+GATE_CLASSIFIER_ATTEMPTS = 1
+
+#: How much of a **blocked** turn's normalised input the gate-trigger log line records.
+#:
+#: **The one place a line written by `log_event` may carry user-derived text**, and the
+#: exception is narrow on purpose (CLAUDE.md; ADR-0006 requires the normalised input in the
+#: gate-trigger record). Three bounds together are what make it proportionate: only on a
+#: **block**, only the **normalised** form — lossy, lowercased, punctuation-free, and useless as
+#: a question — and only this many characters. A pass logs counts and verdicts like every other
+#: event.
+#:
+#: The argument for logging it at all is that a denylist you cannot audit is a denylist you
+#: cannot tune: reviewing a false positive means seeing what tripped it. The argument against is
+#: that a false positive means an innocent question ends up in a kept log, which is a real cost
+#: and the reason for the three bounds rather than a reason to have no record. 500 characters is
+#: an eighth of `MAX_QUESTION_CHARS` — enough for the payload in a long paste, not the paste.
+GATE_LOGGED_INPUT_MAX_CHARS = 500
+
 #: How long a question may be before the app declines to send it (user story 21).
 #:
 #: A cost and abuse bound, not a linguistic one: no analyst's question is 4,000 characters, and
@@ -456,6 +501,12 @@ class Settings:
     openrouter_api_key: str = field(repr=False)
     openrouter_base_url: str
     chat_model: str
+    #: The model the input gate's zero-shot classifier calls (ADR-0006 layer 3). Its own field
+    #: rather than `chat_model` because the two are priced against different jobs: the gate pays
+    #: for one YES/NO per turn and wants the cheapest model that can read a sentence, where the
+    #: answering model is what the analyst's brief is worth. Raising one must not raise the
+    #: other — which is exactly what a single field would do.
+    classifier_model: str
     embedding_model: str
     retrieval_strategy: RetrievalStrategy
     query_translation_enabled: bool
@@ -490,6 +541,7 @@ class Settings:
                 env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
             ),
             chat_model=_string(env, "FINBRIEF_CHAT_MODEL", "openai/gpt-4o-mini"),
+            classifier_model=_string(env, "FINBRIEF_CLASSIFIER_MODEL", "openai/gpt-4o-mini"),
             # Served by OpenRouter's /v1/embeddings, so it needs no key or base URL of
             # its own. One model for ingest and query — see retrieval/embeddings.py.
             embedding_model=_string(
