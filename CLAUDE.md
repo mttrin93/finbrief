@@ -49,11 +49,15 @@ import time — before collection, which is when an import-time fetch happens �
 to a non-loopback host raises `EgressBlocked`. It is there because the claim had been asserted
 twice and had been false twice, both times through tiktoken's cache; `tests/test_hermetic_suite.py`
 is what says the guard itself works, since a guard that patched the wrong function blocks
-nothing while every test still passes. Three more mechanisms keep it true *without* leaning on
+nothing while every test still passes. Four more mechanisms keep it true *without* leaning on
 the guard: tiktoken's cl100k_base table is vendored under
 `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
 `get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`
 are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`;
+the market and news fixtures under `tests/fixtures/market/` likewise, via
+`scripts/record_market_fixtures.py` (news recorded **raw**, so `feedparser` and the HTML
+stripper really run; quotes recorded **parsed** at the `yfinance.Ticker` boundary, which is
+therefore the one thing no test covers — the recorder says so);
 and retrieval runs against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py`
 holds the doubles (`KeywordEmbeddings`, deterministic and lexical, so a test may assert an
 order; `a_context`, the shared `Context` builder) and conftest builds `filings_store` /
@@ -82,11 +86,30 @@ or asserts against noise.
   `default_filings_store` is the **shared per-process handle** the application reads, and the
   app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
   that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
-  question. Three process-level `lru_cache`s now sit on this path (`default_filings_store`,
+  question. Three process-level singletons sit on this path (`default_filings_store`,
   `hybrid.bm25_index`, `retrieve._planner_model`, each keyed on the frozen `Settings` or the
-  store) and **conftest does not clear them**, unlike `load_env`/`get_settings`: a test that
+  store) and every one goes through `caching.build_once`, **not** a bare `lru_cache`: with
+  parallel tool calls two searches run concurrently, and two callers missing the same cold key
+  both construct — which for the Chroma handle is fatal, because chromadb's shared-system
+  registry is not reentrant (`AttributeError: 'RustBindingsAPI' object has no attribute
+  'bindings'`, from inside the tool node, on the first turn of a cold process). `lru_cache` is
+  atomic about its bookkeeping and says nothing about the function it wraps. A fourth singleton
+  added here without `build_once` is the same crash again. They **are not cleared by conftest**,
+  unlike `load_env`/`get_settings`: a test that
   builds an index clears `bm25_index` itself (see `tests/test_hybrid.py`), and every other test
   injects its collaborator and never reaches them.
+- `finance/quotes.py` is the only place yfinance is called and `finance/news.py` the only
+  place RSS is read, for the reason `vectorstore.py` is the only place Chroma is opened: a second
+  caller is a second cache to miss, and ADR-0009's "peers add zero API surface" is exactly the
+  claim that a second caller would void. Units are normalised **once**, at that boundary —
+  `debtToEquity` arrives in percentage points (Ford reads `425.544`, i.e. 4.26×) while margins
+  arrive as fractions, and a ratio that looks like a percentage is how a brief reports Ford as
+  levered 425 times. Every figure is `float | None` and `None` means *not reported*, never zero;
+  `finance/ratios.py` excludes an absence from a peer mean and `Unit.format` prints it as words.
+  `tools/finance.py` is the wrapper — validation, refusals-as-results, quarantine, cards — and
+  decides no number. A card's artifact crosses the checkpoint, so it holds **JSON primitives
+  only**: `asdict` keeps tuples *and* enum members, and `json.dumps` will not tell you, because a
+  `StrEnum` is a `str`. Assert leaf types, not a round trip.
 - `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
   retrieval *means* — the composition, the ranking contract, the `Context` and `Retrieval`
   shapes — and crosses Chroma only through `vectorstore.nearest_chunks`; nothing above it

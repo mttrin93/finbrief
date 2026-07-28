@@ -302,9 +302,36 @@ retrieval chain and landed with it — ticket T3, #5)
   agent seam (`agent/citations.py`), because a second search that reused `[1]` would make every
   marker above it unresolvable — and a tool cannot do it, since LangGraph runs a step's calls
   concurrently against identical state (#7 review).
-- Still open (ticket T5, #9): three `@tool` functions with caching + error handling, tool-call
-  cards in the UI, per-tool progress indicators. Until they land the agent has one tool, so
-  the tool-*selection* the loop exists for is not yet exercised.
+- The tools half is ✅ **done** (`t5-finance-tools`, #9). `finance/` holds the engine — a TTL
+  cache with retry and a stale fallback (`Fetched(value, age, stale)`, so no surface can render a
+  figure without its staleness), the yfinance quote path, the RSS headline path, and ADR-0009's
+  peer arithmetic; `tools/finance.py` is the wrapper that validates the model's argument against
+  the Universe whitelist, turns every failure into a sentence the model can act on, quarantines
+  headlines as data, and puts a JSON-safe card on each reply for the UI. **Parallel tool calls
+  re-enabled**, inverting T4's flag: it was the second line of a two-line defence against a
+  citation collision the register at the `before_model` seam already makes unrepresentable, and
+  with four tools the fan-out is a real latency win on demo step 4.
+- **Three defects the live demo run found, none of which a hermetic test could have.** (a) Two
+  parallel searches both missed the cold `default_filings_store` cache and both constructed a
+  `chromadb.PersistentClient` over the same directory; chromadb's registry is not reentrant and
+  the loser died inside the tool node, killing the full-brief query. `lru_cache` is atomic about
+  its bookkeeping and not about the function it wraps — T4's serialisation *was* the guarantee.
+  Fixed by `caching.build_once` over all three process-level singletons. (b) The brief's four
+  section headings, newly added to the prompt, were read by the model as *search terms*:
+  `search_filings("Business")` names no company, retrieval returned six other filers' chunks for
+  a Tesla question, and the model then wrote two sections from its weights with no `[n]` at all —
+  my prompt had undercut its own tool description. Fixed; re-measured at 5/5 TSLA sources with
+  every claim cited. (c) `asdict` left enum members in the card artifacts, which `json.dumps`
+  accepted because a `StrEnum` *is* a `str`, so the round-trip test passed while LangGraph warned
+  on every turn.
+- One finding recorded rather than fixed, on ADR-0003's standing rule that the prompt is not
+  tuned against a paid model to move a number: asked to keep square brackets for filing excerpts,
+  the model still writes `[Yahoo Finance]` and still appends an `[n]` to a paragraph of tool
+  figures. Stated once in the prompt, **measured** by T10 (#11) — the same treatment as the
+  verbatim-query contract.
+- Deferred, and stated as deferred: Alpha Vantage as a fundamentals fallback. `alphavantage_enabled`
+  and `ALPHAVANTAGE_API_KEY` remain unread configuration; the cache, the retry and the stale
+  banner are how the free tier is survived instead of a second source.
 - Two findings from the first live run, recorded on the tickets that will use them: the model
   rephrased both queries despite the verbatim instruction (#11 — the rate is a reportable
   metric, and per ADR-0003 the prompt is not tuned against a paid model to move it), and the
