@@ -10,12 +10,12 @@ apart with no error to show for it.
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
-from functools import lru_cache
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from finbrief.caching import build_once
 from finbrief.config import Settings, get_settings
 from finbrief.ingestion.chunking import Chunk
 from finbrief.retrieval.embeddings import build_embeddings
@@ -59,8 +59,7 @@ def build_filings_store(
     )
 
 
-@lru_cache(maxsize=1)
-def default_filings_store(settings: Settings) -> Chroma:
+def _default_filings_store(settings: Settings) -> Chroma:
     """The `filings` collection the application reads, opened once per process.
 
     `build_filings_store` stays the constructor; this is the *shared handle* on it, and it
@@ -72,8 +71,18 @@ def default_filings_store(settings: Settings) -> Chroma:
     Cached on `Settings`, which is a frozen dataclass and therefore hashable, so a harness that
     points an injected `Settings` at a throwaway index gets its own handle rather than the
     application's (ADR-0002). Tests inject a store and never reach this.
+
+    **Wrapped in `build_once` rather than `lru_cache`, and T5 is why.** With parallel tool calls
+    two `search_filings` calls run concurrently, and two threads missing this cache cold both
+    constructed a `chromadb.PersistentClient` over the same directory — chromadb's shared-system
+    registry is not reentrant, and the loser died with `AttributeError: 'RustBindingsAPI' object
+    has no attribute 'bindings'` from inside the tool node. `build_once` serialises the
+    construction; see its module docstring for the whole account.
     """
     return build_filings_store(settings)
+
+
+default_filings_store = build_once(_default_filings_store)
 
 
 def all_chunks(store: Chroma) -> tuple[Document, ...]:
