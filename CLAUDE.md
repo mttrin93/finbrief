@@ -101,15 +101,18 @@ or asserts against noise.
   `default_filings_store` is the **shared per-process handle** the application reads, and the
   app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
   that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
-  question. Three process-level singletons sit on this path (`default_filings_store`,
-  `hybrid.bm25_index`, `retrieve._planner_model`, each keyed on the frozen `Settings` or the
-  store) and every one goes through `caching.build_once`, **not** a bare `lru_cache`: with
+  question. Four process-level singletons sit on this path (`default_filings_store`,
+  `hybrid.bm25_index`, `retrieve._planner_model`, `quotes.bounded_session` — each keyed on the
+  frozen `Settings`, the store, or nothing at all) and every one goes through
+  `caching.build_once`, **not** a bare `lru_cache`: with
   parallel tool calls two searches run concurrently, and two callers missing the same cold key
   both construct — which for the Chroma handle is fatal, because chromadb's shared-system
   registry is not reentrant (`AttributeError: 'RustBindingsAPI' object has no attribute
   'bindings'`, from inside the tool node, on the first turn of a cold process). `lru_cache` is
-  atomic about its bookkeeping and says nothing about the function it wraps. A fourth singleton
-  added here without `build_once` is the same crash again. They **are not cleared by conftest**,
+  atomic about its bookkeeping and says nothing about the function it wraps. A **fifth** singleton
+  added here without `build_once` is the same crash again — and `build_once`'s lock is one lock for
+  the wrapper, not one per key, which is stated there because the docstring first claimed
+  otherwise. They **are not cleared by conftest**,
   unlike `load_env`/`get_settings`: a test that
   builds an index clears `bm25_index` itself (see `tests/test_hybrid.py`), and every other test
   injects its collaborator and never reaches them.

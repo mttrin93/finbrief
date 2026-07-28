@@ -274,6 +274,16 @@ NEWS_TTL_SECONDS = 900
 FETCH_ATTEMPTS = 3
 FETCH_BACKOFF_SECONDS = 0.5
 
+#: Alpha Vantage's free-tier daily call budget, as *documented by them* — not a knob, and not
+#: read by any fetch, because nothing calls Alpha Vantage (see `Settings.alphavantage_enabled`).
+#:
+#: It is here because it is a **number that appears in prose in four places** — this file,
+#: `.env.example`, PLAN §4 and the README's "What the live figures are, and are not" — and it is
+#: the whole argument for why the fallback is deferred. A budget typed four times is one that
+#: will disagree with itself, and `tests/test_grounding_scope.py` binds the README's copy to
+#: this one (issue #9 review).
+ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY = 25
+
 #: How much price history one quote fetch carries, at what interval, and how to say so in prose.
 #:
 #: `HISTORY_PERIOD` is yfinance's own period token, not a day count, and deliberately: `"1mo"`
@@ -430,6 +440,20 @@ class Settings:
     retrieval_k: int
     max_sub_queries: int
     eval_mode: bool
+    #: **Deliberately unread, and this is the record of that.** Alpha Vantage was scoped as a
+    #: fundamentals fallback for when yfinance — an unofficial client for a private endpoint —
+    #: returns nothing. It is deferred rather than shipped: its free tier is **25 calls a day**,
+    #: which one `calculate_ratios` on a `big_tech` company would spend a quarter of, so a
+    #: fallback that fired on a bad afternoon would exhaust the budget and then fail anyway.
+    #:
+    #: What survives the free tier instead is the path in `finance/cache.py`: a TTL window, a
+    #: retry, and a **stale serve with its age** rather than an error. A second source would be
+    #: a second thing to be down; the stale banner is honest about the same outage for free.
+    #:
+    #: So this flag exists, is validated, and is read by nothing — which a reader is entitled to
+    #: find suspicious, hence this block. Written up in `.env.example` beside
+    #: `ALPHAVANTAGE_API_KEY` and in PLAN §4 under what T5 deferred; flipping it on today
+    #: changes no behaviour, and wiring it up is a ticket, not a config change (#9 review).
     alphavantage_enabled: bool
     sec_edgar_user_agent: str
     chroma_dir: str
