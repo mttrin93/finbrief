@@ -53,19 +53,42 @@ class Unit(StrEnum):
     MULTIPLE = "multiple"
     #: A fraction rendered as a percentage: `0.74144995` → `74.1%`.
     PERCENT = "percent"
+    #: A share price: `196.51`. Two decimals, which is how a quote is quoted; the currency is
+    #: the caller's to add, because it belongs to the company and not to the figure.
+    PRICE = "price"
+    #: A large money figure, abbreviated: `4.76T`, `640.91B`, `58.50B`. Market capitalisation is
+    #: the only one, and `4759668391936` on a card is a number a reader has to count digits on.
+    MONEY = "money"
 
     def format(self, value: float | None) -> str:
         """`value` as a reader would write it, or `not reported` when there is nothing to write.
 
         **Words for an absence, never a number.** `0.0%` on a bank's gross-margin row is a claim
-        nobody made; a bare `None` reads as a bug. One decimal place, because a P/E quoted to
-        four is a false precision about a figure derived from a scraped endpoint.
+        nobody made; a bare `None` reads as a bug. One decimal place for a ratio, because a P/E
+        quoted to four is a false precision about a figure scraped from a free endpoint.
         """
         if value is None:
             return "not reported"
         if self is Unit.PERCENT:
             return f"{value * 100:.1f}%"
+        if self is Unit.PRICE:
+            return f"{value:,.2f}"
+        if self is Unit.MONEY:
+            return _abbreviated(value)
         return f"{value:.1f}x"
+
+
+def _abbreviated(value: float) -> str:
+    """`4759668391936` → `4.76T`. Falls back to grouped digits below a billion.
+
+    Stops at billions rather than descending to millions and thousands: every Universe market
+    cap is ≥ $58bn, so a smaller scale would be untested code, and `140,605,292,544` spelled out
+    is the failure this exists to avoid.
+    """
+    for suffix, scale in (("T", 1e12), ("B", 1e9)):
+        if abs(value) >= scale:
+            return f"{value / scale:,.2f}{suffix}"
+    return f"{value:,.0f}"
 
 
 @dataclass(frozen=True, slots=True)
