@@ -274,6 +274,26 @@ NEWS_TTL_SECONDS = 900
 FETCH_ATTEMPTS = 3
 FETCH_BACKOFF_SECONDS = 0.5
 
+#: How much price history one quote fetch carries, and at what interval — the sparkline
+#: `get_stock_data` renders (user story 13). A month of daily closes is ~21 points: readable on
+#: a card, and one request rather than the intraday series' many.
+#:
+#: Here rather than beside the fetch because `GET_STOCK_DATA_DESCRIPTION` states the window to
+#: the model, and `prompts.py`'s rule is that a prompt's every count is derived and never typed
+#: — the first draft had "a month of daily closes" as prose in the description and `"1mo"` in
+#: `finance/quotes.py`, two copies of one fact (issue #9 review).
+HISTORY_DAYS = 30
+HISTORY_INTERVAL = "1d"
+
+#: How long a finance fetch may hang before it is abandoned, in seconds.
+#:
+#: An unofficial free endpoint that accepts a connection and then stalls is the failure a retry
+#: cannot help with, and `TimedCache` holds its lock across the refresh — so without a ceiling
+#: one stalled socket blocks every session's quotes for as long as the OS allows. Fifteen
+#: seconds is generous for a JSON response and short enough that three attempts stay inside a
+#: turn.
+FETCH_TIMEOUT_SECONDS = 15
+
 #: The `days` window `get_recent_news` uses when the model names none, and the ceiling it
 #: clamps to. A month is where "recent news" stops being recent; the default is a week because
 #: that is the window a pre-earnings brief is about.

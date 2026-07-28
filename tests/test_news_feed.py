@@ -267,3 +267,21 @@ def test_a_headline_with_an_unsafe_link_still_reports_its_story():
     assert headline.title == "Ford recalls trucks"
     assert headline.link == ""
     assert headline.source == "F", "no usable link means no domain, so the ticker stands in"
+
+
+def test_a_link_that_would_break_out_of_the_markdown_is_refused():
+    # The scheme check alone was not enough (issue #9 review). The card renders `[title](url)`,
+    # so a `)` in the URL closes the link early and the rest becomes stranger-written Markdown —
+    # routing around the escaping the title and publisher already get.
+    assert safe_link("https://ok.example/a)![x](https://evil.example/x.png)") == ""
+    assert safe_link("https://ok.example/a b") == "", "whitespace ends a destination too"
+    assert safe_link("https://ok.example/a<b>") == ""
+    assert safe_link('https://ok.example/a"title"') == ""
+
+
+def test_an_ordinary_story_url_survives_the_check():
+    # The refusal has to be narrow: real feed URLs carry paths, queries and fragments, and the
+    # recorded fixtures are full of `?.tsrc=rss`.
+    url = "https://finance.yahoo.com/m/71cbbdb3-54b0/tesla-and-spacex.html?.tsrc=rss&x=1#top"
+
+    assert safe_link(url) == url

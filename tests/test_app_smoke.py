@@ -7,6 +7,7 @@ that a message reaches the agent seam. `test_app_state.py` owns session and thre
 behaviour (ADR-0008).
 """
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -435,8 +436,12 @@ def test_a_bad_log_level_reports_a_clear_error_and_stops(app, monkeypatch):
 
 
 def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
+    # The generation tier's last resort (PLAN §2). It names the exception **type** and not its
+    # message: a client's error string can carry a request URL, and a request URL can carry an
+    # API key — the same reason `log_event` never records one. Until T5 this branch printed
+    # `f"The model call failed: {exc}"`, i.e. the message verbatim.
     def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
-        raise RuntimeError("upstream refused")
+        raise RuntimeError("upstream refused: https://api.example/v1?key=sk-secret")
 
     monkeypatch.setattr(agent, "answer", boom)
     app.run()
@@ -444,9 +449,59 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     app.chat_input[0].set_value("What are Tesla's risks?").run()
 
     assert not app.exception
-    assert "upstream refused" in app.error[0].value
+    banner = app.error[0].value
+    assert "RuntimeError" in banner, "the type is actionable"
+    assert "sk-secret" not in banner and "upstream refused" not in banner
     # A failed turn must not leave a phantom assistant message in the transcript.
     assert [m["role"] for m in app.session_state.messages] == ["user"]
+
+
+def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):
+    # The detail is not lost, only moved: the banner is for the reader and the traceback is for
+    # whoever debugs it, which is what makes withholding the message from the page affordable.
+    #
+    # Read off **stderr** rather than through `caplog`, and that is the honest instrument here:
+    # the page calls `configure_logging`, which sets `propagate=False` on the `finbrief` logger
+    # and installs its own JSON-lines handler, so `caplog`'s root handler never sees the record.
+    # What this asserts is therefore the line an operator actually reads.
+    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(agent, "answer", boom)
+    app.run()
+    capsys.readouterr()
+
+    app.chat_input[0].set_value("What are Tesla's risks?").run()
+
+    lines = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    (failure,) = [line for line in lines if line.get("event") == "chat_turn_failed"]
+    assert failure["level"] == "ERROR"
+    assert "upstream refused" in failure["error"], "the traceback travels, in one JSON object"
+
+
+def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
+    # The generation tier's named case. A step-limit failure reads to a user as the app hanging
+    # and then dying, so it gets a message about *their* question rather than
+    # `GraphRecursionError: Recursion limit of 24 reached`.
+    from langgraph.errors import GraphRecursionError
+
+    def out_of_steps(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        raise GraphRecursionError("Recursion limit of 24 reached")
+
+    monkeypatch.setattr(agent, "answer", out_of_steps)
+    app.run()
+
+    app.chat_input[0].set_value("Compare all fifteen companies.").run()
+
+    assert not app.exception
+    banner = app.error[0].value
+    assert "more tool calls than FinBrief allows" in banner
+    assert "Recursion limit" not in banner
+    assert "two parts" in banner, "it says what to do instead"
 
 
 # --------------------------------------------------------------------------------------

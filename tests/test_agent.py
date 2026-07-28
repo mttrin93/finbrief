@@ -587,7 +587,10 @@ def test_a_turn_logs_which_finance_tools_it_used(tmp_path, filings_store, caplog
 
     (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
     assert turn.fields["finance_calls"] == 2
-    assert turn.fields["tools_used"] == ["QuoteCard", "RatiosCard"]
+    # Tool *names*, not card class names: `type(card).__name__` collapsed all three tools into
+    # `FailedCard` whenever a call failed, losing tool choice on exactly the turns worth
+    # reading.
+    assert turn.fields["tools_used"] == [RATIOS_TOOL_NAME, STOCK_TOOL_NAME]
     assert turn.fields["searched"] is False
 
 
@@ -710,3 +713,62 @@ def test_chat_model_falls_back_to_the_application_settings(monkeypatch):
 
     assert model.model_name == "openai/gpt-4o"
     assert model.openai_api_key.get_secret_value() == "sk-from-environ"
+
+
+def test_a_failed_call_is_still_logged_against_the_tool_that_failed(
+    tmp_path, filings_store, caplog
+):
+    # The regression behind the fix: every failure produced a `FailedCard`, so a card-class
+    # label reported `FailedCard` and T10 could not tell which tool had been chosen. `card.TOOL`
+    # reads the tool back off the kind the call would have produced.
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_quote_call("SAP"), AIMessage("I cover fifteen US filers.")],
+    )
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer("What is SAP trading at?", thread_id="t-1", agent=agent)
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["tools_used"] == [STOCK_TOOL_NAME]
+
+
+def test_an_unreadable_days_argument_is_refused_gracefully_by_the_tool_node(
+    tmp_path, filings_store
+):
+    # User story 21 for the one argument the tools do *not* validate themselves. `days: int` is
+    # a pydantic schema, so an un-coercible value never reaches the tool body — and LangChain's
+    # tool node turns the validation failure into a `ToolMessage` with `status="error"` telling
+    # the model to fix it, which the model can act on in the same turn. Asserted through the
+    # real loop because that is the only place the behaviour exists: a direct `tool.invoke()`
+    # raises.
+    #
+    # Pinned rather than assumed: a coercion helper was written for this and deleted once the
+    # loop showed nothing reached it (issue #9 review), so this test is what stands in its
+    # place.
+    agent, model = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": NEWS_TOOL_NAME,
+                        "args": {"ticker": "TSLA", "days": "seven"},
+                        "id": "c1",
+                    }
+                ],
+            ),
+            AIMessage("How many days back would you like?"),
+        ],
+    )
+
+    turn = answer("Any recent Tesla news?", thread_id="t-1", agent=agent)
+
+    reply = [m for m in model.prompts[-1] if isinstance(m, ToolMessage)][-1]
+    assert reply.status == "error"
+    assert "valid integer" in reply.content
+    assert turn.text.startswith("How many days"), "the model recovered inside the same turn"
+    assert turn.cards == (), "and no card was fabricated for a call that never ran"

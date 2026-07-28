@@ -27,10 +27,12 @@ consequence of the design, not a defect, so the sidebar says so rather than leav
 discover it when their context disappears.
 """
 
+import logging
 import uuid
 
 import pandas as pd
 import streamlit as st
+from langgraph.errors import GraphRecursionError
 
 from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
@@ -63,6 +65,10 @@ from finbrief.tools.finance import (
     RatiosCard,
 )
 from finbrief.tools.search_filings import TOOL_NAME as SEARCH_TOOL_NAME
+
+#: Under `finbrief.` so the JSON-lines handler `configure_logging` installs picks it up — a
+#: logger named for this module would propagate to root and print unstructured.
+logger = logging.getLogger("finbrief.app")
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
@@ -493,10 +499,8 @@ def _render_ratios(card: RatiosCard) -> None:
             icon=":material/link_off:",
         )
     for metric in comparison.metrics:
-        detail = ""
-        if metric.n_compared and metric.n_compared < comparison.n:
-            detail = f" — {metric.n_compared} of {comparison.n} peers reported this"
-        st.markdown(f"**{metric.label}** · {metric.versus_peers}{detail}")
+        note = metric.coverage_note(comparison.n)
+        st.markdown(f"**{metric.label}** · {metric.versus_peers}{f' — {note}' if note else ''}")
     for unit in (Unit.MULTIPLE, Unit.PERCENT):
         _render_metric_bars(card, unit)
 
@@ -515,7 +519,10 @@ def _render_metric_bars(card: RatiosCard, unit: Unit) -> None:
     }
     if not rows:
         return
-    scale = 100.0 if unit is Unit.PERCENT else 1.0
+    # The scale and the axis label are `Unit`'s, not this function's: the surface was switching
+    # on the enum three times over, and a chart plotted at one scale under a caption naming
+    # another is a mistake nothing would catch (issue #9 review).
+    scale = unit.chart_scale
     st.bar_chart(
         pd.DataFrame(
             {
@@ -526,7 +533,7 @@ def _render_metric_bars(card: RatiosCard, unit: Unit) -> None:
         ),
         height=200,
     )
-    st.caption("Percentages" if unit is Unit.PERCENT else "Multiples")
+    st.caption(unit.axis_label)
 
 
 def _render_news(card: NewsCard) -> None:
@@ -691,8 +698,30 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                     on_step=note,
                 )
                 status.update(label="Answered", state="complete", expanded=False)
-        except Exception as exc:  # noqa: BLE001 — tiered error handling lands in Phase 5
-            st.error(f"The model call failed: {exc}", icon=":material/error:")
+        except GraphRecursionError:
+            # The **generation tier** of PLAN §2's tiered handling: a failure of the answering
+            # loop itself rather than of a data source. The agent ran out of steps, which reads
+            # to a user as the app hanging and then dying — so it gets its own message naming
+            # the cause and the action, where the generic branch below would print
+            # `GraphRecursionError: Recursion limit of 24 reached`.
+            status.update(label="Gave up", state="error", expanded=False)
+            st.error(
+                "That question took more tool calls than FinBrief allows in one turn. Ask it "
+                "in two parts — the filings half first, then the figures — or name a company.",
+                icon=":material/repeat_on:",
+            )
+        except Exception as exc:  # noqa: BLE001 — the last resort, and it names no internals
+            # The exception *type*, not its message. A client error string can carry a request
+            # URL, and a request URL can carry an API key — the same reason `log_event` never
+            # records one (`observability/logging_setup.py`). The detail goes to the log, where
+            # it is already structured; the reader gets something actionable instead.
+            logger.exception("chat_turn_failed")
+            status.update(label="Failed", state="error", expanded=False)
+            st.error(
+                f"FinBrief could not answer that ({type(exc).__name__}). Try again — and if it "
+                f"keeps happening, the server log has the detail.",
+                icon=":material/error:",
+            )
         else:
             st.markdown(as_markdown(reply.text))
             render_tool_cards(reply.cards)

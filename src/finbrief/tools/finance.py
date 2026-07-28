@@ -49,13 +49,14 @@ from finbrief.config import (
     PEERS,
     TICKER_MAX_CHARS,
     TICKERS,
+    PeerCluster,
 )
 from finbrief.finance import news as news_engine
 from finbrief.finance import quotes as quotes_engine
 from finbrief.finance.cache import Fetched
 from finbrief.finance.news import Headline, safe_link
 from finbrief.finance.quotes import Close, Quote
-from finbrief.finance.ratios import PeerComparison, Unit, compare
+from finbrief.finance.ratios import Metric, PeerComparison, PeerValue, Unit, compare
 from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import (
     CALCULATE_RATIOS_DESCRIPTION,
@@ -160,6 +161,11 @@ class QuoteCard:
     """`get_stock_data`'s result: one quote, with a price-history series for the chart."""
 
     KIND = "quote"
+    #: The tool that produced this card. Carried so a reader of a turn — the log line, the UI —
+    #: can name the *tool* rather than the card class: `type(card).__name__` collapsed all three
+    #: tools into `FailedCard` on any failure, which is precisely the turn T10 most wants to
+    #: read (issue #9 review).
+    TOOL = STOCK_TOOL_NAME
 
     quote: Quote
     freshness: Freshness
@@ -179,10 +185,12 @@ class QuoteCard:
                 ticker=str(raw.get("ticker", "")),
                 name=str(raw.get("name", "")),
                 currency=str(raw.get("currency", "USD")),
-                closes=tuple(
-                    Close(date=str(row.get("date", "")), close=float(row.get("close", 0.0)))
-                    for row in raw.get("closes", ())
-                ),
+                # A row missing its date or its close is **dropped**, not defaulted. `close=0.0`
+                # would plot a zero on the price chart — a number no endpoint reported, and the
+                # exact thing `_render_metric_bars` refuses to draw. A month of closes with one
+                # session missing is still a chart; a month with a spike to zero is a lie
+                # (CLAUDE.md: an honest absence value, never a fabricated number).
+                closes=tuple(_closes(raw.get("closes", ()))),
                 # Every figure through `_optional_float`, which is what makes a payload written
                 # before a field existed come back as **not reported** rather than as a
                 # `KeyError` on the first rerun after a deploy (CLAUDE.md). `None` is the honest
@@ -198,6 +206,7 @@ class RatiosCard:
     """`calculate_ratios`' result: one company's metrics against its cluster (ADR-0009)."""
 
     KIND = "ratios"
+    TOOL = RATIOS_TOOL_NAME
 
     comparison: PeerComparison
     freshness: Freshness
@@ -211,35 +220,35 @@ class RatiosCard:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> RatiosCard:
-        # Rebuilt through `compare`'s own types rather than re-derived: a card read back from a
-        # checkpoint must show the peer set the answer above it was written against, even if
-        # `config.PEERS` has since changed — recomputing here would silently relabel a
-        # historical comparison with today's cluster.
-        from finbrief.config import PeerCluster
-        from finbrief.finance.ratios import Metric, PeerValue
+        """Rebuild a comparison from a checkpointed payload, inventing nothing.
 
+        Read back rather than recomputed, deliberately: a card must show the peer set the
+        answer above it was written against, even if `config.PEERS` has since changed —
+        recomputing here would silently relabel a historical comparison with today's cluster.
+
+        **Which makes every field's absence value load-bearing, and the first draft got three
+        of them wrong** (issue #9 review). A peer figure defaulted to `0.0` enters `peer_mean`
+        as a measurement nobody made; an unrecognised `cluster` string put through
+        `PeerCluster(...)` raises `ValueError` and kills a thread in flight, which is the one
+        thing a checkpoint reader may never do; and a missing `unit` defaulted to `MULTIPLE`
+        prints a 74% margin as `0.7x`. A metric that cannot be read back honestly is
+        **dropped** — the card renders one row fewer, which is a visible and correct loss — and
+        the whole comparison is dropped only if its cluster is unreadable, since `basis` cannot
+        be written without it.
+        """
         raw = payload.get("comparison") or {}
+        cluster = _peer_cluster(raw.get("cluster"))
+        if cluster is None:
+            raise _UnreadableCard(
+                "the comparison's peer cluster did not survive the checkpoint"
+            )
         return cls(
             comparison=PeerComparison(
                 ticker=str(raw.get("ticker", "")),
                 name=str(raw.get("name", "")),
-                cluster=PeerCluster(raw.get("cluster") or next(iter(PeerCluster)).value),
+                cluster=cluster,
                 peers=tuple(str(peer) for peer in raw.get("peers", ())),
-                metrics=tuple(
-                    Metric(
-                        key=str(metric.get("key", "")),
-                        label=str(metric.get("label", "")),
-                        unit=Unit(metric.get("unit") or Unit.MULTIPLE.value),
-                        value=metric.get("value"),
-                        peer_values=tuple(
-                            PeerValue(
-                                str(peer.get("ticker", "")), float(peer.get("value", 0.0))
-                            )
-                            for peer in metric.get("peer_values", ())
-                        ),
-                    )
-                    for metric in raw.get("metrics", ())
-                ),
+                metrics=tuple(_metrics(raw.get("metrics", ()))),
                 unavailable=tuple(str(peer) for peer in raw.get("unavailable", ())),
             ),
             freshness=_freshness_from(payload),
@@ -251,6 +260,7 @@ class NewsCard:
     """`get_recent_news`' result: the headlines inside the window that was asked for."""
 
     KIND = "news"
+    TOOL = NEWS_TOOL_NAME
 
     ticker: str
     days: int
@@ -294,9 +304,16 @@ class FailedCard:
 
     KIND = "failed"
 
+    #: The card kind the call *would* have produced, so `TOOL` can name the tool that failed
+    #: rather than collapsing all three into one label.
     kind: str
     ticker: str
     message: str
+
+    @property
+    def TOOL(self) -> str:  # noqa: N802 — matches the constant on the cards that succeeded
+        """The tool this failed call belongs to, read back from `kind`."""
+        return _TOOL_BY_KIND.get(self.kind, "")
 
     def as_payload(self) -> Artifact:
         return {
@@ -322,6 +339,13 @@ _CARDS: Mapping[str, Any] = {
     RatiosCard.KIND: RatiosCard,
     NewsCard.KIND: NewsCard,
     FailedCard.KIND: FailedCard,
+}
+
+#: card kind -> the tool that produces it, so a `FailedCard` can still name its tool.
+_TOOL_BY_KIND: Mapping[str, str] = {
+    QuoteCard.KIND: STOCK_TOOL_NAME,
+    RatiosCard.KIND: RATIOS_TOOL_NAME,
+    NewsCard.KIND: NEWS_TOOL_NAME,
 }
 
 #: `Quote`'s optional numeric fields, in `Quote`'s own order — the ones `QuoteCard.from_payload`
@@ -353,6 +377,89 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
+
+
+class _UnreadableCard(ValueError):
+    """A payload this card cannot be rebuilt from without inventing something.
+
+    Caught by `finance_cards`, which then renders **no** card for that reply rather than a card
+    with a made-up figure on it. Never raised at a caller that could not handle it: a checkpoint
+    reader may not kill a thread in flight (CLAUDE.md).
+    """
+
+
+def _closes(rows: Iterable[Any]) -> Iterable[Close]:
+    """The daily closes in a payload, dropping any row missing a date or a price.
+
+    Dropped rather than defaulted: `close=0.0` puts a spike to zero on the price chart, which is
+    a figure no endpoint reported. One missing session out of twenty is still a chart.
+    """
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        close = _optional_float(row.get("close"))
+        date = row.get("date")
+        if close is None or not isinstance(date, str) or not date:
+            continue
+        yield Close(date=date, close=close)
+
+
+def _peer_cluster(value: object) -> PeerCluster | None:
+    """A `PeerCluster` from a payload, or `None` if it is not one this build knows.
+
+    `PeerCluster(value)` raises on an unknown string, and a cluster renamed between a deploy and
+    the rerun that reads the checkpoint is exactly how that becomes a dead conversation. `None`
+    here means "unreadable", which `from_payload` turns into a card that is not rendered. The
+    first draft's default (the enum's first member) would have printed a `big_tech` basis line
+    under an `autos` comparison.
+    """
+    try:
+        return PeerCluster(value)
+    except ValueError:
+        return None
+
+
+def _metrics(rows: Iterable[Any]) -> Iterable[Metric]:
+    """The metrics in a payload, dropping any whose unit did not survive.
+
+    A metric's `unit` decides how every figure on that row is *written*: defaulted to
+    `MULTIPLE`, a 74.1% gross margin prints as `0.7x`. There is no honest fallback, so the row
+    is dropped and the card renders one line fewer — a visible loss, where a wrong unit is not.
+    """
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            unit = Unit(row.get("unit"))
+        except ValueError:
+            continue
+        yield Metric(
+            key=str(row.get("key", "")),
+            label=str(row.get("label", "")),
+            unit=unit,
+            # Through `_optional_float` like every other figure, so a company's own missing
+            # value reads "not reported" rather than arriving as whatever JSON happened to hold.
+            value=_optional_float(row.get("value")),
+            peer_values=tuple(_peer_values(row.get("peer_values", ()))),
+        )
+
+
+def _peer_values(rows: Iterable[Any]) -> Iterable[PeerValue]:
+    """The peer figures in a metric's payload, dropping any that is not a number.
+
+    The sharpest of the absence rules, because this one feeds arithmetic: a `0.0` default here
+    lands inside `Metric.peer_mean` and prints as a measurement. Dropping the row instead is
+    already the behaviour `compare()` has for a peer that reported nothing, so a round trip
+    through a checkpoint yields the same comparison it started as.
+    """
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        value = _optional_float(row.get("value"))
+        ticker = row.get("ticker")
+        if value is None or not isinstance(ticker, str) or not ticker:
+            continue
+        yield PeerValue(ticker=ticker, value=value)
 
 
 def _payload(kind: str, card: object) -> Artifact:
@@ -440,7 +547,13 @@ def finance_cards(messages: Iterable[AnyMessage]) -> tuple[FinanceCard, ...]:
         card_type = _CARDS.get(str(artifact.get("kind", "")))
         if card_type is None:
             continue
-        cards.append(card_type.from_payload(artifact))
+        try:
+            cards.append(card_type.from_payload(artifact))
+        except _UnreadableCard:
+            # No card, rather than a card with an invented figure on it. Same reasoning as the
+            # missing-artifact branch above: the figures *were* the card, so there is nothing a
+            # reader could use — and a checkpoint reader may not kill a thread in flight.
+            continue
     return tuple(cards)
 
 
@@ -534,8 +647,18 @@ def build_finance_tools(
             return _refused(NEWS_TOOL_NAME, NewsCard.KIND, str(ticker), refused)
         # Clamped rather than refused, as the description says: a model asking for 90 days wants
         # "everything recent", and a refusal spends a round trip to teach it a number it will
-        # then guess again. `int()` because a model may send "7".
-        window = max(1, min(int(days), NEWS_MAX_DAYS))
+        # then guess again.
+        #
+        # Only the *range* is checked, not the type. The `days: int` annotation is a pydantic
+        # schema at the tool boundary, so `"3"` arrives coerced and `"seven"` never arrives at
+        # all — LangChain's tool node turns that validation failure into a `ToolMessage` with
+        # `status="error"` and a "please fix the error" instruction, which is user story 21's
+        # graceful handling arriving from the framework. A coercion helper was written here and
+        # deleted once the real loop showed nothing reached it (issue #9 review);
+        #
+        # `test_agent.py::test_an_unreadable_days_argument_is_refused_gracefully_by_the_tool_no
+        # de` is what keeps that true rather than assumed.
+        window = max(1, min(days, NEWS_MAX_DAYS))
         try:
             fetched = fetch_headlines(resolved)
         except Exception as exc:
@@ -667,10 +790,13 @@ def _ratios_text(card: RatiosCard) -> str:
             f"the remaining peers, so say how many."
         )
     for metric in comparison.metrics:
-        detail = ""
-        if metric.n_compared and metric.n_compared < comparison.n:
-            detail = f" [only {metric.n_compared} of {comparison.n} peers reported this]"
-        lines.append(f"{metric.label}: {metric.versus_peers}{detail}")
+        # `coverage_note` rather than a phrasing of its own: the card derived the same two
+        # numbers in different words, which is the disagreement `basis` was extracted to
+        # prevent.
+        note = metric.coverage_note(comparison.n)
+        lines.append(
+            f"{metric.label}: {metric.versus_peers}{f' [only {note}]' if note else ''}"
+        )
     return "\n".join(lines)
 
 

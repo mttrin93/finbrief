@@ -45,11 +45,19 @@ tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build con
 with `Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never
 add a test dependency that fetches data at import time. **The no-network half is enforced, not
 asserted**: `conftest.py` patches `connect`/`connect_ex`/`create_connection`/`getaddrinfo` at
-import time — before collection, which is when an import-time fetch happens — so any egress
-to a non-loopback host raises `EgressBlocked`. It is there because the claim had been asserted
-twice and had been false twice, both times through tiktoken's cache; `tests/test_hermetic_suite.py`
-is what says the guard itself works, since a guard that patched the wrong function blocks
-nothing while every test still passes. Four more mechanisms keep it true *without* leaning on
+import time — before collection, which is when an import-time fetch happens — so egress to a
+non-loopback host raises `EgressBlocked`; and it patches `curl_cffi.Curl.perform` separately,
+because `curl_cffi` binds libcurl and resolves and connects in **C**, touching Python's `socket`
+module not at all. That second half is not optional trivia: `yfinance` uses `curl_cffi` whenever
+it imports, so without it the one library T5 added was the one uncovered — measured at HTTP 429
+with the socket guard installed.
+
+**The guard is a denylist over the backends this repo can reach, not a proof**, and it is
+described that way deliberately: a new HTTP dependency is a new path, and a guard advertised as
+total is how the claim came to be false three times (twice through tiktoken's cache, once through
+this guard's own docstring). `tests/test_hermetic_suite.py` carries **one test per backend** for
+that reason — an uncovered path shows up there as a live call, which is where the `curl_cffi`
+hole was found. Add a networking dependency, add a test there. Four more mechanisms keep it true *without* leaning on
 the guard: tiktoken's cl100k_base table is vendored under
 `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
 `get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`

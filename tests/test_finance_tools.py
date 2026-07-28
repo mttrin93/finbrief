@@ -18,10 +18,16 @@ from datetime import UTC, datetime
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from finbrief.config import NEWS_MAX_DAYS, NEWS_MAX_HEADLINES, PEERS, TICKER_MAX_CHARS
+from finbrief.config import (
+    NEWS_MAX_DAYS,
+    NEWS_MAX_HEADLINES,
+    PEERS,
+    TICKER_MAX_CHARS,
+)
 from finbrief.finance.cache import Fetched
 from finbrief.finance.news import parse_feed
 from finbrief.finance.quotes import Quote
+from finbrief.finance.ratios import Unit
 from finbrief.tools.finance import (
     FINANCE_TOOL_NAMES,
     NEWS_TOOL_NAME,
@@ -412,6 +418,15 @@ def test_a_nonsense_window_is_clamped_to_a_day(recorded_feeds):
     assert call(news, ticker="MSFT", days=-5)[1]["days"] == 1
 
 
+def test_a_numeric_window_the_model_sent_as_a_string_is_coerced_by_the_schema(recorded_feeds):
+    # The `days: int` annotation is a pydantic schema at the tool boundary, so `"3"` arrives as
+    # `3` and the tool body never sees a string. Asserted because it is what makes the range-
+    # only clamp inside the tool sufficient — see `test_agent.py` for the un-coercible half.
+    news = tools(feeds=a_feed(recorded_feeds))[NEWS_TOOL_NAME]
+
+    assert call(news, ticker="MSFT", days="3")[1]["days"] == 3
+
+
 def test_the_headline_count_is_capped(recorded_feeds):
     news = tools(feeds=a_feed(recorded_feeds))[NEWS_TOOL_NAME]
 
@@ -600,3 +615,84 @@ def test_the_tool_signatures_are_the_ones_the_golden_set_scores_against(recorded
 
 def _reply(name: str, content: str, artifact: object) -> ToolMessage:
     return ToolMessage(content=content, name=name, tool_call_id="call-1", artifact=artifact)
+
+
+# --- absences on the way back in, which the first draft fabricated ----------------------
+
+
+def test_a_peer_figure_that_did_not_survive_is_dropped_not_read_as_zero(recorded_quotes):
+    # The sharpest of these, because this one feeds arithmetic: `float(peer.get("value", 0.0))`
+    # put a `0.0` inside `Metric.peer_mean`, where it prints as a measurement nobody made
+    # (issue #9 review). Dropping the row is what `compare()` already does for a peer that
+    # reported nothing, so a round trip yields the comparison it started as.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[RATIOS_TOOL_NAME], ticker="F")
+    (pe,) = [m for m in artifact["comparison"]["metrics"] if m["key"] == "trailing_pe"]
+    del pe["peer_values"][0]["value"]  # a field an older shape did not carry
+
+    card = RatiosCard.from_payload(artifact)
+
+    (metric,) = [m for m in card.comparison.metrics if m.key == "trailing_pe"]
+    assert metric.peers_compared == ("GM",), "the unreadable peer is gone, not zeroed"
+    assert metric.peer_mean == pytest.approx(36.88136)
+
+
+def test_a_companys_own_figure_that_did_not_survive_reads_as_not_reported(recorded_quotes):
+    built = tools(recorded_quotes)
+    _, artifact = call(built[RATIOS_TOOL_NAME], ticker="NVDA")
+    (pe,) = [m for m in artifact["comparison"]["metrics"] if m["key"] == "trailing_pe"]
+    pe["value"] = "31.6x"  # not a number: an older shape stored it formatted
+
+    (metric,) = [
+        m
+        for m in RatiosCard.from_payload(artifact).comparison.metrics
+        if m.key == "trailing_pe"
+    ]
+
+    assert metric.value is None
+    assert Unit.MULTIPLE.format(metric.value) == "not reported"
+
+
+def test_a_metric_whose_unit_did_not_survive_is_dropped_rather_than_mislabelled(
+    recorded_quotes,
+):
+    # A unit defaulted to `MULTIPLE` prints a 74.1% margin as `0.7x` — a wrong number, where a
+    # missing row is a visible loss. There is no honest fallback, so the row goes.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[RATIOS_TOOL_NAME], ticker="NVDA")
+    for metric in artifact["comparison"]["metrics"]:
+        if metric["key"] == "gross_margin":
+            metric["unit"] = "fraction-of-revenue"  # a unit this build does not know
+
+    card = RatiosCard.from_payload(artifact)
+
+    keys = [metric.key for metric in card.comparison.metrics]
+    assert "gross_margin" not in keys
+    assert "trailing_pe" in keys, "the rest of the card survives"
+
+
+def test_a_comparison_whose_cluster_did_not_survive_renders_no_card_and_does_not_raise(
+    recorded_quotes,
+):
+    # `PeerCluster(unknown)` raises `ValueError`, and a checkpoint reader that raises kills a
+    # thread in flight — the one thing the tolerance rule forbids (CLAUDE.md). A cluster renamed
+    # between a deploy and the rerun that reads the checkpoint is exactly how that happens.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[RATIOS_TOOL_NAME], ticker="F")
+    artifact["comparison"]["cluster"] = "carmakers"  # renamed since this reply was written
+
+    assert finance_cards([_reply(RATIOS_TOOL_NAME, "ratios", artifact)]) == ()
+
+
+def test_a_close_missing_its_price_is_dropped_rather_than_plotted_as_zero(recorded_quotes):
+    # `close=0.0` puts a spike to zero on the price chart — a figure no endpoint reported, and
+    # the thing `_render_metric_bars` refuses to draw for the same reason.
+    built = tools(recorded_quotes)
+    _, artifact = call(built[STOCK_TOOL_NAME], ticker="NVDA")
+    artifact["quote"]["closes"][3]["close"] = None
+    del artifact["quote"]["closes"][7]["date"]
+
+    closes = QuoteCard.from_payload(artifact).quote.closes
+
+    assert len(closes) == 18, "two unreadable sessions dropped from twenty"
+    assert all(close.close > 0 for close in closes)

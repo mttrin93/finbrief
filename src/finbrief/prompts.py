@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from finbrief.config import (
     CLUSTERS,
+    HISTORY_DAYS,
     ITEM_7A_POINTER_FILERS,
     ITEM_7A_SECTION_FILERS,
     NEWS_DEFAULT_DAYS,
@@ -440,11 +441,12 @@ _UNIVERSE_ONLY = (
 #: any number being wrong.
 GET_STOCK_DATA_DESCRIPTION = f"""\
 Live market data for one company: last price, change on the previous close, market \
-capitalisation, trailing P/E and EPS, the 52-week range, and a month of daily closes.
+capitalisation, trailing P/E and EPS, the 52-week range, and {HISTORY_DAYS} days of daily
+closes.
 
 {_UNIVERSE_ONLY}
 
-The data is free and delayed — typically by about 15 minutes — and is cached for \
+The data is free and delayed — by roughly as long as it is cached — and it is cached for \
 {QUOTE_TTL_SECONDS // 60} minutes, so it is a recent quote and not a live tick. Describe it as \
 such. A figure the source does not report comes back as "not reported"; pass that on rather \
 than filling it in.

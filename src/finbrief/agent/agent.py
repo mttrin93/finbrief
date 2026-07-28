@@ -397,11 +397,13 @@ def answer(
         contexts=len(turn.contexts),
         searched=turn.searched,
         grounded=turn.grounded,
-        # The tool-*selection* half, which T4 could not report because there was one tool.
-        # Counted per kind rather than as a total, so T10 (#11) can read tool choice off a turn
-        # line without reassembling it from the per-tool `tool_call` events.
+        # The tool-*selection* half, which T4 could not report because there was one tool. Named
+        # per *tool*, so T10 (#11) can read tool choice off a turn line without reassembling it
+        # from the per-tool `tool_call` events — and the names are `card.TOOL` rather than
+        # `type(card).__name__`, which collapsed all three tools into `FailedCard` on any
+        # failure and so lost exactly the turns worth reading (issue #9 review).
         finance_calls=len(turn.cards),
-        tools_used=sorted({type(card).__name__ for card in turn.cards}),
+        tools_used=sorted({card.TOOL for card in turn.cards if card.TOOL}),
         question_chars=len(question),
         answer_chars=len(turn.text),
         latency_ms=round((time.perf_counter() - started) * 1000),

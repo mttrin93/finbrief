@@ -40,15 +40,17 @@ from typing import Any
 from finbrief.config import (
     FETCH_ATTEMPTS,
     FETCH_BACKOFF_SECONDS,
+    HISTORY_DAYS,
+    HISTORY_INTERVAL,
     QUOTE_TTL_SECONDS,
 )
 from finbrief.finance.cache import Fetched, TimedCache
 
-#: How much price history one fetch carries, and at what interval — enough for the sparkline
-#: `get_stock_data` renders (user story 13) and no more. A month of daily closes is ~21 points:
-#: readable on a card, and one request rather than the intraday series' many.
-HISTORY_PERIOD = "1mo"
-HISTORY_INTERVAL = "1d"
+#: yfinance's `period` string for `config.HISTORY_DAYS` — `30` → `"30d"`. Derived rather than
+#: typed beside the day count, so the window the model is told about
+#: (`GET_STOCK_DATA_DESCRIPTION`) and the window actually requested are the same number (issue
+#: #9 review).
+HISTORY_PERIOD = f"{HISTORY_DAYS}d"
 
 
 @dataclass(frozen=True, slots=True)

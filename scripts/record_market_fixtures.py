@@ -43,6 +43,7 @@ import yfinance as yf
 
 from finbrief.config import UNIVERSE
 from finbrief.finance.news import FEED_URL_TEMPLATE, NEWS_USER_AGENT
+from finbrief.finance.quotes import HISTORY_INTERVAL, HISTORY_PERIOD
 
 FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "market"
 
@@ -89,7 +90,11 @@ def record_quotes() -> None:
     for company in UNIVERSE:
         ticker = yf.Ticker(company.ticker)
         info = {key: _plain(ticker.info.get(key)) for key in RECORDED_INFO_KEYS}
-        history = ticker.history(period="1mo", interval="1d", auto_adjust=True)
+        # The production window, read from `finance/quotes.py`, so a fixture cannot be
+        # recorded over a different span from the one the tool asks for.
+        history = ticker.history(
+            period=HISTORY_PERIOD, interval=HISTORY_INTERVAL, auto_adjust=True
+        )
         closes = [
             # ISO date and close only. The tool renders a line chart and nothing reads the
             # other five columns, so recording them would be four fixtures' worth of noise.

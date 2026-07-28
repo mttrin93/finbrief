@@ -33,6 +33,7 @@ from html import unescape
 from finbrief.config import (
     FETCH_ATTEMPTS,
     FETCH_BACKOFF_SECONDS,
+    FETCH_TIMEOUT_SECONDS,
     NEWS_MAX_HEADLINES,
     NEWS_TTL_SECONDS,
 )
@@ -71,6 +72,11 @@ _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _TAG = re.compile(r"""<[a-zA-Z!/?][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>""")
 
 _WHITESPACE = re.compile(r"\s+")
+
+#: Characters that end a Markdown link destination, so a URL holding one would let the text
+#: after it escape into the page as markup. `)` closes the destination; `<`/`>` delimit the
+#: pointy form; whitespace separates the destination from an optional title (see `safe_link`).
+_UNRENDERABLE_IN_A_LINK = frozenset(") <>\"'\n\r\t ")
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,8 +137,21 @@ def safe_link(url: str) -> str:
     anything else is either an attack or a link this app has no business rendering. An empty
     result means "no link", which the card renders as unlinked text — a story is still worth
     reporting without somewhere to click.
+
+    **The scheme is not the only thing checked, and the first draft thought it was** (issue #9
+    review). The card renders this as `[title](url)`, so a URL containing `)` closes the link
+    early and everything after it becomes Markdown written by a stranger — the escaping applied
+    to the title and the publisher, routed around by the one field they sit next to. Whitespace
+    and angle brackets end a Markdown destination the same way. Any of them present and the URL
+    is refused outright rather than percent-encoded: encoding would produce a link that
+    resolves somewhere other than where the publisher pointed, and "no link" is the honest
+    answer to "this URL is not one I can render safely".
     """
-    return url if url.lower().startswith(("http://", "https://")) else ""
+    if not url.lower().startswith(("http://", "https://")):
+        return ""
+    if any(character in url for character in _UNRENDERABLE_IN_A_LINK):
+        return ""
+    return url
 
 
 def parse_feed(raw: str | bytes, *, ticker: str) -> tuple[Headline, ...]:
@@ -218,16 +237,18 @@ def fetch_headlines(ticker: str) -> tuple[Headline, ...]:
     """Fetch and parse one ticker's feed. The one network call in this module.
 
     `urllib` rather than `requests`: this is a single keyless GET of a fixed template, and the
-    project already depends on `urllib` through the standard library. The timeout is not
-    optional — an unofficial free endpoint that hangs would otherwise hold the cache's lock for
-    as long as the socket allowed.
+    project already depends on `urllib` through the standard library. The timeout is
+    `config.FETCH_TIMEOUT_SECONDS` and is not optional — an unofficial free endpoint that hangs
+    would otherwise hold the cache's lock for as long as the socket allowed.
     """
     import urllib.request
 
     request = urllib.request.Request(  # noqa: S310 — a fixed https template, validated ticker
         FEED_URL_TEMPLATE.format(ticker=ticker), headers={"User-Agent": NEWS_USER_AGENT}
     )
-    with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
+    with urllib.request.urlopen(  # noqa: S310
+        request, timeout=FETCH_TIMEOUT_SECONDS
+    ) as response:
         raw = response.read()
     headlines = parse_feed(raw, ticker=ticker)
     if not headlines:

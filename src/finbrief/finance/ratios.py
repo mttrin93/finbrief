@@ -60,6 +60,23 @@ class Unit(StrEnum):
     #: the only one, and `4759668391936` on a card is a number a reader has to count digits on.
     MONEY = "money"
 
+    @property
+    def chart_scale(self) -> float:
+        """What to multiply a figure by to plot it in the units the axis is labelled in.
+
+        On `Unit` rather than at the chart, because the surface was already switching on this
+        enum three times — to format a figure, to scale it, and to caption the axis (issue #9
+        review) — and a fourth reader is a fourth chance for one of them to disagree. A
+        percentage is stored as a fraction and plotted as a percentage; everything else plots
+        as stored.
+        """
+        return 100.0 if self is Unit.PERCENT else 1.0
+
+    @property
+    def axis_label(self) -> str:
+        """What to call an axis of these figures: `Percentages`, `Multiples`."""
+        return "Percentages" if self is Unit.PERCENT else "Multiples"
+
     def format(self, value: float | None) -> str:
         """`value` as a reader would write it, or `not reported` when there is nothing to write.
 
@@ -146,6 +163,19 @@ class Metric:
     @property
     def peer_high(self) -> float | None:
         return max((peer.value for peer in self.peer_values), default=None)
+
+    def coverage_note(self, peers: int) -> str:
+        """`3 of 5 peers reported this`, or `""` when every peer did.
+
+        One wording, and it lives here for the reason `PeerComparison.basis` does: the tool's
+        text and the UI card were each deriving it, in two phrasings, from the same two numbers
+        (issue #9 review) — which is exactly the disagreement `basis` was extracted to prevent.
+        `peers` is passed in because the cluster's size belongs to the comparison, not to one
+        metric.
+        """
+        if not self.n_compared or self.n_compared >= peers:
+            return ""
+        return f"{self.n_compared} of {peers} peers reported this"
 
     @property
     def versus_peers(self) -> str:

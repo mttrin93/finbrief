@@ -48,19 +48,27 @@ def _install_egress_guard() -> None:
     *collecting*, before any fixture exists. conftest is imported before the test modules it
     collects, so this is the earliest hook there is.
 
-    **Why a guard at all, given the suite was already hermetic by contract.** Twice now a
-    ticket shipped a "hermetic" claim that was false in the same way: `tiktoken.get_encoding`
-    downloads its BPE table and caches it, so the author's warm cache passed and clean CI
-    egressed silently. Both times the fix was a vendored fixture; neither time was there
-    anything to stop the third instance. An assertion that the suite does not reach the network
-    is worth exactly as much as the author's cache state — this is the mechanism that makes it
-    worth more. `tests/test_hermetic_suite.py` is what says the guard itself works.
+    **Why a guard at all, given the suite was already hermetic by contract.** Three times now a
+    ticket has shipped a "hermetic" claim that was false. Twice it was `tiktoken.get_encoding`,
+    which downloads its BPE table and caches it, so the author's warm cache passed and clean CI
+    egressed silently. The third time was **this function's own first draft**, whose docstring
+    claimed it covered `curl_cffi` and did not — see `_block_curl_cffi` below. An assertion that
+    the suite does not reach the network is worth exactly as much as the author's cache state;
+    this is the mechanism that makes it worth more, and `tests/test_hermetic_suite.py` is what
+    says the mechanism works, backend by backend.
 
-    Four entry points, because a library may use any of them: `connect`/`connect_ex` on the
-    socket object (the low-level path), `create_connection` (what `urllib3`, and so `requests`
-    and `curl_cffi`, calls), and `getaddrinfo` — a DNS query is egress too, and blocking it
-    fails earlier and reads more clearly than a connect timeout. Anything with a non-tuple
-    address is left alone: that is an `AF_UNIX` path, not a host.
+    **What it is: a denylist over the egress backends this repo can reach, not a proof.**
+    Python has no in-process way to stop a C library from opening a socket, so a guard like
+    this can only cover the paths it knows about, and a new HTTP dependency is a new path. That
+    limit is stated rather than papered over — a guard advertised as total is how the third
+    instance happened. What makes it worth having anyway is that the failure mode is now
+    *loud*: an uncovered backend shows up as a live call in `test_hermetic_suite.py`'s per-
+    backend tests, which is where the `curl_cffi` hole was found.
+
+    This function covers the **Python socket layer** — `connect`/`connect_ex` (the low-level
+    path), `create_connection` (what `urllib3`, and so `requests`, calls), and `getaddrinfo`,
+    because a DNS query is egress too and blocking it fails earlier and reads more clearly than
+    a connect timeout. Anything with a non-tuple address is left alone: an `AF_UNIX` path.
     """
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
@@ -108,7 +116,54 @@ def _install_egress_guard() -> None:
     socket.getaddrinfo = guarded_getaddrinfo
 
 
+def _block_curl_cffi() -> None:
+    """Block `curl_cffi`, which does its own DNS and connect inside libcurl.
+
+    **The hole `_install_egress_guard`'s first draft had, and claimed it did not.** That
+    docstring asserted `socket.create_connection` was "what `urllib3`, and so `requests` and
+    `curl_cffi`, calls". Only the first half is true: `curl_cffi` binds libcurl, which resolves
+    and connects in C without touching Python's `socket` module at all. Measured with the socket
+    guard installed, `curl_cffi.requests.get("https://query1.finance.yahoo.com/")` returned
+    **HTTP 429 — a live call**.
+
+    That is not a hypothetical dependency. `yfinance._http.new_session()` returns
+    `curl_cffi.Session(impersonate="chrome")` whenever `curl_cffi` is importable, and it is in
+    `uv.lock`, so the one library this ticket added is the one the guard did not cover. The
+    suite stayed hermetic only because `finance/quotes.py` defers its `import yfinance` and
+    every test injects a recorded source — hermetic *by contract*, which is the exact thing the
+    guard exists to stop relying on.
+
+    **`Curl.perform` is the chokepoint**, the libcurl analogue of `socket.connect`: every
+    synchronous request funnels through it whatever session or convenience helper called in.
+    `AsyncSession.request` covers the async path, which uses multi-handles instead.
+
+    **No loopback exemption, unlike the socket guard.** The target URL is set through `setopt`
+    and is not an argument to `perform`, so this cannot tell a local address from a remote one —
+    and nothing in this repo has any reason to use `curl_cffi` for loopback. Blocking it
+    outright is the safe reading of an ambiguous case.
+
+    Absent `curl_cffi`, this is a no-op: it is an optional `yfinance` backend, and a guard that
+    hard-required it would fail the suite on an environment that is *more* hermetic, not less.
+    """
+    try:
+        import curl_cffi
+    except ImportError:  # pragma: no cover — the more-hermetic environment
+        return
+
+    def blocked_perform(*args: object, **kwargs: object) -> None:
+        raise EgressBlocked(
+            "the test suite tried to reach the network through curl_cffi (libcurl), which "
+            "bypasses Python's socket layer. Tests are hermetic — no network (CLAUDE.md). "
+            "yfinance uses this backend; inject a recorded source instead, as "
+            "tests/fakes.py's `a_quote_source` does."
+        )
+
+    curl_cffi.Curl.perform = blocked_perform
+    curl_cffi.AsyncSession.request = blocked_perform
+
+
 _install_egress_guard()
+_block_curl_cffi()
 
 #: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
 #: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather
