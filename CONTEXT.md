@@ -124,6 +124,64 @@ or `multi-hop` — chosen so A/B results are reported per query type.
 The hand-authored, source-separated reference Q/A used to evaluate retrieval and answers.
 Authored against ingested sections only.
 
+**Security gate**: The four layers that stand between an analyst's question and a rendered
+answer (ADR-0006) — the **Input gate**'s three, plus the **Output validator**. Named as one
+thing because its defence is the composition: each layer's job is what the one before it cannot
+do, and the claim that none is redundant is measured per layer, not asserted (user story 34).
+_Avoid_: "the guardrails" (Guardrails AI is one library inside layer 4); and do not call it *the
+gate* unqualified — `ingestion/gate.py` is the Phase-1 data-quality gate and a different thing.
+
+**Input gate** (the front door), and **Layer**: The three checks a question passes before the
+agent sees it: **normalisation**, the **denylist**, and the **classifier**, in that order,
+cheap-first. A **Layer** is one of them — and only two of the three can *decide* a screening,
+because normalisation is the transform the denylist matches against and blocks nothing on its
+own. That is why `Layer` has two members and why layer 1's contribution has to be measured at
+its own seam. _Avoid_: calling a denylist pass "safe" — it means "not one of the payloads we
+wrote down", and the escalation to the classifier is unconditional for exactly that reason.
+
+**Screening**: What the input gate decided about one question, and what it cost: whether it was
+blocked, which **Layer** decided, which **Denylist rule** fired, whether the classifier ran at
+all, its verdict, and the latency the ≤1s p50 is computed from. It carries **no user-derived
+text**: the normalised form lives inside `screen()` long enough to be matched and — on a block
+only — logged. A classifier that could not answer is `undecided`, never `safe`: nothing decided
+that question was fine, and a reader of the result is entitled to know which.
+
+**Denylist rule**: One bounded-gap pattern and the payload family it is for. `catches` is not
+documentation — the README's marginal-contribution table reads it, and a gate-trigger line
+records the rule's `id` so an analysis can say *which* rule fired. A rule is scanned against
+both normalised forms, which is what imposes its two authoring rules (head-anchor with `\b`;
+join words with a gap, never a literal space). _Avoid_: adding an advice pattern here. "Should I
+buy X?" is user story 15's request, refused with a disclaimer at layer 4; blocking it at the
+front door accuses an analyst of an attack.
+
+**Quarantine block**: A tagged region wrapping text FinBrief did not write — `<sources>` for
+retrieved chunks, `<news>` for headlines, `<input>` for the question the classifier is judging —
+followed by a framing sentence saying it is evidence and not instruction. The tags are one tuple
+(`QUARANTINE_TAGS`), and a body containing one of them is made inert before interpolation, so a
+chunk cannot close the block it is inside. _Avoid_: "the delimiter" for the tag alone — the
+block is the tags **and** the framing sentence, and on the agent's path that sentence is the
+last thing the model reads before answering.
+
+**Planted payload**, and **Canary**: One poisoned body in the dedicated injection collection,
+and the otherwise-impossible string it demands. The canary is what makes obedience **detected**
+rather than judged: an answer either contains it or does not, where "did the model comply?"
+would need a judge. A payload whose goal is extraction has no canary and is checked against
+fragments of the system prompt instead. The collection is a throwaway directory, built and
+destroyed per run, never the demo KB — and its chunks claim an **in-Universe** ticker, because
+an out-of-Universe one makes the agent decline to search and turns the test into a test of the
+whitelist (ADR-0006 T7 amendment §7). What marks them is the provenance: an all-zero accession,
+fiscal year 1970. _Avoid_: "the injection KB" — it is not a knowledge base, nothing answers from
+it, and it exists for the length of one run.
+
+**Citation marker**: An inline `[n]` in an answer. It **resolves** when *n* names a **Context**
+this conversation retrieved — the thread's running sequence, not the turn's, since a follow-up
+may cite a source an earlier turn found. Resolution is checked and reported; **support** is not,
+and the two are different claims: a marker can resolve and still sit on a sentence its chunk
+does not carry, which is faithfulness and is measured by T10's RAGAs run. _Avoid_: reading a
+*non-numeric* bracket as an unresolved marker. `[Yahoo Finance]` is a collision with the syntax
+that makes any citation resolvable, which is a different defect from `[6]` against five sources,
+and the two are counted apart.
+
 ## Settled facts
 
 - Embeddings served via OpenRouter `/v1/embeddings` (verified July 2026) — do not

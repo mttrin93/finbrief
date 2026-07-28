@@ -1,16 +1,18 @@
 # FinBrief
 
-Domain-specialised RAG assistant for equity research. The plan lives in `PLAN.md`; the
-Tier-1 spec (user stories and the six testing seams) in `docs/spec/finbrief.md`; domain
-glossary in `CONTEXT.md`; design decisions in `docs/adr/`. Run evidence lives in
-`docs/verification/`: every file there is **generated**, never hand-authored.
-`ingest-report.md` is rewritten by every full-Universe `scripts/ingest_filings.py` run;
-`retrieval-smoke.md` by every `scripts/retrieval_smoke.py` run (a wiring check on
-`retrieve()` — *not* an evaluation, and nothing in it may be cited as a quality claim; the
-measurement artifact of record is ADR-0002's golden set, ticket T9/#4); and
-`section-starts.md` is ADR-0007's hand-verification checklist — `ingestion/reporting.py`
-re-parses it to carry ticks and hand-written notes forward, so the only hand-edits it
-tolerates are ticking a box and adding a note.
+Domain-specialised RAG assistant for equity research. The plan lives in `PLAN.md`; the Tier-1
+spec (user stories and the six testing seams) in `docs/spec/finbrief.md`; domain glossary in
+`CONTEXT.md`; design decisions in `docs/adr/`. Run evidence lives in `docs/verification/`: every
+file there is **generated**, never hand-authored. `ingest-report.md` is rewritten by every
+full-Universe `scripts/ingest_filings.py` run; `retrieval-smoke.md` by every
+`scripts/retrieval_smoke.py` run (a wiring check on `retrieve()` — *not* an evaluation, and
+nothing in it may be cited as a quality claim; the measurement artifact of record is ADR-0002's
+golden set, ticket T9/#4); `security-gate.md` by every `scripts/security_suite.py` run
+(pass/fail, likewise not an evaluation — and it prints the **pre-registered** latency budget
+beside the revised one on purpose, so a reader cannot mistake a revised pre-registration for one
+that always held); and `section-starts.md` is ADR-0007's hand-verification checklist —
+`ingestion/reporting.py` re-parses it to carry ticks and hand-written notes forward, so the only
+hand-edits it tolerates are ticking a box and adding a note.
 
 ## Commands
 
@@ -23,8 +25,8 @@ uv run streamlit run app/Home.py
 
 CI runs exactly the lint and test commands above (`.github/workflows/ci.yml`).
 
-The non-hermetic entry points — the only commands that reach the network, and two of the
-three spend money. Run them from the repo root; their report paths are relative to the
+The non-hermetic entry points — the only commands that reach the network, and three of the
+four spend money. Run them from the repo root; their report paths are relative to the
 working directory. `retrieval_smoke.py` reads the collection ingest built and embeds its five
 queries with the same paid model, so it needs a key too: a query embedded by a different
 model retrieves noise with no error.
@@ -33,7 +35,21 @@ model retrieves noise with no error.
 uv run python scripts/ingest_filings.py             # full Universe: EDGAR + paid embeddings
 uv run python scripts/ingest_filings.py --dry-run   # fetch + gate only; no key, no writes
 uv run python scripts/retrieval_smoke.py            # 5 sanity queries over the ingested KB
+uv run python scripts/security_suite.py             # the gate against the committed corpus
+uv run python scripts/security_suite.py --gate-only # layers 1-4 only: no embeddings, no agent
 ```
+
+`security_suite.py` is the cheapest of the three that spend money (~35 one-word
+completions — every case the denylist does not catch, plus the whole benign set — plus a handful of
+agent turns) and exists because three of ADR-0006's claims cannot be met by a test: whether a
+real model recognises a *novel* payload, whether a real model *obeys* a planted one, and the
+latency p50, which is a measurement. It exits non-zero on a failing suite. `--gate-only` is a
+legitimate cheap check and says in the artifact which half it covered — a **PARTIAL RUN** banner
+above the outcome line, and "planted payloads **not run**" in place of a count. Never commit a
+partial run as a full one. That promise was prose until issue #8's review: the artifact's only
+signal was `0/0 planted payload(s) resisted`, and because `all(())` is `True` a `SuiteRun` with
+nothing in it at all rendered **SUITE PASSED** and exited 0. `SuiteRun.passed` now requires that
+each half measured something, so an empty suite fails.
 
 Never invoke any of these from a test.
 
@@ -41,63 +57,86 @@ Never invoke any of these from a test.
 
 **Tests are hermetic — no `.env`, no API key, no network.** `tests/conftest.py` patches
 `load_dotenv` out, strips the managed env prefixes (including `LANGCHAIN_`/`LANGSMITH_`, so
-tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build configuration
-with `Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never
-add a test dependency that fetches data at import time. **The no-network half is enforced, not
+tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build configuration with
+`Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never add a
+test dependency that fetches data at import time. **The no-network half is enforced, not
 asserted**: `conftest.py` patches `connect`/`connect_ex`/`create_connection` and **all four
 resolver entry points** (`getaddrinfo`, `gethostbyname`, `gethostbyname_ex`, `gethostbyaddr`) at
 import time — before collection, which is when an import-time fetch happens — so egress to a
-non-loopback host raises `EgressBlocked`; and it patches `curl_cffi.Curl.perform` separately,
-because `curl_cffi` binds libcurl and resolves and connects in **C**, touching Python's `socket`
-module not at all. That second half is not optional trivia: `yfinance` uses `curl_cffi` whenever
-it imports, so without it the one library T5 added was the one uncovered — measured at HTTP 429
-with the socket guard installed. The resolver list is four names for the same reason: each is its
-own CPython C entry point, so patching `getaddrinfo` alone left `gethostbyname` returning real
-addresses (issue #9 review).
+non-loopback host raises `EgressBlocked`; and it patches `curl_cffi.Curl.perform` and
+`uvloop.Loop.getaddrinfo`/`getnameinfo`/`create_connection` separately, because both resolve and
+connect in **C**, touching Python's `socket` module not at all. Those extra halves are not
+optional trivia: `yfinance` uses `curl_cffi` whenever it imports, so without it the one library
+T5 added was the one uncovered — measured at HTTP 429 with the socket guard installed; and
+`guardrails.validator_service` sets the **process-wide** asyncio event loop policy to uvloop on
+every `Guard.validate`, so the one library T7 added moved async DNS out of the guard's reach —
+measured returning a real address with the socket guard installed and `socket.getaddrinfo`
+verifiably patched. `security/advice.py` stops the policy swap (`GUARDRAILS_RUN_SYNC`) *and* the
+guard covers the backend, because a hole is a hole whether today's code walks through it. The
+resolver list is four names for the same reason: each is its own CPython C entry point, so
+patching `getaddrinfo` alone left `gethostbyname` returning real addresses (issue #9 review).
 
 **The guard is a denylist over the backends this repo can reach, not a proof**, and it is
 described that way deliberately: a new HTTP dependency is a new path, and a guard advertised as
-total is how the claim came to be false four times (twice through tiktoken's cache, twice through
-this guard's own prose). `tests/test_hermetic_suite.py` carries **one test per backend** for
-that reason — an uncovered path shows up there as a live call, which is where the `curl_cffi`
-hole was found. Add a networking dependency, add a test there. And **a claim in a comment cannot
-fail**: three of the four false claims were prose asserting coverage the code lacked, so every
-test in that file exercises the call it is about — the DNS case calls each of the four resolvers
-rather than asserting that three route through the fourth, which is precisely the sentence that
-was wrong. Four more mechanisms keep it true *without* leaning on
-the guard: tiktoken's cl100k_base table is vendored under
-`tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
-`get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`
-are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`;
-the market and news fixtures under `tests/fixtures/market/` likewise, via
-`scripts/record_market_fixtures.py` (news recorded **raw**, so `feedparser` and the HTML
-stripper really run; quotes recorded **parsed** at the `yfinance.Ticker` boundary, which is
-therefore the one thing no test covers — the recorder says so);
-and retrieval runs against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py`
-holds the doubles (`KeywordEmbeddings`, deterministic and lexical, so a test may assert an
-order; `a_context`, the shared `Context` builder) and conftest builds `filings_store` /
-`empty_filings_store` from them. Never point a test at the ingested `data/chroma`: it is only
-searchable by the paid model that wrote it, so a test that reaches for it either needs a key
-or asserts against noise.
+total is how the claim came to be false **six** times (twice through tiktoken's cache, twice
+through this guard's own prose, twice through T7's single new dependency — `guardrails-ai`,
+which posts validation telemetry to its own endpoint *and* reaches uvloop).
+`tests/test_hermetic_suite.py` carries **one test per backend** for that reason — an uncovered
+path shows up there as a live call, which is where the `curl_cffi` hole was found. Add a
+networking dependency, add a test there. And **a claim in a comment cannot fail**: three of the
+six false claims were prose asserting coverage the code lacked, so every test in that file
+exercises the call it is about — the DNS case calls each of the four resolvers rather than
+asserting that three route through the fourth, which is precisely the sentence that was wrong.
+**Raising is only half the guard**, because a raised exception is loud only if the caller
+propagates it: OpenTelemetry's `BatchSpanProcessor` catches the `EgressBlocked` on its own export
+thread and logs it, so with the telemetry switch removed `Guard.validate` returned an entirely
+normal verdict and the test asserting only that verdict passed while the POST was attempted
+(issue #8 review). `conftest.EGRESS_ATTEMPTS` records every refused target inside `_blocked`
+itself, so an attempt a library swallows is still visible; a test about a backend that might
+swallow one compares that list's length across the call rather than trusting `pytest.raises`.
+Four more mechanisms keep it true *without* leaning on the guard: tiktoken's cl100k_base table
+is vendored under `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it —
+without that, `get_encoding` silently downloads it); the EDGAR fixtures under
+`tests/fixtures/edgar/` are recorded, never fetched — refresh them by hand with
+`scripts/record_edgar_fixtures.py`; the market and news fixtures under `tests/fixtures/market/`
+likewise, via `scripts/record_market_fixtures.py` (news recorded **raw**, so `feedparser` and
+the HTML stripper really run; quotes recorded **parsed** at the `yfinance.Ticker` boundary,
+which is therefore the one thing no test covers — the recorder says so); and retrieval runs
+against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py` holds the doubles
+(`KeywordEmbeddings`, deterministic and lexical, so a test may assert an order; `a_context`, the
+shared `Context` builder) and conftest builds `filings_store` / `empty_filings_store` from them.
+Never point a test at the ingested `data/chroma`: it is only searchable by the paid model that
+wrote it, so a test that reaches for it either needs a key or asserts against noise.
+**Layer 3 is stubbed autouse**: `conftest.offline_injection_classifier` patches
+`input_gate.classify` to return `Verdict.SAFE` for any caller that names no model, leaving
+normalisation and the denylist real — so an app-level refusal test uses a *denylisted* payload
+and needs no scripting, and a test that means to exercise layer 3 passes
+`screen(question, model=...)`, which the stub delegates through. Autouse rather than opt-in
+because a forgotten fixture would fail open into a live call and still pass. `planted_store` is
+`security/corpus.py`'s injection collection as a fixture, over the same fake embedding.
 
 **A check that cannot fail is the bug class this repo keeps hitting**, and it is worth naming as
 one because the instances look unrelated until they are listed: tiktoken's warm cache made a
-"hermetic" suite pass locally and egress in CI (twice); the guard's docstring claimed `curl_cffi`
-coverage it lacked; a comment claimed `gethostbyname` routed through `getaddrinfo`; and
+"hermetic" suite pass locally and egress in CI (twice); the guard's docstring claimed
+`curl_cffi` coverage it lacked; a comment claimed `gethostbyname` routed through `getaddrinfo`;
 `MAX_AGENT_STEPS` was pinned by `serial_full_brief < MAX_AGENT_STEPS`, an inequality that 15, 20
-and 24 all satisfy. **Prefer a check that exercises the thing over one that describes it, and
-prefer an equality over a bound.**
+and 24 all satisfy; and T7's first live security run reported "not obeyed, no leak" about a
+planted payload the agent had **never retrieved**, because the question named no company and it
+asked which one instead of searching — a green cell about nothing
+(`report.InjectionResult.retrieved` is the fix, and a row that did not reach its payload now
+fails). **Prefer a check that exercises the thing over one that describes it, prefer an equality
+over a bound, and for any check about an adversarial input, assert that the input arrived.**
 
-The newest instance is a Streamlit-specific trap, so it is written down rather than rediscovered:
-**`AppTest.get("...")` returns `[]` for an element type it does not know, instead of raising.**
-`st.bar_chart` and `st.line_chart` both reach the element tree as `vega_lite_chart`, for which
-`AppTest` ships no typed accessor — they arrive as `UnknownElement` — so
-`assert not app.get("arrow_bar_chart")` passes on a page rendering no charts *and* on a page
-rendering ten. Assert against `tests/test_app_smoke.py`'s `charts()` helper, which walks the tree
-for `type == "vega_lite_chart"`; it also descends into `st.columns`, which `app.chat_message[n]`
-does not, so a chart inside a column is invisible to the obvious lookup as well. A new
-`app.get(...)` against an element `AppTest` has no wrapper for is a vacuous assertion by default
-(issue #9 review).
+The newest instance is a Streamlit-specific trap, so it is written down rather than
+rediscovered: **`AppTest.get("...")` returns `[]` for an element type it does not know, instead
+of raising.** `st.bar_chart` and `st.line_chart` both reach the element tree as
+`vega_lite_chart`, for which `AppTest` ships no typed accessor — they arrive as `UnknownElement`
+— so `assert not app.get("arrow_bar_chart")` passes on a page rendering no charts *and* on a
+page rendering ten. Assert against `tests/test_app_smoke.py`'s `charts()` helper, which walks
+the tree for `type == "vega_lite_chart"`; it also descends into `st.columns`, which
+`app.chat_message[n]` does not, so a chart inside a column is invisible to the obvious lookup as
+well. A new `app.get(...)` against an element `AppTest` has no wrapper for is a vacuous
+assertion by default (issue #9 review).
 
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
@@ -108,7 +147,18 @@ does not, so a chart inside a column is invisible to the obvious lookup as well.
   `CHUNK_OVERLAP_CHARS` in the chunker. Do not move them into `config.py` or make them
   env-overridable; each is calibrated against measured filings and documented where it sits.
   `agent/agent.py`'s `MAX_AGENT_STEPS` is exempt on the same grounds — a ceiling on the
-  agent loop, next to the loop it guards. **This list is the exception**: a limit not
+  agent loop, next to the loop it guards. So are three of T7's:
+  `security/denylist.py`'s `MAX_GAP_CHARS` (an assertion about how far apart a payload's words
+  sit, calibrated against `security/corpus.py`), `security/advice.py`'s
+  `NEGATION_WINDOW_CHARS` (an assertion about the length of a clause) and
+  `security/markers.py`'s `MARKER_SPAN_MAX_CHARS` (an assertion about the shape of a citation —
+  what `[12]` and `[Yahoo Finance]` look like — which nothing should be able to tune from the
+  environment). Every *other* gate knob — the latency budgets, the classifier's timeout and
+  attempt count, **both** logged-input caps (`GATE_LOGGED_INPUT_MAX_CHARS` and
+  `GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS`) and the answering path's `ANSWER_TIMEOUT_SECONDS` /
+  `ANSWER_MAX_RETRIES` — is in `config.py`. The last pair moved there from `llm.py` in issue #8's
+  review: the gate's twins were already in `config.py`, and a pair split across two files is a
+  pair that drifts. **This list is the exception**: a limit not
   enumerated here belongs in `config.py`, or the exemption stops being narrow.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
@@ -120,15 +170,16 @@ does not, so a chart inside a column is invisible to the obvious lookup as well.
   `default_filings_store` is the **shared per-process handle** the application reads, and the
   app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
   that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
-  question. Four process-level singletons sit on this path (`default_filings_store`,
-  `hybrid.bm25_index`, `retrieve._planner_model`, `quotes.bounded_session` — each keyed on the
-  frozen `Settings`, the store, or nothing at all) and every one goes through
+  question. **Six** process-level singletons sit on this path (`default_filings_store`,
+  `hybrid.bm25_index`, `retrieve._planner_model`, `quotes.bounded_session`, and since T7
+  `security/classifier.py`'s `classifier_model` and `security/advice.py`'s `advice_guard` — each
+  keyed on the frozen `Settings` or on nothing at all) and every one goes through
   `caching.build_once`, **not** a bare `lru_cache`: with
   parallel tool calls two searches run concurrently, and two callers missing the same cold key
   both construct — which for the Chroma handle is fatal, because chromadb's shared-system
   registry is not reentrant (`AttributeError: 'RustBindingsAPI' object has no attribute
   'bindings'`, from inside the tool node, on the first turn of a cold process). `lru_cache` is
-  atomic about its bookkeeping and says nothing about the function it wraps. A **fifth** singleton
+  atomic about its bookkeeping and says nothing about the function it wraps. A **seventh** singleton
   added here without `build_once` is the same crash again — and `build_once`'s lock is one lock for
   the wrapper, not one per key, which is stated there because the docstring first claimed
   otherwise. They **are not cleared by conftest**,
@@ -172,7 +223,20 @@ does not, so a chart inside a column is invisible to the obvious lookup as well.
   than restating it, because a rule the model reads in two wordings is one it can pick between.
   **A prompt that states an enforced limit takes it as an argument** —
   `query_translation_prompt(max_sub_queries)` is a function so the cap the model reads is the
-  cap `sub_queries()` keeps. And `prompts.py` may not import from `retrieval/` at runtime:
+  cap `sub_queries()` keeps. Since T7 it also owns the injection classifier's prompt and the two
+  **label constants** the parser enforces (`CLASSIFIER_INJECTION_LABEL`/`_SAFE_LABEL` — a label
+  written twice is a gate that fails open on the turn the copies disagree), the two refusal texts
+  the app renders, and `QUARANTINE_TAGS`: the one tuple naming every tag untrusted text is wrapped
+  in (`sources`, `news`, and the classifier's own `input`). `quarantined()` neutralises all of
+  them wherever a body is interpolated, and `security/denylist.py`'s `delimiter-forgery` rule
+  derives its pattern from the same tuple — so a fourth block is escaped *and* denylisted the
+  moment it is declared. **Both halves are parametrised over the tuple, and that is the point**:
+  this sentence was here while the rule hardcoded `(?:sources|news|system)`, so `</input>` was
+  escaped and never denylisted and `<system>` was denylisted while being no quarantine tag at all
+  — a rule in this file describing a derivation the code did not do (issue #8 review). `<system>`
+  survives as a *named* extra in `denylist.py`, with a test saying so. **A refusal names no layer and no rule**: which fired is in the
+  gate-trigger log, and an attacker told which rule they tripped is one told how to phrase the
+  next attempt. And `prompts.py` may not import from `retrieval/` at runtime:
   `query_translation.py` reads its prompt from here while `retrieve.py` imports *it*, so
   `Context` is a `TYPE_CHECKING`-only import and closing that loop leaves the class undefined.
 - `rag.answer_question` is the measured chain (ADR-0003) and must stay callable with no agent
@@ -190,6 +254,33 @@ does not, so a chart inside a column is invisible to the obvious lookup as well.
   user content and these lines are kept. Counts, lengths and verdicts only — which is why the
   `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself
   carries the variant text for the RAG-viz panel to render (ADR-0004 amendment).
+  **One exception, and it is bounded three ways** (ADR-0006 requires the normalised input in a
+  gate-trigger record, and a denylist you cannot audit is one you cannot tune): the `input_gate`
+  event carries `normalised` **only on a block**, **only the normalised form** — lowercased,
+  punctuation-free, de-leetspeaked — and only `config.GATE_LOGGED_INPUT_MAX_CHARS` of it. An
+  allowed screening logs counts and verdicts like everything else. **Do not describe the second
+  bound as making the text "unusable as a question", which is what this said**: folding destroys
+  figures and identifiers (`Item 1A` → `item ia`, `$5bn` → `ssbn`) and leaves the wording legible,
+  measured on a real benign question (issue #8 review). The cost is therefore larger than the old
+  wording implied and it is still worth paying — a false positive puts a readable innocent
+  question in a kept log, which is the reason for the three bounds rather than a reason to keep no
+  record. Nothing else may widen this, and a bound may not be described as removing more than it
+  removes.
+- `security/` is the gate, one module per layer, because a marginal-contribution claim has to be
+  checkable *at* the layer it is about (user story 34): `normalize.py` (folds obfuscation into two
+  forms — `text` keeps the word boundaries a rule needs to *not* match, `squeezed` is the only
+  form in which letter-by-letter spacing still contains its words), `denylist.py` (one rule set
+  scans both, which is why a rule head-anchors with `\b` and joins words with a bounded gap and
+  never a literal space), `classifier.py` (one call, fails **open**, and the fail-open is a
+  `Verdict.UNDECIDED` in the return type rather than a `False` that reads like a verdict),
+  `input_gate.py` (the composition, and the only place a gate-trigger line is written),
+  `advice.py` and `markers.py` (the two back-door halves), `corpus.py` (the committed payloads —
+  in the package, not `tests/`, because the hermetic suite and `scripts/security_suite.py` must
+  read one corpus), `report.py` (the artifact, rendered from measurements). Layer 3's verdict is
+  **injectable**, so `screen(question, model=...)` is how the suite drives it without a paid call.
+  The gate runs at `app/Home.py`'s chat input and nowhere else: inside the agent it would screen
+  the model's own tool arguments, and inside `rag.answer_question` it would put a model call in
+  front of the chain ADR-0003 keeps deterministic.
 
 **A live conversation's checkpoint outlives a deploy.** Every `from_payload` and every
 transcript-row reader tolerates the shape written before the current one: a new field on a

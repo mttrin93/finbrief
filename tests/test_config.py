@@ -133,6 +133,9 @@ def test_defaults_match_the_pre_registered_shipping_strategy():
     assert settings.openrouter_base_url == "https://openrouter.ai/api/v1"
     # Served through the same OpenRouter base URL — no second provider (CONTEXT.md).
     assert settings.embedding_model == "openai/text-embedding-3-small"
+    # The gate's own model, priced against one YES/NO per turn rather than a brief
+    # (ADR-0006 layer 3).
+    assert settings.classifier_model == "openai/gpt-4o-mini"
 
 
 def test_environment_overrides_every_switch():
@@ -144,6 +147,7 @@ def test_environment_overrides_every_switch():
             "OPENROUTER_API_KEY": "sk-override",
             "OPENROUTER_BASE_URL": "https://proxy.example/v1",
             "FINBRIEF_CHAT_MODEL": "anthropic/claude-haiku-4.5",
+            "FINBRIEF_CLASSIFIER_MODEL": "google/gemini-2.5-flash-lite",
             "FINBRIEF_EMBEDDING_MODEL": "openai/text-embedding-3-large",
             "FINBRIEF_RETRIEVAL_STRATEGY": "vector",
             "FINBRIEF_QUERY_TRANSLATION": "off",
@@ -158,6 +162,7 @@ def test_environment_overrides_every_switch():
     assert settings.openrouter_api_key == "sk-override"
     assert settings.openrouter_base_url == "https://proxy.example/v1"
     assert settings.chat_model == "anthropic/claude-haiku-4.5"
+    assert settings.classifier_model == "google/gemini-2.5-flash-lite"
     assert settings.embedding_model == "openai/text-embedding-3-large"
     assert settings.retrieval_strategy is RetrievalStrategy.VECTOR
     assert settings.query_translation_enabled is False

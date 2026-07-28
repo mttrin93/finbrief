@@ -39,6 +39,50 @@ class EgressBlocked(RuntimeError):
     """A test tried to reach the network. That is a defect in the test, not in the guard."""
 
 
+#: Every target this guard has refused, in order, for the whole session.
+#:
+#: **Because raising is only loud if the caller lets the exception through**, and a library that
+#: wraps its own side channel in `try/except` swallows it. That is not hypothetical: with
+#: `security/advice.py`'s telemetry switch removed, `guardrails-ai` POSTs to its endpoint from
+#: OpenTelemetry's `BatchSpanProcessor`, which catches the `EgressBlocked` on its export thread
+#: and logs `Exception while exporting Span.` — so `Guard.validate` returns a completely normal
+#: verdict, and a test asserting only on that verdict passes while a packet is being attempted
+#: (issue #8 review). A recorded attempt cannot be swallowed: the append happens inside the
+#: refusal, before any caller sees it.
+#:
+#: Compare a `len()` before and after the call under test rather than asserting the whole
+#: list is empty: another test's legitimate assertion of a blocked call is not this one's
+#: failure.
+EGRESS_ATTEMPTS: list[str] = []
+
+
+def _blocked(target: object, hint: str = "") -> EgressBlocked:
+    """The one refusal message, shared by all three backends the guard covers.
+
+    Shared because a per-backend wording is a per-backend thing to get out of step, and because
+    `tests/test_hermetic_suite.py` asserts on the word "hermetic" appearing in whatever a
+    wrapping library re-raises.
+
+    Records the target in `EGRESS_ATTEMPTS` on the way past, for the reason that list gives.
+    """
+    EGRESS_ATTEMPTS.append(str(target))
+    return EgressBlocked(
+        f"the test suite tried to reach {target!r}. Tests are hermetic — no network "
+        f"(CLAUDE.md). Record a fixture for this data instead of fetching it: see "
+        f"scripts/record_market_fixtures.py and scripts/record_edgar_fixtures.py.{hint}"
+    )
+
+
+def _local_host(host: object) -> bool:
+    return host is None or host in _LOOPBACK
+
+
+def _local_address(address: object) -> bool:
+    if not isinstance(address, tuple) or not address:
+        return True  # an AF_UNIX path, which never leaves the machine
+    return _local_host(address[0])
+
+
 def _install_egress_guard() -> None:
     """Make an outbound connection raise, for the whole session, from collection onwards.
 
@@ -48,20 +92,27 @@ def _install_egress_guard() -> None:
     *collecting*, before any fixture exists. conftest is imported before the test modules it
     collects, so this is the earliest hook there is.
 
-    **Why a guard at all, given the suite was already hermetic by contract.** Four times now a
+    **Why a guard at all, given the suite was already hermetic by contract.** Six times now a
     ticket has shipped a "hermetic" claim that was false. Twice it was `tiktoken.get_encoding`,
     which downloads its BPE table and caches it, so the author's warm cache passed and clean CI
     egressed silently. The third time was **this function's own first draft**, whose docstring
     claimed it covered `curl_cffi` and did not — see `_block_curl_cffi` below. The fourth was
     **this function's second draft**, which patched `getaddrinfo` and left the three
-    `gethostby*` resolvers open — see the resolver note below. An assertion that the suite does
-    not reach the network is worth exactly as much as the author's cache state; this is the
-    mechanism that makes it worth more, and `tests/test_hermetic_suite.py` is what says the
-    mechanism works, backend by backend.
+    `gethostby*` resolvers open — see the resolver note below. The fifth and sixth came with
+    T7's one dependency (#8): `guardrails-ai` posts validation telemetry to its own endpoint,
+    and it installs `uvloop` as the process-wide event loop policy, which resolves DNS in libuv
+    — see `_block_uvloop_resolution` below. An assertion that the suite does not reach the
+    network is worth exactly as much as the author's cache state; this is the mechanism that
+    makes it worth more, and `tests/test_hermetic_suite.py` is what says the mechanism works,
+    backend by backend.
 
-    Three of the four were a *docstring or comment* claiming coverage the code lacked, which is
+    Three of the six were a *docstring or comment* claiming coverage the code lacked, which is
     the pattern to distrust: prose about a guard cannot fail, so every claim one of these makes
     now has a test that exercises the call rather than describing it.
+
+    **Raising is not the whole mechanism, and `EGRESS_ATTEMPTS` is the other half.** A guard
+    that only raises is loud only when the caller propagates the exception; a library that wraps
+    its own side channel swallows it and the call looks clean from outside. See that list.
 
     **What it is: a denylist over the egress backends this repo can reach, not a proof.**
     Python has no in-process way to stop a C library from opening a socket, so a guard like
@@ -97,57 +148,42 @@ def _install_egress_guard() -> None:
     real_gethostbyname_ex = socket.gethostbyname_ex
     real_gethostbyaddr = socket.gethostbyaddr
 
-    def blocked(target: object) -> EgressBlocked:
-        return EgressBlocked(
-            f"the test suite tried to reach {target!r}. Tests are hermetic — no network "
-            f"(CLAUDE.md). Record a fixture for this data instead of fetching it: see "
-            f"scripts/record_market_fixtures.py and scripts/record_edgar_fixtures.py."
-        )
-
-    def local_host(host: object) -> bool:
-        return host is None or host in _LOOPBACK
-
-    def local_address(address: object) -> bool:
-        if not isinstance(address, tuple) or not address:
-            return True  # an AF_UNIX path, which never leaves the machine
-        return local_host(address[0])
-
     def guarded_connect(self, address):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_connect(self, address)
 
     def guarded_connect_ex(self, address):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_connect_ex(self, address)
 
     def guarded_create_connection(address, *args, **kwargs):
-        if not local_address(address):
-            raise blocked(address)
+        if not _local_address(address):
+            raise _blocked(address)
         return real_create_connection(address, *args, **kwargs)
 
     def guarded_getaddrinfo(host, *args, **kwargs):
-        if not local_host(host):
-            raise blocked(host)
+        if not _local_host(host):
+            raise _blocked(host)
         return real_getaddrinfo(host, *args, **kwargs)
 
     def guarded_gethostbyname(hostname):
-        if not local_host(hostname):
-            raise blocked(hostname)
+        if not _local_host(hostname):
+            raise _blocked(hostname)
         return real_gethostbyname(hostname)
 
     def guarded_gethostbyname_ex(hostname):
-        if not local_host(hostname):
-            raise blocked(hostname)
+        if not _local_host(hostname):
+            raise _blocked(hostname)
         return real_gethostbyname_ex(hostname)
 
     def guarded_gethostbyaddr(ip_address):
         # A reverse lookup queries a PTR record, so the address here is the *question* asked of
         # the resolver rather than a host being connected to — but it is still a packet, and
-        # `local_host` reads it the same way.
-        if not local_host(ip_address):
-            raise blocked(ip_address)
+        # `_local_host` reads it the same way.
+        if not _local_host(ip_address):
+            raise _blocked(ip_address)
         return real_gethostbyaddr(ip_address)
 
     socket.socket.connect = guarded_connect
@@ -194,6 +230,11 @@ def _block_curl_cffi() -> None:
         return
 
     def blocked_perform(*args: object, **kwargs: object) -> None:
+        # Recorded like every other refusal, even though the target is unknowable here: the
+        # target URL is set through `setopt` and is not an argument to `perform`. A backend that
+        # did not append would be a backend `EGRESS_ATTEMPTS` cannot see, which is the same
+        # denylist-with-a-hole shape the guard itself warns about.
+        EGRESS_ATTEMPTS.append("curl_cffi (libcurl, target set via setopt)")
         raise EgressBlocked(
             "the test suite tried to reach the network through curl_cffi (libcurl), which "
             "bypasses Python's socket layer. Tests are hermetic — no network (CLAUDE.md). "
@@ -205,8 +246,65 @@ def _block_curl_cffi() -> None:
     curl_cffi.AsyncSession.request = blocked_perform
 
 
+def _block_uvloop_resolution() -> None:
+    """Block `uvloop`, which resolves and connects in libuv without touching Python's `socket`.
+
+    **The `curl_cffi` story a second time, found in T7 (#8) and worth the same treatment.**
+    uvloop replaces asyncio's event loop with a Cython one over libuv: `Loop.getaddrinfo` calls
+    `uv_getaddrinfo` in C, so `socket.getaddrinfo` — patched above, in Python — is never
+    consulted. Measured: with the socket guard installed and nothing else, `loop.getaddrinfo` on
+    a uvloop event loop returned a real Yahoo address, while the same call on the stock
+    `_UnixSelectorEventLoop` raised `EgressBlocked`.
+
+    **It is not a dependency anyone chose.** uvloop arrives transitively through
+    `uvicorn[standard]`, which both `streamlit` and `chromadb` depend on, so it has been
+    importable since Phase 0. What made it *reachable* is T7:
+    `guardrails.validator_service.get_loop` calls
+    `asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())` on every `Guard.validate`, which
+    swapped the policy for the whole process and put every subsequent async DNS lookup outside
+    the guard. `security/advice.py` stops that happening in the app (`GUARDRAILS_RUN_SYNC`), and
+    this exists anyway: the reason `_block_curl_cffi` is a separate function rather than a fixed
+    comment is that a backend the guard cannot see is a hole whether or not today's code walks
+    through it.
+
+    Only the two resolvers and `create_connection` are covered, and the limit is stated rather
+    than implied: `sock_connect` to a literal address through libuv is still C, and the guard
+    remains a denylist over the backends this repo can reach rather than a proof (see
+    `_install_egress_guard`). Blocking resolution is what covers a *hostname*, which is the only
+    form a data source is named in here.
+    """
+    try:
+        import uvloop
+    except ImportError:  # pragma: no cover — the more-hermetic environment
+        return
+
+    real_getaddrinfo = uvloop.Loop.getaddrinfo
+    real_getnameinfo = uvloop.Loop.getnameinfo
+    real_create_connection = uvloop.Loop.create_connection
+
+    async def guarded_getaddrinfo(self, host, *args, **kwargs):
+        if not _local_host(host):
+            raise _blocked(host, " uvloop resolves in libuv, not through Python's socket.")
+        return await real_getaddrinfo(self, host, *args, **kwargs)
+
+    async def guarded_getnameinfo(self, sockaddr, *args, **kwargs):
+        if not _local_address(sockaddr):
+            raise _blocked(sockaddr, " uvloop resolves in libuv, not through Python's socket.")
+        return await real_getnameinfo(self, sockaddr, *args, **kwargs)
+
+    async def guarded_create_connection(self, factory=None, host=None, *args, **kwargs):
+        if not _local_host(host):
+            raise _blocked(host, " uvloop connects in libuv, not through Python's socket.")
+        return await real_create_connection(self, factory, host, *args, **kwargs)
+
+    uvloop.Loop.getaddrinfo = guarded_getaddrinfo
+    uvloop.Loop.getnameinfo = guarded_getnameinfo
+    uvloop.Loop.create_connection = guarded_create_connection
+
+
 _install_egress_guard()
 _block_curl_cffi()
+_block_uvloop_resolution()
 
 #: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
 #: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather
@@ -323,6 +421,31 @@ def filings_store(tmp_path, recorded_filing):
 
 
 @pytest.fixture
+def planted_store(tmp_path):
+    """The **dedicated injection-test collection** ADR-0006 requires — never the demo KB.
+
+    Real Chroma, real chunking metadata, a fake embedding, and bodies that are attack payloads
+    (`finbrief.security.corpus.PLANTED_PAYLOADS`). Separate from `filings_store` on purpose: the
+    point of the exercise is that retrieval treats a poisoned chunk exactly as it treats an
+    EDGAR one, and a payload written into the collection real questions are answered from would
+    make every other test's fixture adversarial.
+
+    A chunk from here is identifiable on sight by its provenance rather than its ticker: the
+    accession is all zeroes and the fiscal year is 1970. The ticker is deliberately a real
+    Universe member — `corpus.PLANTED_PAYLOADS` records why, and it is a finding rather than a
+    convenience.
+    """
+    from finbrief.retrieval.vectorstore import build_filings_store, write_chunks
+    from finbrief.security.corpus import planted_chunks
+
+    store = build_filings_store(
+        persist_directory=str(tmp_path / "planted-chroma"), embeddings=KeywordEmbeddings()
+    )
+    write_chunks(store, planted_chunks())
+    return store
+
+
+@pytest.fixture
 def empty_filings_store(tmp_path):
     """A `filings` collection with nothing in it — the retrieval-level fallback's input."""
     from finbrief.retrieval.vectorstore import build_filings_store
@@ -330,6 +453,43 @@ def empty_filings_store(tmp_path):
     return build_filings_store(
         persist_directory=str(tmp_path / "empty-chroma"), embeddings=KeywordEmbeddings()
     )
+
+
+@pytest.fixture(autouse=True)
+def offline_injection_classifier(monkeypatch):
+    """Stop the input gate's layer-3 model call, leaving layers 1 and 2 real (T7, #8).
+
+    **Autouse, because the gate is now in front of every question the app is asked.** Any
+    `AppTest` that sends a message reaches `screen()`, and without this it reaches a real
+    `ChatOpenAI` — which the egress guard blocks, so `classify` fails *open* and the app carries
+    on. That is the designed behaviour and exactly the wrong thing in a test: the layer under
+    the app's own tests would be silently absent, and the log would fill with
+    `gate_classifier_unavailable` on every page render.
+
+    **Only layer 3 is stubbed**, and the choice matters: normalisation and the denylist stay
+    real, so an app-level test of the refusal path uses a *denylisted* payload and is
+    deterministic without scripting anything. Patched at `input_gate`'s own name because that is
+    the binding `screen` calls; the module's `classify` is still what `tests/test_input_gate.py`
+    drives.
+
+    **The stub yields to an injected model**, which is what keeps it from hiding the gate's own
+    suite: `tests/test_input_gate.py` drives `screen(question, model=a_model("YES"))`, and a
+    blanket `lambda: SAFE` would have made every one of those tests assert about the stub. So
+    this delegates to the real `classify` whenever a caller named a model — a test that scripted
+    a reply means to exercise the layer — and answers `SAFE` only for the callers that named
+    none, which is the app. Being autouse rather than opt-in is deliberate for the reason
+    CLAUDE.md gives about checks that cannot fail: a new `AppTest` case that forgot to request a
+    fixture would make a live call and pass anyway.
+    """
+    from finbrief.security import input_gate
+    from finbrief.security.classifier import Verdict, classify
+
+    def offline(question, *, model=None, settings=None):
+        if model is not None:
+            return classify(question, model=model, settings=settings)
+        return Verdict.SAFE
+
+    monkeypatch.setattr(input_gate, "classify", offline)
 
 
 @pytest.fixture

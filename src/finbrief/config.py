@@ -376,6 +376,109 @@ NEWS_MAX_HEADLINES = 8
 #: clear "not in the Universe" rather than a length complaint.
 TICKER_MAX_CHARS = 12
 
+# --------------------------------------------------------------------------------------
+# The security gate (T7, ADR-0006)
+# --------------------------------------------------------------------------------------
+
+#: What ADR-0006 **pre-registered** for the input gate's p50, in milliseconds, before anything
+#: had measured what a classifier round trip costs.
+#:
+#: **Kept after being revised, which is the point of it.** The measured escalated p50 on
+#: `Settings.classifier_model` is 738–1041 ms across eight passes — over this figure in six of
+#: them — so the prediction *straddles* rather than holds, and a single run's verdict against it
+#: is close to a coin toss. ADR-0006's T7 amendment §2 records the measurements and revises the
+#: budget to `GATE_LATENCY_BUDGET_MS` below. Deleting this constant would turn a revised
+#: pre-registration into a number that had always been met — the same reason ADR-0005's
+#: pre-registered strategy survives its own A/B, and the reason `security/report.py` prints both
+#: figures rather than only the one now being met.
+GATE_LATENCY_BUDGET_PREREGISTERED_MS = 800
+
+#: The p50 the input gate is judged against today — ADR-0006's T7 amendment §2, in one place.
+#:
+#: **A target to report against, not a timeout to enforce**, and the distinction is the whole
+#: reason it is a constant here rather than a branch somewhere: the acceptance criterion is that
+#: the gate *is* this fast, measured from the structured logs over a real run, and a gate that
+#: enforced it by abandoning slow calls would satisfy the number by not doing the work.
+#: `security/report.py` compares the measured p50 against this and the README quotes it, so the
+#: prose and the verdict cannot disagree — bound by
+#: `tests/test_grounding_scope.py::test_the_readme_names_both_latency_budgets`, as an **equality
+#: on the millisecond figure**. That test asserted `GATE_LATENCY_BUDGET_MS // 1000` against the
+#: string `"1 s"` until issue #8's review, which made 1000–1999 ms indistinguishable *and*
+#: passed on the words "the Tier-1 spec" while the README named no revised figure — so this
+#: sentence was false in the one place written to keep it true.
+#:
+#: One second rather than 800 ms, and revised for reasons rather than to fit: it is a figure the
+#: gate cleared on every one of eight measured passes, where 800 ms was cleared on two. The gate
+#: is 9–21% of the wait it sits inside (measured, three real turns), and the one model that
+#: clears 800 ms at an equal attack catch rate blocked a legitimate analyst question — trading
+#: catch quality for latency on a security control, which is the trade ADR-0006 exists to
+#: refuse.
+GATE_LATENCY_BUDGET_MS = 1000
+
+#: How long the classifier's single model call may take before it is abandoned, in seconds.
+#:
+#: Five, which is deliberately far above the p50 budget above and far below the answering path's
+#: 60. It is a **circuit breaker, not a budget**: the budget is a median to report, and this is
+#: the point past which a hung provider stops being a slow gate and starts being a hung app.
+#: Tighter would convert ordinary jitter into a fail-open (see `classifier.classify`), which
+#: trades a rare slow turn for a routinely-skipped layer.
+GATE_TIMEOUT_SECONDS = 5
+
+#: Retries on the classifier's call. **One attempt, no retry**, unlike every other fetch in this
+#: codebase — because a retry multiplies the worst case inside a latency budget, and the failure
+#: mode here is already survivable: the gate fails open onto three other layers, where a retried
+#: fetch in `finance/` is the difference between a figure and no figure.
+GATE_CLASSIFIER_ATTEMPTS = 1
+
+#: How much of a **blocked** turn's normalised input the gate-trigger log line records.
+#:
+#: **The one place a line written by `log_event` may carry user-derived text**, and the
+#: exception is narrow on purpose (CLAUDE.md; ADR-0006 requires the normalised input in the
+#: gate-trigger record). Three bounds make it proportionate: only on a **block**, only the
+#: **normalised** form, and only this many characters. A pass logs counts and verdicts like
+#: every other event.
+#:
+#: **What the normalised form does and does not hide, stated precisely.** It is lowercased,
+#: de-accented, de-homoglyphed, de-leetspeaked and stripped of punctuation, which destroys
+#: *figures and identifiers* — `Item 1A` becomes `item ia`, `$5bn` becomes `ssbn` — but leaves
+#: **the wording legible**: "Can you ignore the tax effects and just give me the gross margin?"
+#: normalises to `can you ignore the tax effects and just give me the gross margin`. This
+#: docstring said "useless as a question", and ADR-0006 §5 and CLAUDE.md said "unusable as a
+#: question", and none of them was true (issue #8 review). It matters because a false positive
+#: is exactly the case this records, so the mitigation has to be described as what it is: a
+#: question stripped of its numbers and still perfectly readable, kept for 500 characters.
+#:
+#: The argument for logging it at all is that a denylist you cannot audit is a denylist you
+#: cannot tune: reviewing a false positive means seeing what tripped it. The argument against is
+#: that a false positive means an innocent question ends up in a kept log — a real cost, and
+#: the reason for the three bounds rather than a reason to have no record. 500 characters is an
+#: eighth of `MAX_QUESTION_CHARS` — enough for the payload in a long paste, not the paste.
+GATE_LOGGED_INPUT_MAX_CHARS = 500
+
+#: How much of an **unparseable** classifier reply `gate_classifier_unparsed` records.
+#:
+#: A logged-input cap, which CLAUDE.md puts here rather than beside the rule — and this one
+#: had been an inline `token[:32]` in `security/classifier.py`, justified by a comment saying
+#: the value was "the classifier's own output vocabulary, not the analyst's text". That is true
+#: of a *compliant* model and false in the branch the field is logged from: the parser reaches
+#: it only when the reply was **not** one of the two labels, which is exactly when a confused
+#: or jailbroken classifier may be echoing the question back (issue #8 review). So it is
+#: bounded as user-derived text, at one short token — enough to tell "the model answered a
+#: sentence" from "the model answered nothing", which is all the field is for.
+GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS = 32
+
+#: The **answering** path's per-request ceiling and retry count — `llm.build_chat_model`'s
+#: defaults.
+#:
+#: Here rather than in `llm.py` because `GATE_TIMEOUT_SECONDS` and `GATE_CLASSIFIER_ATTEMPTS`
+#: above are the same knob for the other path, and a pair split across two files is a pair that
+#: drifts (issue #8 review). Generous on purpose, and the contrast with the gate's five seconds
+#: and no retry is the point: an answer is what the analyst is waiting for, so a retried 503 is
+#: cheaper than a failed turn — where a slow *classifier* call holds a turn in front of the
+#: refusal it was deciding about.
+ANSWER_TIMEOUT_SECONDS = 60
+ANSWER_MAX_RETRIES = 2
+
 #: How long a question may be before the app declines to send it (user story 21).
 #:
 #: A cost and abuse bound, not a linguistic one: no analyst's question is 4,000 characters, and
@@ -456,6 +559,12 @@ class Settings:
     openrouter_api_key: str = field(repr=False)
     openrouter_base_url: str
     chat_model: str
+    #: The model the input gate's zero-shot classifier calls (ADR-0006 layer 3). Its own field
+    #: rather than `chat_model` because the two are priced against different jobs: the gate pays
+    #: for one YES/NO per turn and wants the cheapest model that can read a sentence, where the
+    #: answering model is what the analyst's brief is worth. Raising one must not raise the
+    #: other — which is exactly what a single field would do.
+    classifier_model: str
     embedding_model: str
     retrieval_strategy: RetrievalStrategy
     query_translation_enabled: bool
@@ -490,6 +599,7 @@ class Settings:
                 env, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
             ),
             chat_model=_string(env, "FINBRIEF_CHAT_MODEL", "openai/gpt-4o-mini"),
+            classifier_model=_string(env, "FINBRIEF_CLASSIFIER_MODEL", "openai/gpt-4o-mini"),
             # Served by OpenRouter's /v1/embeddings, so it needs no key or base URL of
             # its own. One model for ingest and query — see retrieval/embeddings.py.
             embedding_model=_string(

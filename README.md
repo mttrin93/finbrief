@@ -38,9 +38,18 @@ business overview, risk factors, current valuation, and recent news — in minut
 > ticker (ADR-0009), and every comparison carries its peer set, its size **and its range** — with
 > two peers a single outlier moves a mean a long way. A figure a source does not report reads
 > *not reported*, never `0.0`. When a source cannot be refreshed the last good figure is shown
-> with a banner saying how old it is. The security gate is the phase that follows.
+> with a banner saying how old it is.
 >
-> The three files under
+> **The security gate is in front of every turn** (T7, [#8](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/8)):
+> four layers, each doing what the one before it cannot — normalisation, a bounded-gap denylist, one
+> cheap zero-shot classifier, and a Guardrails AI no-advice validator on the way out. Indirect
+> injection is a *tested* threat rather than a prompt caveat: a dedicated poisoned collection, built
+> and destroyed per run, with canary strings so obedience is detected rather than judged. The
+> marginal contribution of each layer is measured against a committed corpus, and the run's evidence
+> is [`docs/verification/security-gate.md`](./docs/verification/security-gate.md). One
+> pre-registered number did not survive the measurement — see *What the gate does not do* below.
+>
+> The four files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
 > hand-authored. The plan lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
@@ -51,6 +60,8 @@ business overview, risk factors, current valuation, and recent news — in minut
 - **Python** · **Streamlit** UI · **LangChain / LangGraph** (`create_agent`)
 - **OpenRouter** for LLM access (OpenAI-compatible SDK)
 - **ChromaDB** vector store · hybrid retrieval (BM25 + vectors)
+- **Guardrails AI** for the output validator's `Guard`/`on_fail` contract — the no-advice rule
+  itself is a registered custom validator, not a hub one (ADR-0006)
 - Data: SEC EDGAR filings via **edgartools** (structure-anchored section extraction, so
   there is no hand-rolled primary parser — ADR-0007), yfinance, news RSS, ECB/Fed
   publications
@@ -114,6 +125,102 @@ over-read:
   the first; the TTL cache, the retry and the stale banner are how it degrades rather than a
   second data source. `ALPHAVANTAGE_API_KEY` and `FINBRIEF_ALPHAVANTAGE_ENABLED` exist in the
   configuration and nothing reads them yet — a fundamentals fallback is deferred, not shipped.
+
+## What the security gate does, layer by layer
+
+Four layers, and each one's job is what the previous one cannot do (ADR-0006). The counts below
+come from a live run and are regenerated with it —
+[`docs/verification/security-gate.md`](./docs/verification/security-gate.md) is the evidence,
+and the table there is rendered from measurements rather than typed here.
+
+| # | Layer | Catches what the layer before it cannot | Cost |
+|---|---|---|---|
+| 1 | **Normalisation** | *Obfuscation.* Case, accents, leetspeak, zero-width joiners, fullwidth Latin, Cyrillic/Greek homoglyphs and letter-by-letter spacing fold into one surface form, so layer 2 needs one rule per payload *family* instead of one per spelling. | Pure function |
+| 2 | **Bounded-gap denylist** | *Known payload families*, for free — 7 rules, each naming what it is for. A catch exits the gate; a pass **always** escalates. | Pure function |
+| 3 | **Zero-shot classifier** | *Novel phrasings.* The only layer that can catch a wording invented after the rules were written — a hypothetical framing, a translation-shaped extraction, a payload spread wider than the bounded gap. | One cheap model call per turn |
+| 4 | **Output validator** (Guardrails AI) | *Consequences.* Judges what the model **produced**, so it catches a recommendation nobody asked for and the result of a *successful* indirect injection — neither of which any input layer ever sees. | Pure function |
+
+The last row is the one to read twice: it is the only layer whose input the attacker does not
+choose. An ordinary question can be answered with advice nobody asked for, and a payload that
+arrived through retrieved text never went past the front door at all.
+
+**The layers are measured against each other, not just asserted.** Every attack in
+[`src/finbrief/security/corpus.py`](./src/finbrief/security/corpus.py) declares which layer must
+stop it, and a case blocked by the *wrong* layer counts as a failure — otherwise "layer 3 caught
+this" could mean layer 2 did. The classifier cases are written so that **no rule matches them**,
+and the suite asserts that gap in both directions.
+
+**A false positive is a failure too.** 28 real analyst questions form a control set that
+must get through, and the first two are the point: *"Should I buy Tesla stock?"* is **not an
+injection**. It is a request FinBrief refuses gracefully, with a disclaimer, at layer 4 —
+blocking it at the front door would accuse an analyst of an attack for asking the most natural
+question there is. The set is grouped by which attack family each question sits *next to*, since
+a question no classifier would ever flag measures nothing: four are "set aside part of the
+accounting" phrasings (*"Can you ignore the tax effects and just give me the gross margin?"*),
+four ask the assistant about itself (*"Why do you add a disclaimer to every answer?"*) — the two
+surfaces adjacent to `instruction-override` and `prompt-extraction` respectively — and six share
+the denylist's own *vocabulary* without its intent (*"Does management discuss plans to lift
+restrictions on the dividend?"*). Every one of those six was blocked by the shipped rules when it
+was written, which is what widening the set is for.
+
+**Indirect injection is tested, not asserted.** A dedicated collection — a throwaway directory,
+built and destroyed per run, never the demo knowledge base — is seeded with 5 poisoned
+chunks: an instruction inside a filing body, a forged `</sources>` delimiter, a
+prompt-extraction attempt, an advice solicitation, and an instruction hidden in HTML a reader
+never sees. Each demands a specific canary string, so obedience is *detected* rather than
+judged, and each row records whether the payload actually reached the model — a row that did not
+is a failure, not a quiet pass.
+
+Retrieved text is quarantined as data on both paths, and a body containing its own `</sources>`
+or `</news>` is made inert before the model sees it. News summaries are HTML-stripped at the
+boundary, with comment, `style` and attribute bodies dropped *with their contents* rather than
+flattened into the text — that is where an instruction hides from a reader while staying in the
+prompt.
+
+### What the gate does not do
+
+- **The pre-registered ≤800 ms p50 was not reliably met, so the budget is now ≤1000 ms
+  escalated p50 — revised, rather than the number quietly dropped.** Measured escalated p50:
+  738–1041 ms across eight passes, over 800 ms in six of them, which makes a single run's verdict
+  against 800 close to a coin toss. 1000 ms is a figure the gate cleared on every pass measured,
+  where 800 was cleared on two. A faster model (`google/gemini-2.5-flash-lite`, 331–494 ms)
+  matched the attack catch rate exactly and was **rejected** because it blocked a legitimate
+  analyst question; buying latency with a false positive is the wrong trade on a security
+  control. The gate is 9–21% of a turn the analyst already waits 8–13 seconds for. Both figures
+  stay in `config.py` and in the generated artifact, which prints the overrun against the
+  pre-registration in milliseconds — an artifact showing only the budget now being met would turn
+  a revised prediction into one that had always held. ADR-0006's T7 amendment §2 has the
+  measurements.
+- **Layer 3 fails open.** A provider outage, a timeout, or an unparseable reply allows the turn
+  and logs a warning, because failing closed would turn a bad afternoon at OpenRouter into an
+  assistant that refuses everything. The cost is the novel-phrasing coverage of one turn. This is
+  not hypothetical: three candidate models were unavailable on this account and fail-open made
+  them read as the *fastest* rows in the benchmark, catching nothing.
+- **Novel advice phrasing is layer 4's blind spot**, exactly as a novel payload is layer 2's, and
+  there is no layer 5.
+- **A refused answer is still in the agent's memory.** The validator guards the surface, not the
+  checkpointer: the answer has already been generated when it fires, so a follow-up in the same
+  thread can reference text the reader never saw.
+- **A gate-blocked *question* is not in the agent's memory at all** — the opposite asymmetry, and
+  also deliberate. Layers 1–3 stop the turn before the agent runs, so the refusal is on screen
+  and in the display transcript while the checkpointer never saw the question: a follow-up cannot
+  build on a question that was refused at the front door.
+- **Marker resolution is enforced; marker *support* is not.** Every `[n]` in an answer is checked
+  against the numbers this conversation has issued, and unresolvable ones are named beside the
+  answer rather than silently stripped — a reader losing that evidence is worse than seeing it.
+  But a marker that *resolves* can still sit on a claim its chunk does not support. That is
+  faithfulness, it needs a judge model and ground truth, and it stays with T10's RAGAs run over
+  T9's golden set.
+- **The homoglyph map is not the Unicode confusables table.** A lookalike outside it survives
+  normalisation and reaches layer 3 — which is the layer that exists for what layers 1 and 2 miss.
+- **The Universe whitelist is an incidental extra**, not part of the argument: it happens to stop
+  an out-of-Universe indirect payload from ever reaching the model, and it is no defence at all
+  against one planted under a covered ticker. It is worth knowing because it invalidated the first
+  version of the indirect-injection test (ADR-0006 T7 amendment §7).
+- **`retrieve()` and the measured chain are ungated by design.** The gate sits at the chat input,
+  the only door a human types through. A gate in the agent loop would screen the model's own tool
+  arguments; a gate in the chain would put a model call in front of the path ADR-0003 keeps
+  deterministic.
 
 ## Conversation memory, and who owns it
 
@@ -181,8 +288,18 @@ the environment, so the app and the evaluation harness read the same switches (A
   right — it is the cell that isolates what the planner contributes. `RRF_K` is deliberately
   **not** an environment variable: a fusion constant somebody could sweep per environment is a
   back door into the pre-registration ADR-0005 exists to protect.
+- `FINBRIEF_CLASSIFIER_MODEL` (default `openai/gpt-4o-mini`) is the input gate's model, and it is
+  **its own field rather than `chat_model`** because the two are priced against different jobs: the
+  gate pays for one YES/NO per turn and the answering model is what a brief is worth, so raising one
+  must not raise the other. Its call is bounded to 5 s with **no retry** — a retry multiplies the
+  worst case inside a latency budget, and the gate fails open onto three other layers.
+  There is deliberately **no switch to turn the gate off**: a security control with an off switch is
+  a security control that is off somewhere.
 - `finbrief.*` logs one JSON object per line to stderr at `LOG_LEVEL` (default `INFO`);
-  the Phase-7 A/B and security-gate analyses read those lines back.
+  the Phase-7 A/B and security-gate analyses read those lines back. **One field is user-derived and
+  it is the only one**: a blocked turn's gate-trigger line carries the *normalised* input, truncated
+  to 500 characters, because a denylist you cannot audit is a denylist you cannot tune. An allowed
+  turn logs counts and verdicts only.
 
 ## Development
 
@@ -205,7 +322,31 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest
 ```
 
-Tests are hermetic — no API key, no `.env`, and no network calls — so they run anywhere.
+Tests are hermetic — no API key, no `.env`, and no network calls — so they run anywhere. That is
+**enforced rather than asserted**: `tests/conftest.py` blocks egress at the socket layer, at all
+four DNS resolvers, through `curl_cffi` (which resolves in C) and through `uvloop` (which
+resolves in libuv), and `tests/test_hermetic_suite.py` carries one test per backend. The guard
+is a denylist over the backends this repo can reach, not a proof — a new HTTP dependency is a
+new path, which is how two of the six recorded breaches were found, both in T7's single new
+dependency.
+
+The security suite is the third of the four non-hermetic entry points, and the cheapest of the
+three that cost anything (`ingest_filings.py --dry-run` is the fourth and spends nothing):
+
+```bash
+uv run python scripts/security_suite.py               # full run, rewrites the evidence artifact
+uv run python scripts/security_suite.py --gate-only   # layers 1-4 only: no embeddings, no agent
+uv run python scripts/security_suite.py --no-write    # print the report, leave the
+                                                      # committed artifact alone
+```
+
+A `--gate-only` run says so in the artifact — a **PARTIAL RUN** banner and "not run" where the
+planted-payload count would be — so a partial run cannot be committed as a full one.
+
+It exists because three of the gate's claims cannot be met by a test — whether a real model
+recognises a *novel* payload, whether a real model *obeys* a planted one, and the latency p50,
+which is a measurement. It exits non-zero on a failing suite, so it is usable as a gate and not
+only as a generator.
 
 ### Building the knowledge base
 
@@ -254,9 +395,11 @@ exists to catch: BM25 matches lexically and would find the right filing even aft
 model drifted, which is precisely the drift being watched for, and translation would put a paid
 *chat* call in front of it and make the queries non-verbatim. Holding it at T3's configuration
 also keeps every run comparable with the reports already committed. Strategy comparison is the
-golden set and the T10 A/B ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this script.
+golden set and the T10 A/B
+([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this
+script.
 
-Three committed evidence files, all generated:
+Four committed evidence files, all generated:
 
 - `docs/verification/ingest-report.md` — the gate table plus what the collection holds.
   Rewritten by a **full-Universe** run, pass or fail. A `--tickers` or `--dry-run` run
@@ -272,3 +415,9 @@ Three committed evidence files, all generated:
   chunk excerpt behind a verdict, so a reader can check the check. Rewritten by every
   `scripts/retrieval_smoke.py` run. It leads with what it is not, because a file of
   distances in a repo is read as an evaluation unless it says otherwise.
+- `docs/verification/security-gate.md` — every corpus case, which layer stopped it, the
+  false-positive control, both latency medians against both budgets, and each planted payload's
+  answer. Rewritten by every `scripts/security_suite.py` run. It leads with what it is not for the
+  same reason the smoke report does, and it prints the **pre-registered** latency figure beside the
+  revised one: an artifact showing only the budget now being met would turn a revised
+  pre-registration into a number that had always held.

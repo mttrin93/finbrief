@@ -123,7 +123,9 @@ recorded in `config.ITEM_7A_POINTER_FILERS` — so those six companies have **no
 chunks**, which constrains golden-set authoring (ADR-0002, ADR-0007 amendment).
 
 **Security gate (ADR-0006).** Input gate (front door), cheap-first, one model call per turn,
-≤800ms p50: normalization → bounded regex denylist (catch exits early; pass always
+≤800ms p50 (**revised to ≤1s escalated p50 — ADR-0006 T7 amendment §2; the pre-registered
+figure is kept in `config.py` and printed beside the revision in the generated artifact**):
+normalization → bounded regex denylist (catch exits early; pass always
 escalates) → one zero-shot LLM classifier (own prompt, via OpenRouter). Output validator
 (back door): Guardrails AI no-investment-advice validator (`on_fail="exception"` → graceful
 refusal). Indirect injection is a first-class tested threat; retrieved text is framed as

@@ -6,7 +6,7 @@ that patched the wrong function blocks nothing while every test still passes. Th
 notices — one test per egress path, because the guard is a denylist over the backends this repo
 can reach and not a proof that none exists.
 
-It exists because the failure has a history, now four instances long. Twice it was
+It exists because the failure has a history, now **six** instances long. Twice it was
 `tiktoken.get_encoding`, which downloads its BPE table and caches it under
 `TIKTOKEN_CACHE_DIR`, so the author's warm cache passed and clean CI egressed silently. The
 third was the *guard's own first draft*, which claimed to cover `curl_cffi` and did not — found
@@ -15,21 +15,32 @@ returned a live HTTP 429 before the guard grew a second half. The fourth was the
 *second* draft, which patched `getaddrinfo` while a comment in **this file** asserted that
 `gethostbyname` routed through it; it does not, and the call returned a real address.
 
+The fifth and sixth arrived together with T7's one new dependency (#8), which is the point about
+a new dependency being a new path. `guardrails-ai` POSTs anonymous validation metrics to its own
+endpoint unless configured otherwise — so a library added *for* a security control would have
+sent a record of every validated answer to a third party. And it reaches `uvloop`, whose event
+loop resolves DNS inside libuv: importing it is harmless, but `guardrails.validator_service`
+installs it as the **process-wide** event loop policy on every `Guard.validate`, which moved
+every subsequent async lookup outside a guard written in Python. Both have a test below, and
+both were found by running this file rather than by reading the dependency tree.
+
 Two lessons are built into the shape of this file. A per-backend test is what turns the next
 instance into a red test instead of a quiet packet — so a networking dependency without a case
-here is an uncovered path by default. And a *claim in a comment cannot fail*: three of the four
+here is an uncovered path by default. And a *claim in a comment cannot fail*: three of the six
 instances were prose asserting coverage the code lacked, so each test below exercises the call
 it is about rather than reasoning about it.
 """
 
 from __future__ import annotations
 
+import logging
 import socket
 import urllib.request
+from urllib.parse import urlsplit
 
 import pytest
 import tiktoken
-from conftest import TIKTOKEN_CL100K, EgressBlocked
+from conftest import EGRESS_ATTEMPTS, TIKTOKEN_CL100K, EgressBlocked
 
 
 def test_a_tcp_connection_to_a_real_host_is_blocked():
@@ -162,6 +173,102 @@ def test_a_unix_socket_path_is_not_mistaken_for_a_host():
     ):
         unix.connect("/tmp/finbrief-nothing-listens-here.sock")
     assert not isinstance(caught.value, EgressBlocked)
+
+
+def test_uvloop_cannot_resolve_even_though_it_bypasses_the_socket_layer():
+    # **The `curl_cffi` hole a second time, found in T7 (#8).** uvloop's event loop is Cython
+    # over libuv: `Loop.getaddrinfo` calls `uv_getaddrinfo` in C and never consults the patched
+    # `socket.getaddrinfo`. Measured before `conftest._block_uvloop_resolution` existed, this
+    # exact call returned a real Yahoo address while the same call on the stock
+    # `_UnixSelectorEventLoop` raised — with the socket guard fully installed and
+    # `socket.getaddrinfo` verifiably patched.
+    #
+    # It has been importable since Phase 0, arriving through `uvicorn[standard]` under both
+    # `streamlit` and `chromadb`. What made it *reachable* was `guardrails.validator_service`,
+    # which sets the process-wide event loop policy to uvloop on every `Guard.validate`;
+    # `security/advice.py` stops that with `GUARDRAILS_RUN_SYNC` — which is why this test builds
+    # a uvloop loop **itself** rather than relying on some other code path to install one. A
+    # test that only passed because nothing currently uses the backend is a test of today's
+    # imports.
+    uvloop = pytest.importorskip("uvloop")
+
+    loop = uvloop.new_event_loop()
+    try:
+        with pytest.raises(EgressBlocked):
+            loop.run_until_complete(loop.getaddrinfo("feeds.finance.yahoo.com", 443))
+    finally:
+        loop.close()
+
+
+def test_a_uvloop_loop_can_still_resolve_loopback():
+    # The same non-blanket requirement `test_loopback_is_still_reachable` states for sockets: a
+    # guard that broke local resolution would be switched off rather than fixed.
+    uvloop = pytest.importorskip("uvloop")
+
+    loop = uvloop.new_event_loop()
+    try:
+        assert loop.run_until_complete(loop.getaddrinfo("127.0.0.1", 9))
+    finally:
+        loop.close()
+
+
+def test_guardrails_validation_makes_no_call_of_its_own(caplog):
+    # **The fifth instance of the pattern, caught before it shipped** (T7, #8). `guardrails-ai`
+    # posts anonymous validation metrics to its own endpoint unless `~/.guardrailsrc` says
+    # otherwise, and `enable_metrics` defaults to `True` — so a library added *for* a security
+    # control would, unconfigured, send a record of every validated answer to a third party.
+    # Measured with this guard installed and `security/advice.py`'s telemetry switch removed:
+    # `Guard.validate` resolved `hty0gc1ok3.execute-api.us-east-1.amazonaws.com`.
+    #
+    # **This test's first shape could not fail, which is the joke it was written against**
+    # (issue #8 review). It asserted only the two verdicts — and the verdicts are *identical*
+    # with the telemetry switch removed, because the POST happens inside OpenTelemetry's
+    # `BatchSpanProcessor`, which catches the `EgressBlocked` on its own export thread and logs
+    # `Exception while exporting Span.` So it was worth exactly as much as the comment in
+    # `advice.py` it was written to replace. Three assertions now, each about a different way
+    # this can be false:
+    #
+    #   1. `EGRESS_ATTEMPTS` — the guard recorded no refusal. This is the one that survives a
+    #      library swallowing the exception, and it is why that list exists.
+    #   2. `_enabled` — the shipped `_build_guard` really did reach the process-wide singleton.
+    #   3. the endpoint's host is absent from the captured log — the swallowed-and-logged shape,
+    #      asserted where it actually surfaces.
+    #
+    # `force_flush()` is load-bearing: `BatchSpanProcessor` holds spans on a queue and exports
+    # every 5 s or at 512 spans, so without it nothing is exported inside a short test and all
+    # three assertions would hold *for the wrong reason* — a fourth check that cannot fail.
+    from guardrails.utils.hub_telemetry_utils import HubTelemetry
+
+    from finbrief.security.advice import validate_answer
+
+    attempts_before = len(EGRESS_ATTEMPTS)
+
+    with caplog.at_level(logging.ERROR):
+        assert validate_answer("Tesla identifies supply chain risks [1].").refused is False
+        # Both directions: only a `FailResult` gives the tracer a validation outcome to report.
+        assert validate_answer("You should buy Tesla now.").refused is True
+        # The singleton `_build_guard` configured, now that the guard has certainly been built.
+        telemetry = HubTelemetry()
+        telemetry._tracer_provider.force_flush()
+
+    # The library's own endpoint, not a copy of it: a release that moved the host would
+    # otherwise leave this asserting about a string nothing posts to.
+    host = urlsplit(telemetry._endpoint).hostname
+
+    assert EGRESS_ATTEMPTS[attempts_before:] == [], (
+        "guardrails attempted an outbound call during validation — the telemetry switch in "
+        "security/advice.py._build_guard is not doing its job. Note the verdicts above are "
+        "unaffected, which is why this assertion exists rather than only those."
+    )
+    assert telemetry._enabled is False, (
+        "guardrails' process-wide HubTelemetry singleton is enabled; _build_guard's "
+        "`guard.configure(allow_metrics_collection=False)` is the switch that disables it, and "
+        "it must run before `settings.rc` is replaced."
+    )
+    assert host and host not in caplog.text, (
+        f"an exporter logged a failure reaching {host} — a swallowed egress attempt, which is "
+        f"the shape that makes a verdict-only assertion useless."
+    )
 
 
 def test_tiktoken_resolves_its_table_from_the_vendored_fixture():

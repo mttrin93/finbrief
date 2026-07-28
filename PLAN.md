@@ -375,32 +375,74 @@ retrieval chain and landed with it — ticket T3, #5)
   variant), after which the chunk reaches rank 1. Full four-state ranking on #6; hypotheses
   revised in ADR-0004's amendment and re-pre-registered in ADR-0005's.
 
-**Phase 5 — Guardrails + validation (Tier-1, ~3 h)** *(see ADR-0006)*
-- Advice-refusal policy; input validation (ticker whitelist, length caps, sanitization)
-- **Input gate (front door)** — cheap-first, one model call per turn, ≤800ms p50:
-  1. **Normalization:** lowercase, strip accents/homoglyphs, collapse whitespace &
-     punctuation, de-leetspeak (0→o, 1→i, 3→e, @→a) — catches *obfuscation*.
-  2. **Bounded regex denylist** (e.g. `ignore\W{0,20}(all|previous)?\W{0,20}instructions`):
-     a catch exits early; a pass *always* escalates to the classifier — catches *known
-     patterns* for free.
-  3. **One zero-shot LLM classifier** (own prompt, via OpenRouter): YES/NO instruction-
-     override / system-prompt-extraction — catches *novel phrasings*.
-- **Output validator (back door):** Guardrails AI no-investment-advice validator on
-  responses (`on_fail="exception"` → graceful refusal). Does work the input layers don't —
-  catches *consequences*, including those of a successful indirect injection.
-- **Indirect injection = first-class Tier-1 tests:** dedicated test collection (NOT the
-  demo KB) seeded with injection strings in fake news/filing chunks; assert the model
-  neither obeys them nor leaks the system prompt. HTML stripping on ingested news.
-- Marginal-contribution table (normalization→obfuscation, regex→known, classifier→novel,
-  output→consequences) → README, so each layer's job is defensible.
-- Gate-trigger logging: normalized input, layer fired, matched pattern, timestamp.
-- Injection test suite: obfuscated variants (leetspeak, spacing, unicode) + indirect.
-- Demo step 5 works end-to-end.
+**Phase 5 — Guardrails + validation (Tier-1, ~3 h)** — ✅ **done** (`t7-security-gate`, #8)
+*(see ADR-0006 and its T7 amendment)*
+- Four layers in `src/finbrief/security/`, one module per layer because a marginal-contribution
+  claim has to be checkable *at* the layer it is about: **normalisation** (two forms — one keeps
+  the word boundaries a rule needs to *not* match, one removes every separator, which is the only
+  form in which `i g n o r e   a l l …` still contains its words), a **bounded-gap denylist** (7
+  rules, one rule set scanning both forms), **one zero-shot classifier** on its own cheap model
+  (5 s ceiling, no retry, **fails open** onto the other three), and the **Guardrails AI
+  no-advice validator** on the way out. `screen()` and `validate_answer()` are the two seams; the
+  gate runs at the app's chat input and nowhere else.
+- Deliberately **not** an advice denylist: "should I buy X?" reaches the model and is refused with
+  a disclaimer at layer 4. Twenty-eight real analyst questions are a committed **false-positive
+  control set**, and a benign question blocked is a suite failure exactly as an attack that got
+  through is. Widening it is what found the shipped classifier's deterministic false positive
+  (ADR-0006 §2) and, later, three denylist rules that blocked ordinary disclosure vocabulary.
+- Indirect injection is **tested**: a dedicated collection built and destroyed per run (never the
+  demo KB) with five poisoned chunks and canary strings, so obedience is *detected* rather than
+  judged. The hermetic half asserts what is code — the payload arrives inside the quarantine block,
+  a forged `</sources>` is inert, a poisoned chunk gets no privileged path; the *obedience* half is
+  live, in `docs/verification/security-gate.md`.
+- Gate-trigger logging, and **the one exception to `log_event`'s no-user-content rule**: a blocked
+  turn records the normalised input, truncated to 500 characters. A denylist you cannot audit is
+  one you cannot tune; a false positive in a kept log is the cost, which is why it is bounded three
+  ways rather than not recorded.
+- Marginal-contribution table in the README, **rendered from measured counts** rather than typed —
+  and a case blocked by the *wrong* layer counts as a failure, since the corpus exists to attribute
+  a catch.
+- Demo step 5 verified end to end on the shipped path: an obfuscated payload blocked by layer 2 at
+  0 ms with the agent never called, a novel phrasing blocked by layer 3, "Should I buy Tesla
+  stock?" refused by the persona (layer 4 clean, and it fires on advice-shaped output), and 5/5
+  planted payloads retrieved and resisted.
+- **T3's two deferred findings, both closed here.** The `</sources>` delimiter is escaped at prompt
+  time (`prompts.quarantined`, derived from one `QUARANTINE_TAGS` tuple the denylist reads too) —
+  and the *news* path is where it was exploitable today rather than latent. `[n]` markers are
+  validated against every number the conversation has issued, and **reported rather than repaired**:
+  stripping a dangling marker removes the evidence a reader needs, and refusing the answer would
+  make a numbering slip look like an advice refusal.
+- **A pre-registration did not survive measurement, and that is the phase's headline finding.** The
+  ≤800 ms p50 is *straddled*, not met: 738–1041 ms escalated across eight passes, over 800 in six
+  of them. `google/gemini-2.5-flash-lite` clears it at 331–494 ms with an identical attack catch
+  rate and was **rejected** for blocking a legitimate analyst question — buying latency with a
+  false positive is the wrong trade on a security control, and tuning the prompt until it stopped
+  is what ADR-0003 forbids. The budget is revised to ≤1s with its reasoning (the gate is 9–21% of a
+  turn the analyst already waits 8–13 s for), both figures stay in `config.py`, and the artifact
+  prints both so a revised pre-registration cannot read as one that always held.
+- **Three more findings, each a check that could not fail.** (a) The first live run reported "not
+  obeyed, no leak" about a payload the agent had never retrieved — `retrieved` is now a column and
+  a required condition. (b) Fixing that by naming the ticker made it worse: the **Universe
+  whitelist** is itself an input-side control and stops an out-of-Universe payload reaching the
+  model at all, so the planted filer had to become in-Universe and identifiability moved to the
+  provenance. (c) ADR-0006 amendment §2's ordering property describes the *chain*: on the agent
+  path retrieved text arrives as a `ToolMessage`, so the question is structurally never last, and
+  what carries the intent is that `sources_block` ends with its own framing sentence.
+- **Two hermetic holes opened by the one new dependency**, both found by running
+  `test_hermetic_suite.py` rather than reading the dependency tree: `guardrails-ai` posts
+  validation telemetry to its own endpoint, and it sets the process-wide asyncio event loop policy
+  to uvloop on every `Guard.validate`, moving async DNS out of a guard written in Python. The
+  repo's false-hermetic-claim history is now six instances long.
+- Recorded for T10 (#11): on one planted payload the model described Tesla's *real* segments
+  instead of the chunk's planted content — it supplemented from memory rather than grounding. A
+  clean faithfulness case with unambiguous ground truth, offered as a labelled probe.
 
 **Phase 6 — Structured logging & observability (Tier-1, ~1.5 h)** *(moved ahead of evaluation)*
 - Structured `logging` (JSON lines): per query — strategy config, retrieval hits,
   latency, token counts; plus gate-trigger metadata (normalized input, layer fired,
-  matched pattern) from Phase 5.
+  matched pattern) from Phase 5 — ✅ **the gate's half landed with it** (`input_gate`,
+  `citation_markers`, `output_validator`, `gate_classifier_unavailable`), including the
+  block-only normalised-input exception.
 - Also log **agent-issued query vs. original user query** (ADR-0003) so the README can
   report how often the shipped path diverges from the measured retrieval chain.
 - Why ahead of evaluation: Phase 7 (RAGAs + A/B) and the security-gate catch analysis
@@ -520,16 +562,43 @@ happens for another reason, this is the change to make with it. A middle option 
 was not needed: enrich only the BM25 document text at index-build time, leaving the
 embeddings untouched.
 
+**The security gate's four stated limitations** (T7, #8 — ADR-0006's T7 amendment §9). Each is a
+way a green suite could be over-read, so each is written down rather than implied. (a) **Layer 3
+fails open**: a provider outage, a timeout or an unparseable reply allows the turn and logs a
+warning, because failing closed turns a bad afternoon at OpenRouter into an assistant that
+refuses everything — and this is not hypothetical, since three candidate classifier models were
+unavailable on this account and fail-open made them read as the *fastest* rows in the benchmark,
+catching nothing. (b) **Novel advice phrasing is layer 4's blind spot** exactly as a novel
+payload is layer 2's, and there is no layer 5. (c) **A refused answer is still in the agent's
+memory** — the validator guards the surface, not the checkpointer, so a follow-up in the same
+thread can reference text the reader never saw. (d) **The homoglyph map is not the Unicode
+confusables table**; a lookalike outside it survives normalisation and reaches layer 3, which is
+the layer that exists for what layers 1 and 2 miss. Also worth stating for the review: the
+**Universe whitelist** turns out to be an incidental input-side control — it stops an
+out-of-Universe indirect payload reaching the model, is no defence against one planted under a
+covered ticker, and invalidated the first version of the indirect-injection test.
+
+**The gate's latency pre-registration was revised, not met** (T7, #8 — ADR-0006's T7 amendment
+§2). The clean version of this story would be a number that held; the honest one is a number
+that straddled its budget (738–1041 ms escalated p50 across eight passes, over 800 in six) and a
+faster model that was rejected for blocking a legitimate analyst question. Worth discussing as
+the second falsified pre-registration on this project after ADR-0004's retrieval hypothesis, and
+as the case where the discipline had teeth: `GATE_LATENCY_BUDGET_PREREGISTERED_MS` is still in
+`config.py`, and the generated artifact prints it beside the revised figure, so nobody reading
+the evidence can mistake the revision for a pass.
+
 **Citation validity is persona-dependent** (T3, #5). The grounding half of the contract is
 structural: `Context.rank` is assigned once in `retrieve()` and read only by
-`prompts.format_contexts` and the app's sources panel, and the contexts travel with the
-answer in `GroundedAnswer`, so every panel entry `[n]` resolves to exactly one retrieved
-chunk and keeps resolving to it across reruns. The *citing* half is not enforced: nothing
-parses the `[n]` markers out of the answer, so a model that emits `[6]` against five
-contexts produces a marker pointing at no entry — silently, with no error and no log line.
-Until an output-side marker validator lands (offered to T7 as an output-validation
-candidate, #8) or ADR-0002's faithfulness scoring measures it statistically (T9, #4),
-citation *correctness* rests on the system prompt's instruction rather than on code. The
-inverse gap is deliberate: a retrieved-but-uncited context still appears in the panel,
-because the panel's contract is "what grounded this turn", which is also why the log field
-is `retrieved_sections` and not `cited_sections`.
+`prompts.format_contexts` and the app's sources panel, and the contexts travel with the answer
+in `GroundedAnswer`, so every panel entry `[n]` resolves to exactly one retrieved chunk and
+keeps resolving to it across reruns. The *citing* half is not enforced: nothing parses the `[n]`
+markers out of the answer, so a model that emits `[6]` against five contexts produces a marker
+pointing at no entry — silently, with no error and no log line. **Half of this closed in T7
+(#8)** and half did not, and the split is the point: marker *resolution* is now enforced in code
+— every `[n]` is checked against the numbers the conversation has issued, and unresolvable ones
+are named beside the answer and logged — but whether a resolving marker's chunk *supports* the
+sentence it is attached to is faithfulness, needs a judge model and ground truth, and remains
+T10's RAGAs run over T9's golden set (#11, #4). The inverse gap is deliberate: a
+retrieved-but-uncited context still appears in the panel, because the panel's contract is "what
+grounded this turn", which is also why the log field is `retrieved_sections` and not
+`cited_sections`.
