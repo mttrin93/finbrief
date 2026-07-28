@@ -240,6 +240,35 @@ class PeerComparison:
         """
         return f"vs. mean of {self.n} `{self.cluster.value}` peers: {', '.join(self.peers)}"
 
+    @property
+    def every_peer_quote_failed(self) -> bool:
+        """Whether *no* peer quote was fetched, so there is no mean of anything to report."""
+        return bool(self.unavailable) and len(self.unavailable) == self.n
+
+    @property
+    def unavailable_note(self) -> str:
+        """What to say about peers whose quote could not be fetched. `""` when they all were.
+
+        **Two sentences, because "some failed" and "all failed" are different facts** and the
+        first wording served both: "the means below rest on the remaining peers" is true of a
+        partial outage and false when there are no remaining peers — at which point every metric
+        row reads "vs. peers: none reported this" and the banner above it claimed a mean that
+        does not exist (issue #9 review). A reader resolving that has to guess which to trust.
+
+        Here rather than at each surface for the reason `basis` and `coverage_note` are: the
+        tool text and the card were each phrasing it, and a banner that disagreed with itself
+        across two surfaces is the same defect one layer out.
+        """
+        if not self.unavailable:
+            return ""
+        named = ", ".join(self.unavailable)
+        if self.every_peer_quote_failed:
+            return (
+                f"No quote could be fetched for any peer ({named}), so no peer mean is "
+                f"reported below."
+            )
+        return f"No quote for {named}, so the means below rest on the remaining peers."
+
 
 def compare(quote: Quote, peer_quotes: Mapping[str, Quote]) -> PeerComparison:
     """Compare `quote` against its Universe cluster, using whichever peer quotes are in hand.

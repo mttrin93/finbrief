@@ -323,10 +323,30 @@ def test_a_peer_whose_quote_fails_is_named_rather_than_silently_dropped(recorded
 
     content, artifact = call(ratios, ticker="F")
 
-    assert "Could not fetch: GM" in content
+    assert "No quote for GM" in content
+    assert "rest on the remaining peers" in content, "one peer is left, so there is a mean"
     card = RatiosCard.from_payload(artifact)
     assert card.comparison.unavailable == ("GM",)
     assert card.comparison.peers == ("TSLA", "GM"), "the basis is still the cluster's"
+
+
+def test_every_peer_failing_does_not_claim_a_mean_of_the_remaining_none(recorded_quotes):
+    # The contradiction this branch exists to remove. With both `autos` peers dead the metric
+    # rows correctly read "vs. peers: none reported this" — and the banner above them used to
+    # say "the means below rest on the remaining peers", of which there are none. A reader
+    # resolving that has to guess which half to trust (issue #9 review).
+    ratios = tools(a_source(recorded_quotes, fails={"TSLA", "GM"}))[RATIOS_TOOL_NAME]
+
+    content, artifact = call(ratios, ticker="F")
+
+    assert "no peer mean is reported" in content
+    assert "remaining peers" not in content, "there are none to rest on"
+    assert "vs. peers: none reported this" in content, "and the rows still say so"
+    card = RatiosCard.from_payload(artifact)
+    assert card.comparison.unavailable == ("TSLA", "GM")
+    assert card.comparison.every_peer_quote_failed
+    # The basis is still the cluster's, whatever the data did — ADR-0009's requirement.
+    assert card.comparison.basis == "vs. mean of 2 `autos` peers: TSLA, GM"
 
 
 def test_the_companys_own_dead_quote_is_the_one_that_ends_the_call(recorded_quotes):

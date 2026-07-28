@@ -45,7 +45,7 @@ from finbrief.config import (
     RetrievalStrategy,
     get_settings,
 )
-from finbrief.finance.ratios import Unit
+from finbrief.finance.ratios import Metric, Unit
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.prompts import (
     DISCLAIMER,
@@ -486,60 +486,85 @@ def _render_quote(card: QuoteCard) -> None:
         st.caption(f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions).")
 
 
-def _render_ratios(card: RatiosCard) -> None:
-    """A peer-comparison card: ADR-0009's basis, then each metric, then the bars.
+#: How many metric charts sit side by side before wrapping to a new row. Three keeps a
+#: two-bar chart wide enough to read on a laptop and fits the five metrics into two rows.
+_METRIC_CHART_COLUMNS = 3
 
-    **Two charts, split by unit.** A single bar chart holding a P/E of 31.6 beside a gross
-    margin of 0.74 renders the margin as a flat line at the bottom and says nothing about
-    either. The split is by `Unit`, which is the fact that makes them incomparable.
-    """
+
+def _render_ratios(card: RatiosCard) -> None:
+    """A peer-comparison card: ADR-0009's basis, then each metric, then the bars."""
     comparison = card.comparison
     st.markdown(f"**{comparison.ticker} · {escaped(comparison.name)}**")
     st.caption(comparison.basis)
-    if comparison.unavailable:
+    if note := comparison.unavailable_note:
         # Named, not silently absent from `n`: a peer whose quote failed is a gap in the *data*,
-        # where a peer with no figure for one metric is a fact about that company.
-        st.warning(
-            f"No quote for {', '.join(comparison.unavailable)}, so the means below rest on the "
-            f"remaining peers.",
-            icon=":material/link_off:",
-        )
+        # where a peer with no figure for one metric is a fact about that company. The wording
+        # is `PeerComparison`'s because it has to branch on whether *every* peer failed, and
+        # this surface and the tool text were phrasing that branch separately (#9 review).
+        st.warning(note, icon=":material/link_off:")
     for metric in comparison.metrics:
-        note = metric.coverage_note(comparison.n)
-        st.markdown(f"**{metric.label}** · {metric.versus_peers}{f' — {note}' if note else ''}")
-    for unit in (Unit.MULTIPLE, Unit.PERCENT):
-        _render_metric_bars(card, unit)
+        coverage = metric.coverage_note(comparison.n)
+        st.markdown(
+            f"**{metric.label}** · {metric.versus_peers}{f' — {coverage}' if coverage else ''}"
+        )
+    _render_metric_bars(card)
 
 
-def _render_metric_bars(card: RatiosCard, unit: Unit) -> None:
-    """Company against peer mean, for the metrics measured in `unit`.
+def _render_metric_bars(card: RatiosCard) -> None:
+    """Company against peer mean — **one chart per metric, each on its own axis.**
 
     Only the metrics where **both** numbers exist: a bar chart cannot draw "not reported", and a
     missing figure plotted as zero is the one mistake this whole path is built to avoid. The
     metric is still listed in the prose above, with its absence stated.
+
+    **Why one chart per metric and not one per `Unit`.** Splitting by unit was already necessary
+    — a P/E of 31.6 beside a gross margin of 0.74 draws the margin as a flat line — but it is
+    not sufficient, because two metrics can share a unit and still not share a scale.
+    `Unit.MULTIPLE` holds both P/E and debt-to-equity, and in the Universe those differ by two
+    orders of
+    magnitude: Ford's peer mean P/E is 162× (TSLA at 286×, GM at 37×) while its D/E is 4.26×. On
+    one axis the D/E bars are three pixels tall, and the leverage of a company with $159bn of
+    debt reads as zero — on the card T11 screenshots (issue #9 review).
+
+    A log axis was the alternative and is worse: bar *length* encodes magnitude, so log-scaled
+    bars misstate every ratio a reader takes off them, and `st.bar_chart` has no log scale to
+    offer anyway. Normalising to "percent of peer mean" was the other, and it throws away the
+    figures — on an equity-research card the actual multiple is the thing being reported. One
+    axis per metric keeps every bar at true scale and costs only layout, which `st.columns`
+    absorbs.
     """
-    rows = {
-        metric.label: (metric.value, metric.peer_mean)
+    plottable = [
+        metric
         for metric in card.comparison.metrics
-        if metric.unit is unit and metric.value is not None and metric.peer_mean is not None
-    }
-    if not rows:
+        if metric.value is not None and metric.peer_mean is not None
+    ]
+    if not plottable:
         return
+    for start in range(0, len(plottable), _METRIC_CHART_COLUMNS):
+        row = plottable[start : start + _METRIC_CHART_COLUMNS]
+        # Always `_METRIC_CHART_COLUMNS` columns, even for a short final row: passing
+        # `len(row)` would stretch a lone chart across the full width and make the last metric
+        # look like the important one.
+        columns = st.columns(_METRIC_CHART_COLUMNS)
+        for column, metric in zip(columns, row, strict=False):
+            with column:
+                _render_one_metric_bar(card.comparison.ticker, metric)
+
+
+def _render_one_metric_bar(ticker: str, metric: Metric) -> None:
+    """One metric's two bars — the company and its peer mean — at that metric's own scale."""
     # The scale and the axis label are `Unit`'s, not this function's: the surface was switching
     # on the enum three times over, and a chart plotted at one scale under a caption naming
     # another is a mistake nothing would catch (issue #9 review).
-    scale = unit.chart_scale
+    scale = metric.unit.chart_scale
     st.bar_chart(
         pd.DataFrame(
-            {
-                card.comparison.ticker: [own * scale for own, _ in rows.values()],
-                "peer mean": [mean * scale for _, mean in rows.values()],
-            },
-            index=list(rows),
+            {metric.label: [metric.value * scale, metric.peer_mean * scale]},
+            index=[ticker, "peer mean"],
         ),
         height=200,
     )
-    st.caption(unit.axis_label)
+    st.caption(f"{metric.label} · {metric.unit.axis_label.lower()}")
 
 
 def _render_news(card: NewsCard) -> None:

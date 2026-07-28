@@ -158,6 +158,44 @@ def test_a_peer_missing_from_the_quotes_is_reported_unavailable_not_silently_ski
     assert comparison.peers == ("TSLA", "GM"), "still the cluster's set, per ADR-0009"
     assert comparison.unavailable == ("GM",)
     assert metric(comparison, "trailing_pe").peers_compared == ("TSLA",)
+    assert not comparison.every_peer_quote_failed
+    assert comparison.unavailable_note == (
+        "No quote for GM, so the means below rest on the remaining peers."
+    )
+
+
+def test_no_note_is_written_when_every_peer_quote_arrived(recorded_quotes):
+    # The empty string is what both surfaces branch on, so it is asserted rather than assumed.
+    comparison = compare(recorded_quotes["F"], recorded_quotes)
+
+    assert comparison.unavailable == ()
+    assert comparison.unavailable_note == ""
+    assert not comparison.every_peer_quote_failed
+
+
+def test_every_peer_failing_reports_no_mean_rather_than_a_mean_of_the_remainder(
+    recorded_quotes,
+):
+    # **"Some failed" and "all failed" are different facts**, and one wording was serving both.
+    # With no peer quote at all there are no "remaining peers" for a mean to rest on, and every
+    # metric row already says "vs. peers: none reported this" — so the old sentence contradicted
+    # the rows directly beneath it (issue #9 review).
+    subject_only = {"F": recorded_quotes["F"]}
+
+    comparison = compare(recorded_quotes["F"], subject_only)
+
+    assert comparison.unavailable == ("TSLA", "GM")
+    assert comparison.every_peer_quote_failed
+    assert comparison.unavailable_note == (
+        "No quote could be fetched for any peer (TSLA, GM), so no peer mean is reported below."
+    )
+    assert "remaining peers" not in comparison.unavailable_note
+    # The rows the note must not contradict.
+    pe = metric(comparison, "trailing_pe")
+    assert pe.versus_peers.endswith("vs. peers: none reported this")
+    # And `n` and the basis are untouched: ADR-0009 reports the cluster, not the coverage.
+    assert comparison.n == 2
+    assert comparison.basis == "vs. mean of 2 `autos` peers: TSLA, GM"
 
 
 def test_the_spread_travels_with_the_mean(recorded_quotes):

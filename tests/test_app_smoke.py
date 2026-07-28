@@ -968,6 +968,27 @@ def send(app, question="What is NVIDIA trading at?"):
     return app.chat_message[1]
 
 
+def charts(app):
+    """Every chart on the page, walked out of the tree by hand.
+
+    Two reasons `AppTest.get` will not do it. `st.bar_chart` and `st.line_chart` reach the
+    element tree as `vega_lite_chart`, for which `AppTest` ships no typed accessor — they arrive
+    as `UnknownElement`, and `app.get("arrow_bar_chart")` returns an empty list rather than
+    failing, which is how an assertion about charts passes while rendering none. And the ratio
+    charts sit inside `st.columns`, which `app.chat_message[1]` does not recurse into.
+    """
+    found = []
+
+    def walk(node):
+        if getattr(node, "type", None) == "vega_lite_chart":
+            found.append(node)
+        for child in getattr(node, "children", {}).values():
+            walk(child)
+
+    walk(app._tree)
+    return found
+
+
 def test_a_quote_card_renders_the_figures_a_valuation_question_opens_with(app, monkeypatch):
     # User story 13. The figures come off the turn's own card, never re-fetched: a second fetch
     # goes through a TTL cache and could legitimately return a different price from the one the
@@ -1052,6 +1073,53 @@ def test_a_ratios_card_names_a_peer_whose_quote_could_not_be_fetched(app, monkey
     assistant = send(app)
 
     assert any("No quote for GM" in warning.value for warning in assistant.warning)
+    assert any("remaining peers" in warning.value for warning in assistant.warning)
+
+
+def test_a_ratios_card_with_no_peer_quotes_does_not_promise_a_mean(app, monkeypatch):
+    # The banner and the rows beneath it have to agree. With every peer quote dead the rows read
+    # "vs. peers: none reported this", and the banner used to claim "the means below rest on the
+    # remaining peers" — a mean of a set with nothing in it (issue #9 review).
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F", peers=[])]))
+
+    assistant = send(app)
+    warnings = " ".join(warning.value for warning in assistant.warning)
+    assert "no peer mean is reported" in warnings
+    assert "remaining peers" not in warnings
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "vs. peers: none reported this" in body
+
+
+def test_each_ratio_metric_gets_its_own_axis(app, monkeypatch):
+    # **A P/E and a debt-to-equity share `Unit.MULTIPLE` and do not share a scale.** Ford's
+    # peer mean P/E is 162x against a D/E of 4.26x, so on one axis the leverage of a company
+    # carrying $159bn of debt drew as three pixels — on the card T11 screenshots (#9 review).
+    # One chart per metric is the fix, so the count of charts is the assertion.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F")]))
+
+    send(app)
+
+    plottable = [
+        metric
+        for metric in a_ratios_card("F").comparison.metrics
+        if metric.value is not None and metric.peer_mean is not None
+    ]
+    assert len(plottable) > 1, "the fixture must exercise more than one metric to mean anything"
+    assert len(charts(app)) == len(plottable), "one axis each, not one axis per unit"
+    captions = " ".join(caption.value for caption in app.caption)
+    for metric in plottable:
+        assert metric.label in captions, "each chart names the metric it is plotting"
+
+
+def test_a_metric_with_no_peer_mean_is_not_plotted_as_zero(app, monkeypatch):
+    # The one mistake this whole path exists to avoid. A bar chart cannot draw "not reported",
+    # so the metric is listed in the prose with its absence stated and gets no chart at all.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F", peers=[])]))
+
+    assistant = send(app)
+
+    assert not charts(app), "no peer means, so nothing is plottable"
+    assert "vs. peers: none reported this" in " ".join(md.value for md in assistant.markdown)
 
 
 def test_news_cards_render_the_publisher_the_date_and_the_stripped_summary(app, monkeypatch):

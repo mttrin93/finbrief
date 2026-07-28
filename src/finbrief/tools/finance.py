@@ -784,11 +784,13 @@ def _ratios_text(card: RatiosCard) -> str:
     lines = [
         f"{comparison.ticker} — {comparison.name}, {comparison.basis}",
     ]
-    if comparison.unavailable:
-        lines.append(
-            f"Could not fetch: {', '.join(comparison.unavailable)} — the means below rest on "
-            f"the remaining peers, so say how many."
-        )
+    if note := comparison.unavailable_note:
+        # `unavailable_note` rather than a phrasing of its own, for the same reason
+        # `coverage_note` is read below: this sentence had to branch on whether *every* peer
+        # quote failed — at which point "the means below rest on the remaining peers" describes
+        # remaining peers there are none of — and a branch written twice is a branch that will
+        # be taken differently in two places (issue #9 review).
+        lines.append(f"{note} Say how many the comparison rests on.")
     for metric in comparison.metrics:
         # `coverage_note` rather than a phrasing of its own: the card derived the same two
         # numbers in different words, which is the disagreement `basis` was extracted to
