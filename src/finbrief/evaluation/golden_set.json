@@ -1,0 +1,914 @@
+{
+  "schema_version": 1,
+  "adr": "docs/adr/0002-golden-set-and-per-bucket-ab.md",
+  "provenance": {
+    "authored_by": "a different model than the answering pipeline (ADR-0002 decision 1)",
+    "method": "Reference answers and passages were read directly out of the ingested Chroma collection's chunk text (data/chroma/chroma.sqlite3, embedding_metadata). retrieve() was never called and the app was never opened, so no reference is derived from retriever output.",
+    "collection_ingest_run": "2026-07-27 08:51 UTC, 5842 chunks, docs/verification/ingest-report.md",
+    "verified_against_edgar": true,
+    "verification_note": "The hand-verification pass against the primary source is COMPLETE: all 28 rows verified against their EDGAR filings, so the set-level flag reads true (ADR-0002 decision 1: candidates are hand-verified, never self-certified — the flag is bound to the conjunction of the rows by tests/test_golden_set.py, so it cannot read true over a partial pass). The record of what was checked, row by row and against which filing, is docs/golden-set-edgar-checklist.md: 10 rows figure-by-figure (S1's enumeration plus the 9 numeric rows) and the other 18 as a verbatim-quote pass. The pass exists because ingestion could in principle mis-parse a Section, and a mis-parse would propagate straight into ground truth; reading the ingested chunk back would not catch it, which is why the check is against EDGAR.",
+    "excluded": "Guardrail and injection cases are deliberately absent (ADR-0002 decision 2) — faithfulness against a refusal is undefined. They live in the Phase-5 security suite as pass/fail assertions.",
+    "fiscal_years": "One filing per company, the most recent, so the fiscal year is per filer: NVDA is FY2026, the other 14 are FY2025 (issue #4, T3 constraint b). Every year in a question and every citation matches that filer's own fiscal year.",
+    "item_7a_pointer_filers": "BAC, GS, JNJ, JPM, LLY, PFE answer Item 7A by incorporating Item 7 by reference, so they have no Item 7A chunks. Their market-risk rows expect Item 7 grounding (config.ITEM_7A_POINTER_FILERS, ADR-0007 amendment).",
+    "search_filings_is_implicit": "Every row in every bucket requires the search_filings tool (or, for the measured chain, retrieve()) to reach its filings half. tool_expectation records only the additional non-retrieval tool a tool-augmented row needs, so it is not restated 28 times."
+  },
+  "field_notes": {
+    "grounding": "The filings half — the only RAGAs-scorable reference. One entry per (ticker, section) the reference draws on, each carrying the chunk ids and a verbatim passage.",
+    "reference": "The source-separated ground-truth answer, authored from the passages in `grounding` and from nothing else.",
+    "tool_expectation": "Tool-augmented rows only. Scored by the tool-calling eval (spec US-29), not by RAGAs — see ADR-0002 amendment (2026-07-28). `peer_set` and `n` are copied from config.PEERS and asserted against it by tests/test_golden_set.py. `args` lists the arguments the call must carry; a `days` argument on get_recent_news is unconstrained.",
+    "known_false_positives": "Chunk ids that are correct lexical matches for the question but wrong grounding, so #11 can compute mention-leakage precision separately from the bucket mean (ADR-0004 §11). Empty on rows with no measured leakage.",
+    "section_chunk_counts": "Chunks the collection holds for each target section, counted from the ingested collection. The denominator recall@k is measured against.",
+    "recall_trivial": "True when EVERY target section holds <= 4 chunks, i.e. a k=5 retrieval cannot miss it. T10 reports these rows separately rather than letting a question that cannot miss inflate recall.",
+    "recall_trivial_sections": "The subset of target sections holding <= 4 chunks, for rows where only some do. A multi-section row is not all-or-nothing and recall_trivial alone cannot express it.",
+    "basis_mismatch": "True when the row compares figures that are not measured on the same basis or at the same date. The reference must state each basis explicitly rather than implying comparability."
+  },
+  "questions": [
+    {
+      "id": "S1",
+      "bucket": "semantic",
+      "question": "What are the main risk factors for Tesla?",
+      "reference": "Tesla's Item 1A organises its risk factors under four headings: Risks Related to Our Ability to Grow Our Business, Risks Related to Our Operations, Risks Related to Government Laws and Regulations, and Risks Related to the Ownership of Our Common Stock. Within the first, Tesla flags issues or delays in developing, launching and ramping production and an inability to control manufacturing costs; within operations it flags dependence on thousands of parts from hundreds of suppliers including single-source direct suppliers, with 2025 U.S. tariff changes and retaliatory measures having already raised supply-chain costs. Tesla also states the listed risks are not the only risks it faces.",
+      "grounding": [
+        {
+          "ticker": "TSLA",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": [
+            "0001628280-26-003952:Item 1A:0",
+            "0001628280-26-003952:Item 1A:1",
+            "0001628280-26-003952:Item 1A:6",
+            "0001628280-26-003952:Item 1A:34",
+            "0001628280-26-003952:Item 1A:94",
+            "0001628280-26-003952:Item 1A:117"
+          ],
+          "passage": ":0 — \"You should carefully consider the risks described below together with the other information set forth in this report, which could materially affect our business, financial condition and future results. The risks described below are not the only risks facing our company. [...] Risks Related to Our Ability to Grow Our Business\"; :34 — \"Risks Related to Our Operations\"; :94 — \"Risks Related to Government Laws and Regulations\"; :117 — \"Risks Related to the Ownership of Our Common Stock\"; :6 — \"Our products contain thousands of parts purchased globally from hundreds of suppliers, including single-source direct suppliers, which exposes us to multiple potential sources of component shortages.\""
+        }
+      ],
+      "labels": ["probe:question-form"],
+      "label_note": "ADR-0004 §10 regression probe. The interrogative scaffolding carries a corpus-rare word: `main` has df 7/5842 (0.1%), so IDF weighted it above the filer's own name (6.6568 vs `tesla`'s 5.1261) and BM25 ranked GOOGL Item 7:21 into slot [5] of this exact query on the shipping default. hybrid.query_terms now strips it. Keep the question verbatim so a future run can tell whether the fix still holds.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"TSLA Item 1A": 129},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "S2",
+      "bucket": "semantic",
+      "question": "What are the main risk factors for Microsoft?",
+      "reference": "Microsoft's Item 1A opens with strategic and competitive risks, stating that it faces intense competition across all markets for its products and services, from competitors ranging from diversified global companies with significant R&D resources to small specialized firms, with low barriers to entry in many of its businesses and rapidly evolving, disruptive technologies. It also identifies risk to its platform-based ecosystem model, where scale and network effects among users, developers and the platform provider are necessary to meet demand and maintain attractive margins.",
+      "grounding": [
+        {
+          "ticker": "MSFT",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000950170-25-100235",
+          "chunk_ids": [
+            "0000950170-25-100235:Item 1A:0",
+            "0000950170-25-100235:Item 1A:1",
+            "0000950170-25-100235:Item 1A:2"
+          ],
+          "passage": ":0 — \"STRATEGIC AND COMPETITIVE RISKS — We face intense competition across all markets for our products and services, which could adversely affect our results of operations.\"; :1 — \"Our competitors range in size from diversified global companies with significant research and development resources to small, specialized firms whose narrower product lines may let them be more effective in deploying technical, marketing, and financial resources.\""
+        }
+      ],
+      "labels": ["probe:mention-leakage"],
+      "label_note": "ADR-0004 §11 regression probe, and the observed case. On the shipping default at k=5 this returned four MSFT chunks and NVDA Item 1A:166 at rank 4, BM25-only with no vector distance. The match is lexically correct and no corpus-statistical rule can distinguish it: `microsoft` is the query's highest-IDF term and appears at its literal surface form in that chunk. The distinguishing fact is which filer filed it, which is metadata, not text. No fix has been taken (a company name may never enter _SCAFFOLDING — §6's recovery IS name -> ticker matching), so ground truth excludes the chunk while the engine still returns it.",
+      "known_false_positives": ["0001045810-26-000021:Item 1A:166"],
+      "known_false_positive_note": "Re-derived from the ingested collection rather than requoted: `Microsoft` (word-boundary) appears in 60 of MSFT's 237 chunks and in 6 chunks outside MSFT, all NVDA. Item 1A:166 is the one observed at rank 4 — \"Delaware law and our certificate of incorporation, bylaws and agreement with Microsoft could delay or prevent a change in control.\" The other five NVDA chunks are the same disclosure restated (Item 1A:5, :167) and are equally wrong grounding for this question; only the observed chunk is recorded, since precision is computed against what a run actually returns.",
+      "section_chunk_counts": {"MSFT Item 1A": 99},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "S3",
+      "bucket": "semantic",
+      "question": "What are Apple's most significant supply-chain and macroeconomic risks?",
+      "reference": "Apple states that its operations and performance depend significantly on global and regional economic conditions, because sales outside the U.S. represent a majority of total net sales and its global supply chain is large and complex, with a majority of supplier facilities — including manufacturing and assembly sites — located outside the U.S. Adverse macroeconomic conditions, including slow growth or recession, high unemployment, inflation, tighter credit, higher interest rates and currency fluctuations, can adversely affect consumer confidence and spending and materially adversely affect demand for its products and services. Apple also notes the listed risks are not exhaustive.",
+      "grounding": [
+        {
+          "ticker": "AAPL",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000320193-25-000079",
+          "chunk_ids": [
+            "0000320193-25-000079:Item 1A:0",
+            "0000320193-25-000079:Item 1A:1",
+            "0000320193-25-000079:Item 1A:2"
+          ],
+          "passage": ":2 — \"The Company has international operations with sales outside the U.S. representing a majority of the Company's total net sales. In addition, the Company's global supply chain is large and complex and a majority of the Company's supplier facilities, including manufacturing and assembly sites, are located outside the U.S. [...] Adverse macroeconomic conditions, including slow growth or recession, high unemployment, inflation, tighter credit, higher interest rates, and currency fluctuations, can adversely impact consumer confidence and spending\""
+        }
+      ],
+      "labels": ["probe:mention-leakage", "probe:order-of-magnitude"],
+      "label_note": "ADR-0004 §11's second ask, and the order-of-magnitude larger instance: 45 chunks outside AAPL contain `Apple` against 36 of AAPL's own 152. The GS and JPM chunks are not incidental prose — they are the Apple Card portfolio transaction, discussed with dollar amounts in both filers' Item 7 (e.g. GS Item 7:9, a $2.26 billion net-revenue reduction from markdowns on the transferred Apple Card loan portfolio). A question about Apple must not be answered out of Goldman's or JPMorgan's Apple Card discussion. This row will show low context precision by construction; that is the measurement, not a defect.",
+      "known_false_positives": [
+        "0000886982-26-000091:Item 1:2",
+        "0000886982-26-000091:Item 1:26",
+        "0000886982-26-000091:Item 1:27",
+        "0000886982-26-000091:Item 1:207",
+        "0000886982-26-000091:Item 1:220",
+        "0000886982-26-000091:Item 7:6",
+        "0000886982-26-000091:Item 7:7",
+        "0000886982-26-000091:Item 7:9",
+        "0000886982-26-000091:Item 7:11",
+        "0000886982-26-000091:Item 7:56",
+        "0000886982-26-000091:Item 7:58",
+        "0000886982-26-000091:Item 7:68",
+        "0000886982-26-000091:Item 7:148",
+        "0000886982-26-000091:Item 7:151",
+        "0000886982-26-000091:Item 7:152",
+        "0000886982-26-000091:Item 7:173",
+        "0000886982-26-000091:Item 7:233",
+        "0000886982-26-000091:Item 7:234",
+        "0000886982-26-000091:Item 7:235",
+        "0000886982-26-000091:Item 7:336",
+        "0000886982-26-000091:Item 7:381",
+        "0001628280-26-008131:Item 7:8",
+        "0001628280-26-008131:Item 7:12",
+        "0001628280-26-008131:Item 7:32",
+        "0001628280-26-008131:Item 7:43",
+        "0001628280-26-008131:Item 7:74",
+        "0001628280-26-008131:Item 7:79",
+        "0001628280-26-008131:Item 7:81",
+        "0001628280-26-008131:Item 7:87",
+        "0001628280-26-008131:Item 7:183",
+        "0001628280-26-008131:Item 7:202",
+        "0001628280-26-008131:Item 7:214",
+        "0001628280-26-008131:Item 7:288",
+        "0001628280-26-008131:Item 7:294",
+        "0001628280-26-008131:Item 7:356",
+        "0001628280-26-008131:Item 7:363",
+        "0001628280-26-008131:Item 7:487",
+        "0001628280-26-003942:Item 1A:21",
+        "0001628280-26-003942:Item 1A:34",
+        "0001628280-26-003942:Item 1A:39",
+        "0001628280-26-003942:Item 1A:82",
+        "0001628280-26-003942:Item 1A:87",
+        "0001628280-26-003942:Item 7:12",
+        "0001628280-26-003942:Item 7:13",
+        "0000059478-26-000013:Item 1:116"
+      ],
+      "known_false_positive_note": "All 45 enumerated, re-derived from the ingested collection with a word-boundary match on `Apple` rather than requoted from the issue: GS 21 (Item 7 16, Item 1 5), JPM 16 (all Item 7), META 7 (Item 1A 5, Item 7 2), LLY 1 (Item 1). Totals agree with ADR-0004 §11's conjunctive sweep; the per-section split is new and is what makes the set enumerable.",
+      "section_chunk_counts": {"AAPL Item 1A": 101},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true,
+      "authoring_note": "Wording is a judgment call, not ADR-0004 §11's text. §11 names S1 and S2 verbatim but only says Apple is \"worth a second labelled question\". This row deliberately does NOT reuse the `what are the main ... for X?` shape: three near-identical rows in a 7-question bucket would let one query shape dominate the bucket mean. The cost is that it drops the corpus-rare `main` and so is a weaker joint probe of §10 + §11."
+    },
+    {
+      "id": "S4",
+      "bucket": "semantic",
+      "question": "How does Microsoft manage its exposure to foreign exchange and interest rate movements?",
+      "reference": "Microsoft states it is exposed to economic risk from foreign exchange rates, interest rates, credit risk and equity prices, and uses derivative instruments to manage these risks, while noting they may still affect its consolidated financial statements. It monitors foreign currency exposures daily to maximise the economic effectiveness of its foreign currency positions including hedges, with principal exposures in the Euro, Japanese yen, British pound, Canadian dollar and Australian dollar. For interest rate risk it manages the average maturity of the fixed-income portfolio to achieve economic returns correlating to certain global fixed-income indices.",
+      "grounding": [
+        {
+          "ticker": "MSFT",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0000950170-25-100235",
+          "chunk_ids": ["0000950170-25-100235:Item 7A:0"],
+          "passage": "\"We are exposed to economic risk from foreign exchange rates, interest rates, credit risk, and equity prices. We use derivatives instruments to manage these risks, however, they may still impact our consolidated financial statements. [...] We monitor our foreign currency exposures daily to maximize the economic effectiveness of our foreign currency positions, including hedges. Principal currency exposures include the Euro, Japanese yen, British pound, Canadian dollar, and Australian dollar. [...] We manage the average maturity of the fixed-income portfolio to achieve economic returns that correlate to certain global fixed-income indices.\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"MSFT Item 7A": 3},
+      "recall_trivial": true,
+      "recall_trivial_sections": ["MSFT Item 7A"],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "S5",
+      "bucket": "semantic",
+      "question": "How does Amazon describe the competition it faces?",
+      "reference": "Amazon describes its businesses as rapidly evolving and intensely competitive, with many competitors across geographies — including cross-border competition — and across industries: physical, e-commerce and omnichannel retail, e-commerce services, web and infrastructure computing services, electronic devices, digital content, advertising, grocery, healthcare, communications, and transportation and logistics services. It notes some current and potential competitors have greater resources, longer histories, more customers and/or greater brand recognition, particularly for newly-launched products and services and in newer geographic regions, and may secure better terms from vendors, adopt more aggressive pricing and devote more resources to technology, infrastructure, fulfillment and marketing.",
+      "grounding": [
+        {
+          "ticker": "AMZN",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001018724-26-000004",
+          "chunk_ids": ["0001018724-26-000004:Item 1A:3"],
+          "passage": "\"Business and Industry Risks — We Face Intense Competition — Our businesses are rapidly evolving and intensely competitive, and we have many competitors across geographies, including cross-border competition, and in different industries [...] Some of our current and potential competitors have greater resources, longer histories, more customers, and/or greater brand recognition\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"AMZN Item 1A": 94},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "S6",
+      "bucket": "semantic",
+      "question": "How does Goldman Sachs define market risk, and what categories does it include?",
+      "reference": "Goldman Sachs defines market risk as the risk of an adverse impact to its earnings due to changes in market conditions. The assets and liabilities that give rise to it primarily include positions held for market making for clients and for its investing and financing activities, and those positions change with client demands and its investment opportunities. It employs a variety of risk measures to monitor market risk. Managers in revenue-producing units, Corporate Treasury and Market Risk discuss market information, positions and estimated loss scenarios on an ongoing basis, and managers in revenue-producing units and Corporate Treasury are accountable for managing risk within prescribed limits.",
+      "grounding": [
+        {
+          "ticker": "GS",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000886982-26-000091",
+          "chunk_ids": [
+            "0000886982-26-000091:Item 7:311",
+            "0000886982-26-000091:Item 7:313"
+          ],
+          "passage": ":311 — \"Market Risk Management — Overview — Market risk is the risk of an adverse impact to our earnings due to changes in market conditions. Our assets and liabilities that give rise to market risk primarily include positions held for market making for our clients and for our investing and financing activities, and these positions change based on client demands and our investment opportunities. We employ a variety of risk measures, each described in the respective sections below, to monitor market risk.\""
+        }
+      ],
+      "labels": ["pointer-filer"],
+      "label_note": "GS is in config.ITEM_7A_POINTER_FILERS and has no Item 7A chunks at all: its market-risk content is in the KB under the Item 7 label, because that is where the filer put it. A row expecting Item 7A here would score as a retrieval miss when retrieval was correct — it would measure the authoring error, not the chain (ADR-0007 amendment §4, confirmed against the live index by T3).",
+      "known_false_positives": [],
+      "section_chunk_counts": {"GS Item 7": 436},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "S7",
+      "bucket": "semantic",
+      "question": "Why does Ford say tariffs and trade policy make long-term planning difficult?",
+      "reference": "Ford states that global political instability, volatility in government regulations and unpredictable trade policy — including tariffs — in the United States and around the world limit its ability to conduct effective long-term planning and make capital allocation decisions. It attributes this to the interconnectedness of the global economy: with a global footprint and supply chain, significant events in one market can have an immediate and material adverse impact on other markets where Ford operates, and it singles out continued strain in U.S.-China relations as a distinct risk.",
+      "grounding": [
+        {
+          "ticker": "F",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000037996-26-000015",
+          "chunk_ids": [
+            "0000037996-26-000015:Item 1A:7",
+            "0000037996-26-000015:Item 1A:69"
+          ],
+          "passage": ":7 — \"global political instability and volatility in government regulations and unpredictable trade policy (including tariffs) in the United States and around the world limit our ability to conduct effective long-term planning and make capital allocation decisions.\"; :69 — \"Unprecedented trade policy (including tariffs) in the United States and foreign governments' reactions limit our ability to conduct effective long-term planning and make capital allocation decisions. The continued strain in U.S.-China relations presents unique risks\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"F Item 1A": 148},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E1",
+      "bucket": "exact-identifier",
+      "question": "What does Item 1A of Johnson & Johnson's 10-K say about the Company's product liability insurance?",
+      "reference": "Johnson & Johnson states in Item 1A that it does not purchase third-party product liability insurance; instead it uses a wholly owned captive insurance company, subject to certain limits. The disclosure appears in the discussion of product liability litigation, where the Company notes it is a defendant in numerous lawsuits arising out of the use of body powders containing talc, primarily JOHNSON'S Baby Powder, that it is not feasible to predict the ultimate outcome, and that it has been and could be required to pay significant amounts in settlements or judgments, potentially in excess of accruals.",
+      "grounding": [
+        {
+          "ticker": "JNJ",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000200406-26-000016",
+          "chunk_ids": ["0000200406-26-000016:Item 1A:22"],
+          "passage": "\"The Company does not purchase third-party product liability insurance; however, the Company utilizes a wholly owned captive insurance company subject to certain limits.\""
+        }
+      ],
+      "labels": ["low-name-coverage"],
+      "label_note": "JNJ is the extreme entity-normalisation case: its declared alias `J&J` appears in 0 of its own 215 chunks (0% coverage), so a question naming the company by name reaches almost none of the filer lexically and the deterministic ticker-form variant does the work ADR-0004's amendment credits it with. `Johnson & Johnson` is the filer's legal name and is in config.TICKER_BY_COMPANY_NAME, so normalisation fires on it.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"JNJ Item 1A": 65},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true,
+      "authoring_note": "The answer sentence sits at the tail of a chunk that is mostly talc litigation, so a k=5 retrieval that returns talc chunks is behaving well. Do not read a low context-precision score here as a miss without looking."
+    },
+    {
+      "id": "E2",
+      "bucket": "exact-identifier",
+      "question": "In Item 1A, what share of Eli Lilly's 2025 total revenues did Mounjaro and Zepbound account for?",
+      "reference": "56 percent. Eli Lilly states in Item 1A that Mounjaro and Zepbound accounted for 56 percent of its total revenues in 2025, within a group of six products — Mounjaro, Zepbound, Verzenio, Trulicity, Taltz and Jardiance (including Glyxambi, Synjardy and Trijardy XR) — each generating more than $3 billion of direct product and/or collaboration and other revenues and collectively accounting for 82 percent of total revenues in 2025.",
+      "grounding": [
+        {
+          "ticker": "LLY",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000059478-26-000013",
+          "chunk_ids": ["0000059478-26-000013:Item 1A:33"],
+          "passage": "\"We derived direct product and/or collaboration and other revenues of more than $3 billion for each of Mounjaro, Zepbound, Verzenio, Trulicity, Taltz, and Jardiance (including Glyxambi, Synjardy, and Trijardy XR) that collectively accounted for 82 percent of our total revenues in 2025. In particular, Mounjaro and Zepbound accounted for 56 percent of our total revenues in 2025\""
+        }
+      ],
+      "labels": ["low-name-coverage", "numeric"],
+      "label_note": "LLY name coverage 6% (`lilly` in 19 of its 315 chunks).",
+      "known_false_positives": [],
+      "section_chunk_counts": {"LLY Item 1A": 124},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E3",
+      "bucket": "exact-identifier",
+      "question": "Per Item 7A, what was the face value of Amazon's long-term debt as of December 31, 2025?",
+      "reference": "$68.8 billion. Amazon states in Item 7A that as of December 31, 2025 it had long-term debt with a face value of $68.8 billion, including the current portion, primarily consisting of fixed rate unsecured senior notes.",
+      "grounding": [
+        {
+          "ticker": "AMZN",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001018724-26-000004",
+          "chunk_ids": ["0001018724-26-000004:Item 7A:4"],
+          "passage": "\"As of December 31, 2025, we had long-term debt with a face value of $68.8 billion, including the current portion, primarily consisting of fixed rate unsecured senior notes.\""
+        }
+      ],
+      "labels": ["low-name-coverage", "numeric"],
+      "label_note": "AMZN name coverage 10% (`amazon` in 20 of its 192 chunks).",
+      "known_false_positives": [],
+      "section_chunk_counts": {"AMZN Item 7A": 10},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E4",
+      "bucket": "exact-identifier",
+      "question": "What was Tesla's total gross margin in FY2025 according to Item 7?",
+      "reference": "18.0 percent. Tesla's Item 7 results-of-operations table reports total gross profit of $17,094 million and a total gross margin of 18.0% for 2025, against 17.9% in 2024 and 18.2% in 2023. Total automotive gross margin was lower and declining: 17.8% in 2025 against 18.4% in 2024 and 19.4% in 2023.",
+      "grounding": [
+        {
+          "ticker": "TSLA",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": ["0001628280-26-003952:Item 7:57"],
+          "passage": "\"Gross profit total automotive $12,361 $14,197 $16,030 / Gross margin total automotive 17.8 % 18.4 % 19.4 % [...] Total gross profit $17,094 $17,450 $17,660 / Total gross margin 18.0 % 17.9 % 18.2 %\""
+        }
+      ],
+      "labels": ["low-name-coverage", "numeric"],
+      "label_note": "TSLA name coverage 12% (`tesla` in 33 of its 280 chunks) — the filer issue #6 was built around. Column order 2025/2024/2023 was confirmed from the same chunk's cost line, where col1 minus col2 equals the stated change: \"Total cost of revenues $77,733 $80,240 $79,113 $(2,507)(3)%\".",
+      "known_false_positives": [],
+      "section_chunk_counts": {"TSLA Item 7": 84},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E5",
+      "bucket": "exact-identifier",
+      "question": "In Item 7A, what would a 0.5% decrease in the yield curve do to the fair value of NVIDIA's investment portfolio at the end of fiscal 2026?",
+      "reference": "It would decrease the fair value of those investments by approximately $0.2 billion. NVIDIA states in Item 7A that, according to its sensitivity analysis on the investment portfolio, a decrease in the yield curve of 0.5% as of the end of fiscal year 2026 and 2025 would decrease the fair value for these investments by approximately $0.2 billion. NVIDIA is exposed to interest rate risk related to its fixed-rate investment portfolio and outstanding debt.",
+      "grounding": [
+        {
+          "ticker": "NVDA",
+          "section": "Item 7A",
+          "fiscal_year": 2026,
+          "accession": "0001045810-26-000021",
+          "chunk_ids": ["0001045810-26-000021:Item 7A:0"],
+          "passage": "\"We are exposed to interest rate risk related to our fixed-rate investment portfolio and outstanding debt. [...] According to our sensitivity analysis on our investment portfolio, a decrease in the yield curve of 0.5% as of the end of fiscal year 2026 and 2025 would decrease the fair value for these investments by approximately $0.2 billion.\""
+        }
+      ],
+      "labels": ["low-name-coverage", "numeric", "fy2026"],
+      "label_note": "NVDA name coverage 13% (`nvidia` in 40 of its 298 chunks). NVDA is the only FY2026 filer in the KB (accession 0001045810-26-000021); a question saying \"NVIDIA's FY2025\" has no grounding here (issue #4, T3 constraint b).",
+      "known_false_positives": [],
+      "section_chunk_counts": {"NVDA Item 7A": 7},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E6",
+      "bucket": "exact-identifier",
+      "question": "What was Ford's Company debt excluding Ford Credit at December 31, 2025, per Item 7?",
+      "reference": "$21.9 billion, including $0.9 billion of finance leases — $1.3 billion higher than at December 31, 2024. Ford adds that it manages Company debt excluding Ford Credit with a leverage framework targeting investment grade credit ratings through a normal business cycle.",
+      "grounding": [
+        {
+          "ticker": "F",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000037996-26-000015",
+          "chunk_ids": ["0000037996-26-000015:Item 7:110"],
+          "passage": "\"Debt. As shown in Note 18 of the Notes to the Financial Statements, at December 31, 2025, Company debt excluding Ford Credit was $21.9 billion (including $0.9 billion of finance leases). This balance is $1.3 billion higher than at December 31, 2024. Leverage. We manage Company debt (excluding Ford Credit) levels with a leverage framework that targets investment grade credit ratings through a normal business cycle.\""
+        }
+      ],
+      "labels": ["control:unnormalised-path", "numeric"],
+      "label_note": "CONTROL CELL. Ford is the one Universe filer for which entity normalisation never fires: MIN_LEXICAL_TICKER_CHARS = 2 excludes the ticker `F`, so normalised() returns None and no ticker-form variant is added at all — both retrievers lose it, not just BM25. This row therefore measures the un-normalised path. It is kept, and labelled, so #11 can report the bucket with and without the controls rather than discovering the confound afterwards. Ford is also the best-behaved exact-identifier filer measured (46% name coverage, `ford` in 232 of its 499 chunks), so several Ford rows would make +translation look like it adds nothing on this bucket — hence exactly one.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"F Item 7": 218},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "E7",
+      "bucket": "exact-identifier",
+      "question": "According to Item 7A, what was the aggregate principal amount of Meta's fixed-rate senior notes outstanding at December 31, 2025?",
+      "reference": "$59.0 billion, against $29.0 billion at December 31, 2024. Meta adds that because the Notes bear interest at fixed rates and are carried at amortized cost, fluctuations in interest rates do not affect its consolidated financial statements, though the fair value of the Notes fluctuates with market interest rates.",
+      "grounding": [
+        {
+          "ticker": "META",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003942",
+          "chunk_ids": ["0001628280-26-003942:Item 7A:4"],
+          "passage": "\"As of December 31, 2025 and 2024, we also had aggregate principal amounts of fixed-rate senior notes (the Notes) outstanding of $59.0 billion and $29.0 billion, respectively. Since our Notes bear interest at fixed rates and are carried at amortized cost, fluctuations in interest rates do not have any impact on our consolidated financial statements.\""
+        }
+      ],
+      "labels": ["control:already-covered-path", "numeric"],
+      "label_note": "CONTROL CELL. `meta` is a token in 100% of META's own 422 chunks and 0 chunks elsewhere, so name and ticker are equally good lexical identifiers and normalisation is a no-op in effect — its alias `Meta` differs from the ticker only in case, and normalised()'s equal-up-to-case guard returns None. A clean pass here says nothing about whether normalisation works, which is exactly why it is a control and not evidence.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"META Item 7A": 8},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T1",
+      "bucket": "tool-augmented",
+      "question": "What does NVIDIA do, and what is its stock trading at right now?",
+      "reference": "NVIDIA pioneered accelerated computing and describes itself as now a data center scale AI infrastructure company reshaping all industries. Its technology stack includes the foundational NVIDIA CUDA development platform running on all NVIDIA GPUs, plus hundreds of domain-specific software libraries, frameworks, algorithms, SDKs and APIs, which accelerate computationally intensive workloads such as AI model training and inference, data analytics, scientific computing, robotics and 3D graphics, with vertical-specific optimizations from healthcare and telecom to automotive and manufacturing.",
+      "grounding": [
+        {
+          "ticker": "NVDA",
+          "section": "Item 1",
+          "fiscal_year": 2026,
+          "accession": "0001045810-26-000021",
+          "chunk_ids": ["0001045810-26-000021:Item 1:0"],
+          "passage": "\"NVIDIA pioneered accelerated computing to help solve the most challenging computational problems. NVIDIA is now a data center scale AI infrastructure company reshaping all industries. Our technology stack includes the foundational NVIDIA CUDA development platform that runs on all NVIDIA GPUs\""
+        }
+      ],
+      "labels": ["fy2026"],
+      "known_false_positives": [],
+      "section_chunk_counts": {"NVDA Item 1": 73},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "get_stock_data",
+        "args": {"ticker": "NVDA"},
+        "peer_set": null,
+        "n": null
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T2",
+      "bucket": "tool-augmented",
+      "question": "Ford says it manages leverage to hold investment-grade ratings — how does its actual debt-to-equity compare with its peers?",
+      "reference": "Ford states in Item 7 that it manages Company debt excluding Ford Credit with a leverage framework targeting investment grade credit ratings through a normal business cycle, and that at December 31, 2025 Company debt excluding Ford Credit was $21.9 billion (including $0.9 billion of finance leases), $1.3 billion higher than a year earlier. The leverage framework is a ratio of total Company debt (excluding Ford Credit), underfunded pension liabilities, operating leases and other adjustments, divided by Company adjusted EBIT (excluding Ford Credit EBT), further adjusted to exclude depreciation and tooling amortization. The peer comparison itself is not in the filing and must come from the ratios tool.",
+      "grounding": [
+        {
+          "ticker": "F",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000037996-26-000015",
+          "chunk_ids": ["0000037996-26-000015:Item 7:110"],
+          "passage": "\"We manage Company debt (excluding Ford Credit) levels with a leverage framework that targets investment grade credit ratings through a normal business cycle. The leverage framework includes a ratio of total Company debt (excluding Ford Credit), underfunded pension liabilities, operating leases, and other adjustments, divided by Company adjusted EBIT (excluding Ford Credit EBT)\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"F Item 7": 218},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "calculate_ratios",
+        "args": {"ticker": "F"},
+        "peer_set": ["TSLA", "GM"],
+        "n": 2
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T3",
+      "bucket": "tool-augmented",
+      "question": "Any recent news related to the supply-chain risks Tesla flags in its 10-K?",
+      "reference": "Tesla's Item 1A states that its products contain thousands of parts purchased globally from hundreds of suppliers, including single-source direct suppliers, exposing it to multiple potential sources of component shortages, and that unexpected changes in business conditions, materials pricing including raw-material inflation, labor issues, wars, trade policies, natural disasters, health epidemics, trade and shipping disruptions, port congestion and cyberattacks could affect suppliers' ability to deliver or to remain solvent. It states that U.S. trade policy alterations in 2025, including heightened import tariffs and subsequent retaliatory measures, have impacted its supply chain costs. The news half is live and is not scored against this reference.",
+      "grounding": [
+        {
+          "ticker": "TSLA",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": ["0001628280-26-003952:Item 1A:6"],
+          "passage": "\"Our products contain thousands of parts purchased globally from hundreds of suppliers, including single-source direct suppliers, which exposes us to multiple potential sources of component shortages. [...] U.S. trade policy alterations in 2025, including heightened import tariffs and subsequent retaliatory measures, have impacted our supply chain costs\""
+        }
+      ],
+      "labels": ["interleaved"],
+      "label_note": "Spec US-11: the combined question the assistant must answer by interleaving retrieval and the news tool in one answer, rather than making the analyst run two queries. Both calls must appear.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"TSLA Item 1A": 129},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "get_recent_news",
+        "args": {"ticker": "TSLA"},
+        "peer_set": null,
+        "n": null
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T4",
+      "bucket": "tool-augmented",
+      "question": "Amazon's 10-K describes three reportable segments — what are they, and what is Amazon's current market cap?",
+      "reference": "North America, International, and Amazon Web Services (AWS). Amazon states in Item 1 that it has organized its operations into these three segments, which reflect the way the Company evaluates its business performance and manages its operations.",
+      "grounding": [
+        {
+          "ticker": "AMZN",
+          "section": "Item 1",
+          "fiscal_year": 2025,
+          "accession": "0001018724-26-000004",
+          "chunk_ids": ["0001018724-26-000004:Item 1:1"],
+          "passage": "\"We have organized our operations into three segments: North America, International, and Amazon Web Services (“AWS”). These segments reflect the way the Company evaluates its business performance and manages its operations.\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"AMZN Item 1": 19},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "get_stock_data",
+        "args": {"ticker": "AMZN"},
+        "peer_set": null,
+        "n": null
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T5",
+      "bucket": "tool-augmented",
+      "question": "Eli Lilly says a handful of products drive most of its revenue. What's its current P/E versus its healthcare peers?",
+      "reference": "Eli Lilly states in Item 1A that it derived direct product and/or collaboration and other revenues of more than $3 billion for each of Mounjaro, Zepbound, Verzenio, Trulicity, Taltz and Jardiance (including Glyxambi, Synjardy and Trijardy XR), which collectively accounted for 82 percent of total revenues in 2025, and that Mounjaro and Zepbound alone accounted for 56 percent. It expects cardiometabolic health products to continue to represent a significant and growing portion of its business, revenues and prospects. The P/E comparison is not in the filing and must come from the ratios tool.",
+      "grounding": [
+        {
+          "ticker": "LLY",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000059478-26-000013",
+          "chunk_ids": ["0000059478-26-000013:Item 1A:33"],
+          "passage": "\"We derived direct product and/or collaboration and other revenues of more than $3 billion for each of Mounjaro, Zepbound, Verzenio, Trulicity, Taltz, and Jardiance [...] that collectively accounted for 82 percent of our total revenues in 2025. In particular, Mounjaro and Zepbound accounted for 56 percent of our total revenues in 2025, and we expect cardiometabolic health products will continue to represent a significant and growing portion of our business\""
+        }
+      ],
+      "labels": ["low-name-coverage"],
+      "known_false_positives": [],
+      "section_chunk_counts": {"LLY Item 1A": 124},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "calculate_ratios",
+        "args": {"ticker": "LLY"},
+        "peer_set": ["JNJ", "PFE"],
+        "n": 2
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T6",
+      "bucket": "tool-augmented",
+      "question": "What are Microsoft's reportable segments, and what's the latest news on the company?",
+      "reference": "Productivity and Business Processes, Intelligent Cloud, and More Personal Computing. Microsoft states in Item 7 that it reports its financial performance based on these segments, and that the segment amounts in MD&A are presented on a basis consistent with its internal management reporting. The news half is live and is not scored against this reference.",
+      "grounding": [
+        {
+          "ticker": "MSFT",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000950170-25-100235",
+          "chunk_ids": ["0000950170-25-100235:Item 7:9"],
+          "passage": "\"Reportable Segments — We report our financial performance based on the following segments: Productivity and Business Processes, Intelligent Cloud, and More Personal Computing. The segment amounts included in MD&A are presented on a basis consistent with our internal management reporting.\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"MSFT Item 7": 68},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "get_recent_news",
+        "args": {"ticker": "MSFT"},
+        "peer_set": null,
+        "n": null
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "T7",
+      "bucket": "tool-augmented",
+      "question": "GM warns about tariffs in its risk factors — is there anything in the recent news about that?",
+      "reference": "GM states in Item 1A that tariffs applicable to the automotive industry continue to evolve, including in the U.S. where the government has signaled tariff policy may shift, and that such tariffs could have a material adverse effect on its financial condition and results of operations. It notes governments have implemented import tariffs and tariff-related measures on vehicles, parts, raw materials and other inputs, that the ongoing review of the U.S.-Mexico-Canada Agreement may affect applicable rates, that certain tariffs face pending legal challenges, and that its mitigation efforts — including changes to its U.S. production plan and reducing or pausing certain imports — may not succeed and are not expected to fully offset the impact in the near term. The news half is live and is not scored against this reference.",
+      "grounding": [
+        {
+          "ticker": "GM",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001467858-26-000013",
+          "chunk_ids": [
+            "0001467858-26-000013:Item 1A:38",
+            "0001467858-26-000013:Item 1A:39"
+          ],
+          "passage": ":38 — \"Tariffs applicable to the automotive industry continue to evolve, including in the U.S., where the government has signaled tariff policy may shift in the future. Such tariffs could have a material adverse effect on our financial condition and results of operations.\"; :39 — \"Our efforts to mitigate the impact of tariffs, including, but not limited to, making changes to our U.S. production plan and reducing or pausing certain imports, may not be successful, and we do not expect such actions to fully offset the impact of tariffs in the near term.\""
+        }
+      ],
+      "labels": [],
+      "known_false_positives": [],
+      "section_chunk_counts": {"GM Item 1A": 102},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": {
+        "name": "get_recent_news",
+        "args": {"ticker": "GM"},
+        "peer_set": null,
+        "n": null
+      },
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M1",
+      "bucket": "multi-hop",
+      "question": "Is Tesla in trouble?",
+      "reference": "The filing does not support a distress reading on liquidity, but does show margin pressure and named risks. On liquidity, Tesla ended 2025 with $44.06 billion in cash and cash equivalents and investments, an increase of $7.50 billion from the end of 2024; operating cash flow was $14.75 billion against $14.92 billion in 2024 (down $176 million) and capital expenditures were $8.53 billion against $11.34 billion (down $2.82 billion); Tesla states that overall growth has allowed the business to generally fund itself. On margins, total automotive gross margin declined to 17.8% in 2025 from 18.4% in 2024 and 19.4% in 2023, while total gross margin was 18.0% against 17.9% and 18.2%. On risk, Tesla flags dependence on thousands of parts from hundreds of suppliers including single-source suppliers, with 2025 U.S. tariff changes and retaliatory measures having already raised supply-chain costs, and notes it operates in a cyclical industry sensitive to shifting consumer trends and political and regulatory uncertainty, compounded by inflation, rising energy prices and interest rate fluctuations.",
+      "grounding": [
+        {
+          "ticker": "TSLA",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": [
+            "0001628280-26-003952:Item 7:5",
+            "0001628280-26-003952:Item 7:10",
+            "0001628280-26-003952:Item 7:57"
+          ],
+          "passage": ":5 — \"We ended 2025 with $44.06 billion in cash and cash equivalents and investments, representing an increase of $7.50 billion from the end of 2024. Our cash flows provided by operating activities were $14.75 billion in 2025 compared to $14.92 billion in 2024 [...] Capital expenditures amounted to $8.53 billion in 2025 compared to $11.34 billion in 2024\"; :57 — \"Gross margin total automotive 17.8 % 18.4 % 19.4 %\"; :10 — \"we operate in a cyclical industry that is sensitive to shifting consumer trends, political and regulatory uncertainty, including with respect to trade and the environment, all of which can be compounded by inflationary pressures, rising energy prices, interest rate fluctuations\""
+        },
+        {
+          "ticker": "TSLA",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": ["0001628280-26-003952:Item 1A:6"],
+          "passage": "\"Our products contain thousands of parts purchased globally from hundreds of suppliers, including single-source direct suppliers, which exposes us to multiple potential sources of component shortages. [...] U.S. trade policy alterations in 2025, including heightened import tariffs and subsequent retaliatory measures, have impacted our supply chain costs\""
+        }
+      ],
+      "labels": ["decomposition-hop"],
+      "label_note": "Spec US-4: the vague question with no good nearest neighbour, because no passage in a 10-K is about being in trouble. ADR-0004 predicts the multi-hop bucket's win here comes from decomposition into the questions a filing does answer — risk factors, liquidity, results. Single filer, multiple sections, so the hop is across sections rather than across filers.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"TSLA Item 7": 84, "TSLA Item 1A": 129},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M2",
+      "bucket": "multi-hop",
+      "question": "Of Apple, Microsoft and Meta, which discloses the largest hypothetical loss from a 100-basis-point rise in interest rates?",
+      "reference": "Apple discloses the largest figure, but the three disclosures are measured on different bases and at three different balance-sheet dates, and an honest answer must say so. Apple: a 100 basis point increase, all tenors, would cause a $2,416 million decline in the fair value of its investment portfolio as of September 27, 2025 (a separate line puts the effect on term debt at $129 million of increased annual interest expense). Microsoft: a 100 basis point increase in U.S. treasury interest rates gives a $1,415 million fair-value impact as of June 30, 2025. Meta: a hypothetical 100 basis point increase in market interest rates would have decreased the market value of its available-for-sale debt securities AND cash equivalents by $711 million as of December 31, 2025. So the ranking Apple > Microsoft > Meta holds on the disclosed numbers, but the instruments covered differ (Apple's investment portfolio; Microsoft's fair-value sensitivity line; Meta's AFS debt securities plus cash equivalents) and each is struck at that filer's own fiscal year end, all three of which fall inside FY2025.",
+      "grounding": [
+        {
+          "ticker": "AAPL",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0000320193-25-000079",
+          "chunk_ids": ["0000320193-25-000079:Item 7A:1"],
+          "passage": "\"The following table sets forth potential impacts on the Company's investment portfolio and term debt [...] as of September 27, 2025 and September 28, 2024 (dollars in millions): [...] Investment portfolio 100 basis points, all tenors Decline in fair value $2,416 $2,755 / Term debt 100 basis points, all tenors Increase in annual interest expense $129 $139\""
+        },
+        {
+          "ticker": "MSFT",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0000950170-25-100235",
+          "chunk_ids": ["0000950170-25-100235:Item 7A:1"],
+          "passage": "\"The following table sets forth the potential loss in future earnings or fair values, including associated derivatives, resulting from hypothetical changes in relevant market rates or prices: [...] June 30, 2025 [...] Interest rate 100 basis point increase in U.S. treasury interest rates (1,415) Fair Value\""
+        },
+        {
+          "ticker": "META",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003942",
+          "chunk_ids": ["0001628280-26-003942:Item 7A:3"],
+          "passage": "\"A hypothetical 100 basis point increase in market interest rates would have resulted in a decrease of $711 million and $680 million in the market value of our available-for-sale debt securities and cash equivalents as of December 31, 2025 and 2024, respectively.\""
+        }
+      ],
+      "labels": ["numeric", "basis-mismatch"],
+      "label_note": "Kept as a three-filer hop deliberately: the comparison being non-trivial is what makes it a good multi-hop row. All three filers have their own Item 7A, so no pointer-filer substitution applies. The reference states each figure's basis and date explicitly and must not be rewritten into a bare ranking.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"AAPL Item 7A": 4, "MSFT Item 7A": 3, "META Item 7A": 8},
+      "recall_trivial": false,
+      "recall_trivial_sections": ["AAPL Item 7A", "MSFT Item 7A"],
+      "basis_mismatch": true,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M3",
+      "bucket": "multi-hop",
+      "question": "How do Ford and GM each describe their tariff exposure?",
+      "reference": "Ford frames tariffs as a planning problem: unprecedented trade policy including tariffs in the United States, and foreign governments' reactions, limit its ability to conduct effective long-term planning and make capital allocation decisions, and because of the interconnectedness of the global economy an event in one market can immediately and materially affect others where Ford operates; it singles out continued strain in U.S.-China relations. GM frames it as a quantification-and-mitigation problem: tariffs applicable to the automotive industry continue to evolve, the global tariff environment remains highly dynamic, GM cannot predict with complete precision the breadth of tariffs and related costs, the ultimate impact could exceed its current estimates, and its mitigation efforts — changes to its U.S. production plan, reducing or pausing certain imports — may not succeed and are not expected to fully offset the impact in the near term.",
+      "grounding": [
+        {
+          "ticker": "F",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000037996-26-000015",
+          "chunk_ids": ["0000037996-26-000015:Item 1A:69"],
+          "passage": "\"Unprecedented trade policy (including tariffs) in the United States and foreign governments' reactions limit our ability to conduct effective long-term planning and make capital allocation decisions. The continued strain in U.S.-China relations presents unique risks\""
+        },
+        {
+          "ticker": "GM",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0001467858-26-000013",
+          "chunk_ids": [
+            "0001467858-26-000013:Item 1A:38",
+            "0001467858-26-000013:Item 1A:39"
+          ],
+          "passage": ":38 — \"the global tariff environment remains highly dynamic, and the specific tariffs applicable to goods imported by GM and its suppliers into the U.S. and other countries where we operate continue to evolve.\"; :39 — \"We cannot predict with complete precision the breadth of tariffs and related costs that will impact GM in the future. As a result, the ultimate impact of tariffs on our business could exceed our current estimates\""
+        }
+      ],
+      "labels": ["cross-filer"],
+      "label_note": "Same peer cluster (autos) and a shared FY2025, so the row does not depend on mixed fiscal years.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"F Item 1A": 148, "GM Item 1A": 102},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M4",
+      "bucket": "multi-hop",
+      "question": "Bank of America and Goldman Sachs both discuss market risk in their MD&A — how does each define it?",
+      "reference": "Bank of America defines market risk as the risk that changes in market conditions may adversely impact the value of assets or liabilities, or otherwise negatively impact earnings, and states this risk is inherent in the financial instruments associated with its operations, primarily within its Global Markets segment, that it is also exposed in other areas (e.g. ALM activities), and that in market stress these risks could have a material impact on results. Goldman Sachs defines market risk as the risk of an adverse impact to its earnings due to changes in market conditions, and states the assets and liabilities giving rise to it primarily include positions held for market making for clients and for its investing and financing activities, which change with client demands and investment opportunities. Both definitions are in Item 7, not Item 7A.",
+      "grounding": [
+        {
+          "ticker": "BAC",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000070858-26-000157",
+          "chunk_ids": ["0000070858-26-000157:Item 7:307"],
+          "passage": "\"Market Risk Management — Market risk is the risk that changes in market conditions may adversely impact the value of assets or liabilities, or otherwise negatively impact earnings. This risk is inherent in the financial instruments associated with our operations, primarily within our Global Markets segment.\""
+        },
+        {
+          "ticker": "GS",
+          "section": "Item 7",
+          "fiscal_year": 2025,
+          "accession": "0000886982-26-000091",
+          "chunk_ids": ["0000886982-26-000091:Item 7:311"],
+          "passage": "\"Market Risk Management — Overview — Market risk is the risk of an adverse impact to our earnings due to changes in market conditions. Our assets and liabilities that give rise to market risk primarily include positions held for market making for our clients and for our investing and financing activities\""
+        }
+      ],
+      "labels": ["cross-filer", "pointer-filer"],
+      "label_note": "Both filers are in config.ITEM_7A_POINTER_FILERS and have zero Item 7A chunks, so this is a cross-filer market-risk hop with no Item 7A grounding available anywhere in it. T3 confirmed the behaviour against the live index for JPM (smoke query 2 returned five chunks, all JPM Item 7).",
+      "known_false_positives": [],
+      "section_chunk_counts": {"BAC Item 7": 406, "GS Item 7": 436},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M5",
+      "bucket": "multi-hop",
+      "question": "How do Pfizer and Eli Lilly each describe the risk of losing patent or regulatory exclusivity?",
+      "reference": "Pfizer states that certain of its products have already experienced patent-based expirations or loss of regulatory exclusivity in certain markets in recent years, and that it anticipates a significant reduction of revenue from patent-based or regulatory exclusivity expiries in 2026 through 2030 as several in-line products experience these expirations, with the rate of reduction expected to significantly accelerate over the next few years; it adds that patents covering a number of its best-selling products are or have been the subject of pending legal challenges, and that patented products may face generic or biosimilar competition even before exclusivity expires, including through at-risk launches. Eli Lilly frames it as a lifecycle certainty: in the ordinary course of their lifecycles its products lose significant patent protection and/or data protection after a specified period, Trulicity will lose significant patent and remaining data protections in the next few years, some products lose protection through successful third-party challenges, and patent expirations of competitive products may also shift market conditions by contracting the branded market and intensifying pricing pressure.",
+      "grounding": [
+        {
+          "ticker": "PFE",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000078003-26-000026",
+          "chunk_ids": [
+            "0000078003-26-000026:Item 1A:14",
+            "0000078003-26-000026:Item 1A:15",
+            "0000078003-26-000026:Item 1A:19"
+          ],
+          "passage": ":19 — \"certain of our products have experienced patent-based expirations or loss of regulatory exclusivity in certain markets in the last few years, and we expect certain products to face new or increased generic competition over the next few years. We anticipate a significant reduction of revenue from patent-based or regulatory exclusivity expiries in 2026 through 2030 as several of our in-line products experience these expirations.\"; :15 — \"our patented products may face generic or biosimilar competition before patent-based and/or regulatory exclusivity expires, including from “at-risk” launch\""
+        },
+        {
+          "ticker": "LLY",
+          "section": "Item 1A",
+          "fiscal_year": 2025,
+          "accession": "0000059478-26-000013",
+          "chunk_ids": ["0000059478-26-000013:Item 1A:40"],
+          "passage": "\"In the ordinary course of their lifecycles, our products lose significant patent protection and/or data protection after a specified period of time. For example, Trulicity will lose significant patent and remaining data protections in the next few years. Some products also lose patent protection as a result of successful third-party challenges.\""
+        }
+      ],
+      "labels": ["cross-filer", "low-name-coverage"],
+      "label_note": "Same peer cluster (healthcare), shared FY2025. Both filers are also low-name-coverage (LLY 6%, PFE 26%) and both are pointer filers, though this row's sections are Item 1A and so unaffected by that.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"PFE Item 1A": 144, "LLY Item 1A": 124},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M6",
+      "bucket": "multi-hop",
+      "question": "In the latest 10-Ks, how do NVIDIA and Amazon each describe the risk in their equity investments?",
+      "reference": "NVIDIA quantifies it: publicly-held equity securities are subject to market price volatility, and a hypothetical 10% decrease would reduce the fair value of that balance by $1.8 billion as of January 25, 2026 (an insignificant amount as of January 26, 2025); its non-marketable equity securities are measured at cost minus impairment and adjusted for observable price changes, and it calls their valuation inherently complex due to the lack of readily available market data and observable transactions. Amazon declines to quantify: its recorded value in equity, equity warrant and convertible debt investments in public and private companies was $69.1 billion as of December 31, 2025, of which $5.0 billion is publicly traded (including its equity investment in Rivian) and recorded at fair value subject to market price volatility, with private-company holdings primarily relating to Anthropic; it states valuations of private companies are inherently more complex due to the lack of readily available market data, that current global economic conditions provide additional uncertainty, and that it therefore believes market sensitivities are not practicable.",
+      "grounding": [
+        {
+          "ticker": "NVDA",
+          "section": "Item 7A",
+          "fiscal_year": 2026,
+          "accession": "0001045810-26-000021",
+          "chunk_ids": [
+            "0001045810-26-000021:Item 7A:1",
+            "0001045810-26-000021:Item 7A:2"
+          ],
+          "passage": ":1 — \"Publicly-held equity securities are subject to market price volatility. A hypothetical 10% decrease in our publicly-held equity securities would decrease the fair value of the publicly-held equity securities balance by $1.8 billion and an insignificant amount as of January 25, 2026 and January 26, 2025, respectively.\""
+        },
+        {
+          "ticker": "AMZN",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001018724-26-000004",
+          "chunk_ids": [
+            "0001018724-26-000004:Item 7A:8",
+            "0001018724-26-000004:Item 7A:9"
+          ],
+          "passage": ":8 — \"As of December 31, 2025, our recorded value in equity, equity warrant, and convertible debt investments in public and private companies was $69.1 billion. Our equity and equity warrant investments in publicly traded companies, which include our equity investment in Rivian, represent $5.0 billion of our investments\"; :9 — \"we believe that market sensitivities are not practicable\""
+        }
+      ],
+      "labels": ["cross-filer", "numeric", "mixed-fiscal-years", "fy2026"],
+      "label_note": "Mixed fiscal years, deliberate: NVDA is FY2026 and AMZN FY2025, so the question is phrased against \"the latest 10-Ks\" rather than naming a year, and the row expects contexts from both years (issue #4, T3 constraint b). A cross-company question that assumed one common fiscal year would not be answerable as posed.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"NVDA Item 7A": 7, "AMZN Item 7A": 10},
+      "recall_trivial": false,
+      "recall_trivial_sections": [],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    },
+    {
+      "id": "M7",
+      "bucket": "multi-hop",
+      "question": "How do Tesla and Meta each quantify their foreign-currency exposure?",
+      "reference": "Tesla quantifies a sensitivity: it transacts globally in multiple currencies (primarily the Chinese yuan and euro for its current-year operations), is generally a net receiver of non-U.S.-dollar currencies, and does not typically hedge foreign currency risk; it determined that a reasonably possible adverse change of 10% in all currencies applied to total monetary assets and liabilities denominated in non-local currencies would have resulted in a gain or loss of $1.70 billion at December 31, 2025 and $1.15 billion at December 31, 2024, assuming no hedging. Meta quantifies realised amounts rather than a sensitivity: foreign currency transaction gains, net were $352 million for the year ended December 31, 2025, against net losses of $690 million and $366 million for 2024 and 2023; the majority of its non-U.S.-dollar exposure is in Euro, and beginning in 2025 it used short-term foreign currency forward contracts for cash management, not designated as hedging instruments, with none outstanding at December 31, 2025.",
+      "grounding": [
+        {
+          "ticker": "TSLA",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003952",
+          "chunk_ids": [
+            "0001628280-26-003952:Item 7A:0",
+            "0001628280-26-003952:Item 7A:1"
+          ],
+          "passage": ":1 — \"We considered the historical trends in foreign currency exchange rates and determined that it is reasonably possible that adverse changes in foreign currency exchange rates of 10% for all currencies could be experienced in the near-term. [...] These changes would have resulted in a gain or loss of $1.70 billion at December 31, 2025 and $1.15 billion at December 31, 2024, assuming no foreign currency hedging.\""
+        },
+        {
+          "ticker": "META",
+          "section": "Item 7A",
+          "fiscal_year": 2025,
+          "accession": "0001628280-26-003942",
+          "chunk_ids": [
+            "0001628280-26-003942:Item 7A:1",
+            "0001628280-26-003942:Item 7A:2"
+          ],
+          "passage": ":1 — \"Foreign currency transaction gains, net were $352 million for the year ended December 31, 2025 and foreign currency transaction losses, net were $690 million, and $366 million for the years ended December 31, 2024 and 2023, respectively.\""
+        }
+      ],
+      "labels": ["cross-filer", "numeric"],
+      "label_note": "Cross-cluster (big_tech and autos), shared FY2025. The two filers quantify different things — Tesla a 10% sensitivity, Meta realised transaction gains — which the reference states rather than eliding, but they are not presented as the same measure, so basis_mismatch is false: nothing here invites a spurious ranking.",
+      "known_false_positives": [],
+      "section_chunk_counts": {"TSLA Item 7A": 2, "META Item 7A": 8},
+      "recall_trivial": false,
+      "recall_trivial_sections": ["TSLA Item 7A"],
+      "basis_mismatch": false,
+      "tool_expectation": null,
+      "verified_against_edgar": true
+    }
+  ]
+}
