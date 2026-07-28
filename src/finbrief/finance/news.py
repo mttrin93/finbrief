@@ -77,9 +77,10 @@ _WHITESPACE = re.compile(r"\s+")
 class Headline:
     """One story: its title, where it came from, when, and the link to read it.
 
-    `summary` is already stripped — there is no path into this class that leaves markup in it,
-    because a class whose invariant is "the text is safe" must not have a raw constructor beside
-    a stripping one.
+    `summary` is already stripped and `link` is already scheme-checked — there is no path into
+    this class that leaves markup in one or a `javascript:` URL in the other, because a class
+    whose invariant is "this text is safe to render" must not have a raw constructor beside a
+    sanitising one.
     """
 
     title: str
@@ -88,6 +89,9 @@ class Headline:
     #: own `source` element, which Yahoo leaves empty on every entry in all three recorded
     #: fixtures. Shown on the card because "who says so" is half of what a headline is worth.
     source: str
+    #: The story's URL, or `""` when the feed gave one this app will not render. See
+    #: `safe_link`: the UI turns this into a clickable link, and a link is the one field on a
+    #: `Headline` that a reader *acts* on.
     link: str
     #: ISO-8601 UTC, or `None` when the entry carried no parseable date. `None` rather than
     #: "now": a story of unknown age is not a story from this minute, and the day count the
@@ -113,6 +117,24 @@ def strip_html(raw: str) -> str:
     return _WHITESPACE.sub(" ", text).strip()
 
 
+def safe_link(url: str) -> str:
+    """`url` if it is an `http(s)` link, `""` otherwise — the one URL check there is.
+
+    Here rather than in the UI for the same reason `strip_html` is here: a `Headline`'s
+    invariant is that its fields are safe to render, and an invariant enforced at the surface
+    is one the next surface has to remember. `app/Home.py` renders `link` as a Markdown link,
+    so a `javascript:` or `data:` URL from a feed would be a click away from executing in the
+    reader's session — the whole indirect-injection threat (user story 17) with a human in the
+    loop.
+
+    A scheme allowlist, not a denylist: the schemes a news story legitimately uses are two, and
+    anything else is either an attack or a link this app has no business rendering. An empty
+    result means "no link", which the card renders as unlinked text — a story is still worth
+    reporting without somewhere to click.
+    """
+    return url if url.lower().startswith(("http://", "https://")) else ""
+
+
 def parse_feed(raw: str | bytes, *, ticker: str) -> tuple[Headline, ...]:
     """The headlines in an RSS document, newest first, stripped.
 
@@ -132,7 +154,7 @@ def parse_feed(raw: str | bytes, *, ticker: str) -> tuple[Headline, ...]:
         title = strip_html(str(entry.get("title") or "")).strip()
         if not title:
             continue  # an entry with no title is not a headline, whatever else it carries
-        link = str(entry.get("link") or "")
+        link = safe_link(str(entry.get("link") or ""))
         headlines.append(
             Headline(
                 title=title,

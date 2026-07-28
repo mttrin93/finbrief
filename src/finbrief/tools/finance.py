@@ -52,7 +52,7 @@ from finbrief.config import (
 from finbrief.finance import news as news_engine
 from finbrief.finance import quotes as quotes_engine
 from finbrief.finance.cache import Fetched
-from finbrief.finance.news import Headline
+from finbrief.finance.news import Headline, safe_link
 from finbrief.finance.quotes import Close, Quote
 from finbrief.finance.ratios import PeerComparison, Unit, compare
 from finbrief.observability.logging_setup import log_event
@@ -269,7 +269,10 @@ class NewsCard:
                     title=str(row.get("title", "")),
                     summary=str(row.get("summary", "")),
                     source=str(row.get("source", "")),
-                    link=str(row.get("link", "")),
+                    # Re-checked on the way back in, not trusted because it was checked on the
+                    # way out: a checkpoint written before `safe_link` existed can hold a URL
+                    # this app will not render, and a live conversation outlives a deploy.
+                    link=safe_link(str(row.get("link", ""))),
                     published=row.get("published"),
                 )
                 for row in payload.get("headlines", ())

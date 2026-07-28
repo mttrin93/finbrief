@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from finbrief.config import NEWS_MAX_HEADLINES
-from finbrief.finance.news import Headline, parse_feed, strip_html, within_days
+from finbrief.finance.news import Headline, parse_feed, safe_link, strip_html, within_days
 
 
 def a_headline(title: str, published: str | None, *, summary: str = "") -> Headline:
@@ -228,3 +228,42 @@ def test_the_window_over_the_real_feed_keeps_only_dated_recent_stories(recorded_
     long_after = datetime(2027, 1, 1, tzinfo=UTC)
 
     assert within_days(parse_feed(recorded_feeds["GM"], ticker="GM"), 7, now=long_after) == ()
+
+
+# --- the link, which is the one field a reader acts on ---------------------------------
+
+
+def test_an_http_or_https_link_is_kept():
+    assert safe_link("https://reuters.com/a") == "https://reuters.com/a"
+    assert safe_link("http://reuters.com/a") == "http://reuters.com/a"
+
+
+def test_a_script_url_is_dropped_rather_than_rendered():
+    # `app/Home.py` renders this as a Markdown link, so a `javascript:` URL from a feed is one
+    # click from executing in the reader's session — the indirect-injection threat with a human
+    # in the loop (user story 17). An allowlist, because a story uses exactly two schemes.
+    assert safe_link("javascript:alert(document.cookie)") == ""
+    assert safe_link("JavaScript:alert(1)") == "", "the check is case-insensitive"
+    assert safe_link("data:text/html;base64,PHNjcmlwdD4=") == ""
+    assert safe_link("file:///etc/passwd") == ""
+
+
+def test_a_headline_from_the_feed_carries_only_a_safe_link(recorded_feeds):
+    for ticker, raw in recorded_feeds.items():
+        for headline in parse_feed(raw, ticker=ticker):
+            assert headline.link.startswith("https://") or headline.link == ""
+
+
+def test_a_headline_with_an_unsafe_link_still_reports_its_story():
+    # An empty link means "nowhere to click", not "no headline": a story is worth reporting
+    # without a destination, and dropping it would let a feed suppress an entry by malforming
+    # its URL.
+    document = b"""<rss version="2.0"><channel><item>
+        <title>Ford recalls trucks</title><link>javascript:alert(1)</link>
+        </item></channel></rss>"""
+
+    (headline,) = parse_feed(document, ticker="F")
+
+    assert headline.title == "Ford recalls trucks"
+    assert headline.link == ""
+    assert headline.source == "F", "no usable link means no domain, so the ticker stands in"

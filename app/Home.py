@@ -29,26 +29,49 @@ discover it when their context disappears.
 
 import uuid
 
+import pandas as pd
 import streamlit as st
 
-from finbrief.agent.agent import Search, answer, build_agent
+from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
     CLUSTERS,
+    MAX_QUESTION_CHARS,
     PEERS,
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
     get_settings,
 )
+from finbrief.finance.ratios import Unit
 from finbrief.observability.logging_setup import configure_logging
-from finbrief.prompts import DISCLAIMER, GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.prompts import (
+    DISCLAIMER,
+    GROUNDING_SCOPE,
+    GROUNDING_SCOPE_DETAILS,
+    LIVE_DATA_SCOPE,
+)
 from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
+from finbrief.tools.finance import (
+    NEWS_TOOL_NAME,
+    RATIOS_TOOL_NAME,
+    STOCK_TOOL_NAME,
+    FailedCard,
+    FinanceCard,
+    NewsCard,
+    QuoteCard,
+    RatiosCard,
+)
+from finbrief.tools.search_filings import TOOL_NAME as SEARCH_TOOL_NAME
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
 st.title("FinBrief")
 st.caption(GROUNDING_SCOPE)
+# The second half of the scope, and it earns its own line rather than being appended to the one
+# above: `GROUNDING_SCOPE` is quoted by the *chain*'s prompt too, where there are no tools, so
+# the two sentences cannot be one string (`prompts.py`).
+st.caption(LIVE_DATA_SCOPE)
 
 # Fail here rather than on the first message: a missing key should be obvious before the
 # user has typed anything. Logging setup shares the guard because `LOG_LEVEL` is itself
@@ -160,6 +183,57 @@ def as_markdown(text: str) -> str:
     this persona has no reason to emit.
     """
     return text.replace("$", r"\$")
+
+
+def escaped(text: str) -> str:
+    """`text` with every Markdown-active character neutralised.
+
+    Stronger than `as_markdown`, and for a different threat. That function escapes `$` in text
+    FinBrief wrote; this one is for text **strangers** wrote — a headline title and a publisher
+    name, straight off a public RSS feed (user story 17). Rendered raw through `st.markdown`, a
+    title is free to inject an image, a link, a heading, or a run of emphasis that swallows the
+    rest of the card.
+
+    `st.text` would be the simpler answer and is what a source body uses, but a card wants its
+    headline bold and its publisher small, so the Markdown has to keep rendering around the
+    escaped text. Escaping the span is the narrower fix.
+
+    **Two sets, because Markdown has two kinds of special character.** A first draft escaped
+    them all everywhere and turned `finance.yahoo.com` into `finance\\.yahoo\\.com` on every
+    news card. `.`, `-`, `#` and `+` mean something only at the *start* of a line — a list item,
+    a heading — so they are escaped only in the leading position; the rest are active anywhere.
+    """
+    if not text:
+        return text
+    body = "".join(f"\\{one}" if one in _INLINE_ACTIVE else one for one in text)
+    return f"\\{body}" if text[0] in _LINE_START_ACTIVE else body
+
+
+#: Active anywhere in a line: emphasis, code, links, images, autolinks — plus `$`, for the KaTeX
+#: reason `as_markdown` exists, and `|`, which would otherwise open a table cell.
+_INLINE_ACTIVE = frozenset("\\`*_[]()<>$|!")
+
+#: Active only as a line's first character, where they open a list item, a heading or a quote.
+_LINE_START_ACTIVE = frozenset("#+-.>")
+
+
+def step_label(step: Step) -> str:
+    """What to show while a tool runs — user story 14's words (T5, #9).
+
+    The phrasing lives here and not on `Step`, because it is UI copy: the agent reports *which*
+    tool with *what* argument, and this file decides how that reads. The ticker arrives already
+    truncated (`Step.of`), so a refused call's raw argument cannot stretch the status line.
+
+    A tool with no label falls back to its own name rather than to something vague: a new tool
+    should look unfinished here, not anonymous.
+    """
+    where = f" · {step.ticker}" if step.ticker else ""
+    return {
+        SEARCH_TOOL_NAME: "Searching the filings",
+        STOCK_TOOL_NAME: "Fetching market data",
+        RATIOS_TOOL_NAME: "Comparing ratios against peers",
+        NEWS_TOOL_NAME: "Fetching recent headlines",
+    }.get(step.tool, step.tool) + where
 
 
 def distance_label(distance: float | None) -> str:
@@ -320,6 +394,177 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 )
 
 
+# --------------------------------------------------------------------------------------
+# Tool-call result cards (user story 13, T5 #9)
+# --------------------------------------------------------------------------------------
+
+
+def render_tool_cards(cards: tuple[FinanceCard, ...]) -> None:
+    """One card per finance-tool call this turn made, in call order.
+
+    Rendered from the turn's own cards, never re-fetched — the same rule the sources panel
+    follows, and here it bites harder: a second fetch goes through a TTL cache, so it could
+    legitimately return a *different* price from the one the answer above quotes.
+
+    Nothing at all for a turn that called no finance tool, so a pure-retrieval answer keeps the
+    shape T4 had. Each card carries its own staleness banner rather than one banner for the
+    group: a full brief can hold a fresh quote and a stale peer comparison, and a single banner
+    would have to overstate one of them.
+    """
+    for card in cards:
+        with st.container(border=True):
+            _render_staleness(card)
+            if isinstance(card, QuoteCard):
+                _render_quote(card)
+            elif isinstance(card, RatiosCard):
+                _render_ratios(card)
+            elif isinstance(card, NewsCard):
+                _render_news(card)
+            elif isinstance(card, FailedCard):
+                _render_failure(card)
+
+
+def _render_staleness(card: FinanceCard) -> None:
+    """User story 22's banner: the figures below are the last ones we could get, and their age.
+
+    A `warning`, not a `caption`: the reader is about to take a number off this card into a
+    note, and the fact that nobody could refresh it is the kind that has to interrupt.
+    `FailedCard` has no freshness at all — there is no figure to be stale about — which is why
+    this reads the attribute defensively rather than assuming every card has one.
+    """
+    freshness = getattr(card, "freshness", None)
+    if freshness is None or not freshness.stale:
+        return
+    st.warning(
+        f"Live data could not be refreshed. These figures are the last successful fetch, "
+        f"{freshness.age_minutes} minute(s) old.",
+        icon=":material/history:",
+    )
+
+
+def _render_quote(card: QuoteCard) -> None:
+    """A price card: the figures a valuation question opens with, then the month's shape."""
+    quote = card.quote
+    st.markdown(f"**{quote.ticker} · {escaped(quote.name)}**")
+    price, cap, multiple = st.columns(3)
+    price.metric(
+        f"Price ({quote.currency})",
+        Unit.PRICE.format(quote.price),
+        # `None`, not `"0.00%"`, when the change is unknown: `st.metric`'s delta arrow is a
+        # claim about direction, and there is nothing to claim.
+        None if quote.change_percent is None else f"{quote.change_percent:+.2f}%",
+    )
+    cap.metric("Market cap", Unit.MONEY.format(quote.market_cap))
+    multiple.metric("P/E (trailing)", Unit.MULTIPLE.format(quote.trailing_pe))
+    st.caption(
+        f"52-week range {Unit.PRICE.format(quote.fifty_two_week_low)}–"
+        f"{Unit.PRICE.format(quote.fifty_two_week_high)} · "
+        f"EPS {Unit.PRICE.format(quote.trailing_eps)} · previous close "
+        f"{Unit.PRICE.format(quote.previous_close)}"
+    )
+    if quote.closes:
+        st.line_chart(
+            pd.DataFrame(
+                {"close": [close.close for close in quote.closes]},
+                index=[close.date for close in quote.closes],
+            ),
+            y="close",
+            height=180,
+        )
+        st.caption(f"Daily closes, last month ({len(quote.closes)} sessions).")
+
+
+def _render_ratios(card: RatiosCard) -> None:
+    """A peer-comparison card: ADR-0009's basis, then each metric, then the bars.
+
+    **Two charts, split by unit.** A single bar chart holding a P/E of 31.6 beside a gross
+    margin of 0.74 renders the margin as a flat line at the bottom and says nothing about
+    either. The split is by `Unit`, which is the fact that makes them incomparable.
+    """
+    comparison = card.comparison
+    st.markdown(f"**{comparison.ticker} · {escaped(comparison.name)}**")
+    st.caption(comparison.basis)
+    if comparison.unavailable:
+        # Named, not silently absent from `n`: a peer whose quote failed is a gap in the *data*,
+        # where a peer with no figure for one metric is a fact about that company.
+        st.warning(
+            f"No quote for {', '.join(comparison.unavailable)}, so the means below rest on the "
+            f"remaining peers.",
+            icon=":material/link_off:",
+        )
+    for metric in comparison.metrics:
+        detail = ""
+        if metric.n_compared and metric.n_compared < comparison.n:
+            detail = f" — {metric.n_compared} of {comparison.n} peers reported this"
+        st.markdown(f"**{metric.label}** · {metric.versus_peers}{detail}")
+    for unit in (Unit.MULTIPLE, Unit.PERCENT):
+        _render_metric_bars(card, unit)
+
+
+def _render_metric_bars(card: RatiosCard, unit: Unit) -> None:
+    """Company against peer mean, for the metrics measured in `unit`.
+
+    Only the metrics where **both** numbers exist: a bar chart cannot draw "not reported", and a
+    missing figure plotted as zero is the one mistake this whole path is built to avoid. The
+    metric is still listed in the prose above, with its absence stated.
+    """
+    rows = {
+        metric.label: (metric.value, metric.peer_mean)
+        for metric in card.comparison.metrics
+        if metric.unit is unit and metric.value is not None and metric.peer_mean is not None
+    }
+    if not rows:
+        return
+    scale = 100.0 if unit is Unit.PERCENT else 1.0
+    st.bar_chart(
+        pd.DataFrame(
+            {
+                card.comparison.ticker: [own * scale for own, _ in rows.values()],
+                "peer mean": [mean * scale for _, mean in rows.values()],
+            },
+            index=list(rows),
+        ),
+        height=200,
+    )
+    st.caption("Percentages" if unit is Unit.PERCENT else "Multiples")
+
+
+def _render_news(card: NewsCard) -> None:
+    """News cards: title, publisher, date, and the stripped summary.
+
+    Every string here was written by a stranger, so every string here is escaped (`escaped`) and
+    the link has already been scheme-checked at the boundary (`finance.news.safe_link`). The
+    summary goes through `st.text` for the reason a source body does — it is quoted text, and it
+    renders character-identical.
+    """
+    st.markdown(f"**Recent headlines · {card.ticker}**")
+    st.caption(f"Last {card.days} day(s), {len(card.headlines)} headline(s).")
+    if not card.headlines:
+        # A fact, not a failure — the same distinction the tool's own text draws for the model.
+        st.info(
+            f"The feed answered and had nothing for {card.ticker} in that window.",
+            icon=":material/newspaper:",
+        )
+        return
+    for headline in card.headlines:
+        title = escaped(headline.title)
+        st.markdown(f"[{title}]({headline.link})" if headline.link else f"**{title}**")
+        when = "" if headline.published is None else f" · {headline.published[:10]}"
+        st.caption(f"{escaped(headline.source)}{when}")
+        if headline.summary:
+            st.text(headline.summary)
+
+
+def _render_failure(card: FailedCard) -> None:
+    """A tool call that produced no data, and why.
+
+    The message is the model-facing one, reused rather than rewritten: the analyst reading this
+    banner and the model writing the answer above it should be explaining the same failure, and
+    a second wording is a second explanation to keep in step.
+    """
+    st.warning(card.message, icon=":material/cloud_off:")
+
+
 def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
     """The sources panel: what each inline `[n]` in the answer above resolves to.
 
@@ -389,6 +634,11 @@ for message in st.session_state.messages:
                 # separately: it is the one authority on "which chunks, in which order" and on
                 # "was the knowledge base consulted at all", and a row that stored its own copy
                 # could disagree with the panel below it.
+                #
+                # `.cards` through `getattr`, because a row written before T5 holds an
+                # `AgentTurn` with no such field — the same one-rerun-after-deploy window every
+                # `from_payload` on this path tolerates, and why the field is defaulted.
+                render_tool_cards(getattr(turn, "cards", ()))
                 render_sources(turn.contexts, searched=turn.searched)
                 render_how_i_answered(turn.searches)
             elif (contexts := message.get("contexts")) is not None:
@@ -400,23 +650,52 @@ for message in st.session_state.messages:
             st.caption(DISCLAIMER)
 
 if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
+    # The input-validation half of user story 21, and the only door a human types through.
+    # Checked before the question is appended to the transcript, so an over-long paste does not
+    # become part of a conversation nothing will answer — and before the agent, because the
+    # cheapest refusal is the one that costs no tokens. What arrives at this length is a paste
+    # rather than a question, often a document with instructions in it, which is ADR-0006's
+    # problem and cheaper to refuse here than to classify.
+    if len(prompt) > MAX_QUESTION_CHARS:
+        st.error(
+            f"That question is {len(prompt):,} characters, and FinBrief takes at most "
+            f"{MAX_QUESTION_CHARS:,}. Ask a shorter question — or paste the part you actually "
+            f"want an answer about.",
+            icon=":material/text_fields:",
+        )
+        st.stop()
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(as_markdown(prompt))
 
     with st.chat_message("assistant"):
         try:
-            # "Thinking", not "Searching the filings": the agent decides whether to search,
-            # so a spinner that names retrieval would be describing a step some turns skip.
-            # The per-tool progress this replaces it with lands with the tool cards in T5.
-            with st.spinner("Thinking…"):
+            # A `status` rather than a spinner, because with four tools the wait has *parts* and
+            # naming them is user story 14. Each step is written into the container as the model
+            # asks for the call, so the list persists for the whole wait instead of one label
+            # replacing another — and the reader can see that a full brief really did fetch four
+            # things. Still starts at "Thinking…": the agent decides whether to call anything,
+            # so a label naming retrieval would describe a step some turns skip.
+            with st.status("Thinking…", expanded=True) as status:
+
+                def note(step: Step) -> None:
+                    label = step_label(step)
+                    status.update(label=label)
+                    st.write(label)
+
                 reply = answer(
-                    prompt, thread_id=st.session_state.thread_id, agent=shared_agent()
+                    prompt,
+                    thread_id=st.session_state.thread_id,
+                    agent=shared_agent(),
+                    on_step=note,
                 )
+                status.update(label="Answered", state="complete", expanded=False)
         except Exception as exc:  # noqa: BLE001 — tiered error handling lands in Phase 5
             st.error(f"The model call failed: {exc}", icon=":material/error:")
         else:
             st.markdown(as_markdown(reply.text))
+            render_tool_cards(reply.cards)
             render_sources(reply.contexts, searched=reply.searched)
             render_how_i_answered(reply.searches)
             st.caption(DISCLAIMER)
@@ -424,11 +703,11 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                 {
                     "role": "assistant",
                     "content": reply.text,
-                    # The whole turn, because the panels need three facts about it and one of
-                    # them — the query variants each search ran — belongs to the search rather
-                    # than to any chunk. Display data, not memory: the checkpointer remains the
-                    # agent's memory of record (ADR-0008), and nothing here is ever read back
-                    # into a conversation.
+                    # The whole turn, because the panels need four facts about it and two of
+                    # them — the query variants each search ran, and the tool cards — belong to
+                    # the call rather than to any chunk. Display data, not memory: the
+                    # checkpointer remains the agent's memory of record (ADR-0008), and nothing
+                    # here is ever read back into a conversation.
                     "turn": reply,
                 }
             )
