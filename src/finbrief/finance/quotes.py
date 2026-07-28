@@ -40,17 +40,11 @@ from typing import Any
 from finbrief.config import (
     FETCH_ATTEMPTS,
     FETCH_BACKOFF_SECONDS,
-    HISTORY_DAYS,
     HISTORY_INTERVAL,
+    HISTORY_PERIOD,
     QUOTE_TTL_SECONDS,
 )
 from finbrief.finance.cache import Fetched, TimedCache
-
-#: yfinance's `period` string for `config.HISTORY_DAYS` — `30` → `"30d"`. Derived rather than
-#: typed beside the day count, so the window the model is told about
-#: (`GET_STOCK_DATA_DESCRIPTION`) and the window actually requested are the same number (issue
-#: #9 review).
-HISTORY_PERIOD = f"{HISTORY_DAYS}d"
 
 
 @dataclass(frozen=True, slots=True)

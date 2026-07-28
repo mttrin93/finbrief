@@ -274,15 +274,21 @@ NEWS_TTL_SECONDS = 900
 FETCH_ATTEMPTS = 3
 FETCH_BACKOFF_SECONDS = 0.5
 
-#: How much price history one quote fetch carries, and at what interval — the sparkline
-#: `get_stock_data` renders (user story 13). A month of daily closes is ~21 points: readable on
-#: a card, and one request rather than the intraday series' many.
+#: How much price history one quote fetch carries, at what interval, and how to say so in prose.
 #:
-#: Here rather than beside the fetch because `GET_STOCK_DATA_DESCRIPTION` states the window to
-#: the model, and `prompts.py`'s rule is that a prompt's every count is derived and never typed
-#: — the first draft had "a month of daily closes" as prose in the description and `"1mo"` in
-#: `finance/quotes.py`, two copies of one fact (issue #9 review).
-HISTORY_DAYS = 30
+#: `HISTORY_PERIOD` is yfinance's own period token, not a day count, and deliberately: `"1mo"`
+#: means "the last calendar month" and yields the ~21 *trading* sessions in it, where `"30d"`
+#: yields 30 rows over a span that shifts with the weekends and holidays inside it. The
+#: sparkline `get_stock_data` renders (user story 13) wants sessions.
+#:
+#: `HISTORY_PERIOD_LABEL` is here rather than in the prompt because
+#: `GET_STOCK_DATA_DESCRIPTION` states the window to the model, and `prompts.py`'s rule is that
+#: a prompt's every count is derived and never typed — the first draft had "a month of daily
+#: closes" as prose in the description and `"1mo"` in `finance/quotes.py` — two copies of one
+#: fact nothing would have caught disagreeing (issue #9 review). A token unfit for prose and
+#: prose unfit for an API are two names, but they are two names in **one place**.
+HISTORY_PERIOD = "1mo"
+HISTORY_PERIOD_LABEL = "one month"
 HISTORY_INTERVAL = "1d"
 
 #: How long a finance fetch may hang before it is abandoned, in seconds.

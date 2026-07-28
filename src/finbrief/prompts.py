@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from finbrief.config import (
     CLUSTERS,
-    HISTORY_DAYS,
+    HISTORY_PERIOD_LABEL,
     ITEM_7A_POINTER_FILERS,
     ITEM_7A_SECTION_FILERS,
     NEWS_DEFAULT_DAYS,
@@ -441,8 +441,8 @@ _UNIVERSE_ONLY = (
 #: any number being wrong.
 GET_STOCK_DATA_DESCRIPTION = f"""\
 Live market data for one company: last price, change on the previous close, market \
-capitalisation, trailing P/E and EPS, the 52-week range, and {HISTORY_DAYS} days of daily
-closes.
+capitalisation, trailing P/E and EPS, the 52-week range, and daily closes for \
+{HISTORY_PERIOD_LABEL}.
 
 {_UNIVERSE_ONLY}
 
