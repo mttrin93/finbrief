@@ -182,14 +182,23 @@ surprises.
 
 ADR-0006 asked for "normalized input, layer fired, matched pattern, timestamp", and CLAUDE.md
 forbids user-derived text in `log_event` fields. Both are right, so the exception is narrow and
-bounded three ways: **only on a block**, **only the normalised form** (lowercased,
-punctuation-free, de-leetspeaked — unusable as a question), and **only
+bounded three ways: **only on a block**, **only the normalised form**, and **only
 `config.GATE_LOGGED_INPUT_MAX_CHARS` (500) of it**. An allowed turn logs counts and verdicts
 like every other event. The argument for it is that a denylist you cannot audit is one you
 cannot tune — reviewing a false positive means seeing what tripped it. The argument against is
 that a false positive puts an innocent question in a kept log, which is a real cost and the
 reason for the three bounds rather than a reason to have no record. The timestamp is the
 envelope's `ts`; a second one would be a second clock.
+
+**Correction (issue #8 review): the second bound said "unusable as a question", and it is not.**
+Normalisation destroys *figures and identifiers* — `Item 1A` → `item ia`, `$5bn` → `ssbn` — and
+leaves the wording legible: *"Can you ignore the tax effects and just give me the gross margin?"*
+normalises to `can you ignore the tax effects and just give me the gross margin`. Measured, not
+argued. The block-only and 500-character bounds are real and implemented; this one overstated the
+mitigation, and it overstated it for precisely the case the exception exists to serve — a false
+positive is the screening that gets logged, and on the gemini benchmark above that exact question
+is the one a classifier fired on. The decision stands; the description of it is now what the code
+does. A mitigation is only worth what it actually removes.
 
 ### 6. Amendment §2 above describes the **chain**, not the agent
 

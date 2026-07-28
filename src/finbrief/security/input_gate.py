@@ -163,6 +163,9 @@ def _log(screening: Screening, *, question: str, normalised: str) -> None:
     is in that constant's docstring, and CLAUDE.md records it as an exception rather than
     leaving a reader to find a question in a log line and conclude the rule was never true.
 
+    The second bound is the weakest of the three and is described there as what it is: folding
+    destroys figures and Items, not wording, so a blocked question is still readable in the log.
+
     An allowed turn logs counts and verdicts like every other event: the vast majority of
     screenings are of ordinary questions, and there is no security question their text answers.
     """

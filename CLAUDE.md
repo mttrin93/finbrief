@@ -243,11 +243,15 @@ assertion by default (issue #9 review).
   **One exception, and it is bounded three ways** (ADR-0006 requires the normalised input in a
   gate-trigger record, and a denylist you cannot audit is one you cannot tune): the `input_gate`
   event carries `normalised` **only on a block**, **only the normalised form** — lowercased,
-  punctuation-free, de-leetspeaked, unusable as a question — and only
-  `config.GATE_LOGGED_INPUT_MAX_CHARS` of it. An allowed screening logs counts and verdicts like
-  everything else. The cost is real (a false positive puts an innocent question in a kept log),
-  which is the reason for the three bounds rather than a reason to keep no record. Nothing else
-  may widen this.
+  punctuation-free, de-leetspeaked — and only `config.GATE_LOGGED_INPUT_MAX_CHARS` of it. An
+  allowed screening logs counts and verdicts like everything else. **Do not describe the second
+  bound as making the text "unusable as a question", which is what this said**: folding destroys
+  figures and identifiers (`Item 1A` → `item ia`, `$5bn` → `ssbn`) and leaves the wording legible,
+  measured on a real benign question (issue #8 review). The cost is therefore larger than the old
+  wording implied and it is still worth paying — a false positive puts a readable innocent
+  question in a kept log, which is the reason for the three bounds rather than a reason to keep no
+  record. Nothing else may widen this, and a bound may not be described as removing more than it
+  removes.
 - `security/` is the gate, one module per layer, because a marginal-contribution claim has to be
   checkable *at* the layer it is about (user story 34): `normalize.py` (folds obfuscation into two
   forms — `text` keeps the word boundaries a rule needs to *not* match, `squeezed` is the only

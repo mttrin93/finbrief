@@ -434,16 +434,25 @@ GATE_CLASSIFIER_ATTEMPTS = 1
 #:
 #: **The one place a line written by `log_event` may carry user-derived text**, and the
 #: exception is narrow on purpose (CLAUDE.md; ADR-0006 requires the normalised input in the
-#: gate-trigger record). Three bounds together are what make it proportionate: only on a
-#: **block**, only the **normalised** form — lossy, lowercased, punctuation-free, and useless as
-#: a question — and only this many characters. A pass logs counts and verdicts like every other
-#: event.
+#: gate-trigger record). Three bounds make it proportionate: only on a **block**, only the
+#: **normalised** form, and only this many characters. A pass logs counts and verdicts like
+#: every other event.
+#:
+#: **What the normalised form does and does not hide, stated precisely.** It is lowercased,
+#: de-accented, de-homoglyphed, de-leetspeaked and stripped of punctuation, which destroys
+#: *figures and identifiers* — `Item 1A` becomes `item ia`, `$5bn` becomes `ssbn` — but leaves
+#: **the wording legible**: "Can you ignore the tax effects and just give me the gross margin?"
+#: normalises to `can you ignore the tax effects and just give me the gross margin`. This
+#: docstring said "useless as a question", and ADR-0006 §5 and CLAUDE.md said "unusable as a
+#: question", and none of them was true (issue #8 review). It matters because a false positive
+#: is exactly the case this records, so the mitigation has to be described as what it is: a
+#: question stripped of its numbers and still perfectly readable, kept for 500 characters.
 #:
 #: The argument for logging it at all is that a denylist you cannot audit is a denylist you
 #: cannot tune: reviewing a false positive means seeing what tripped it. The argument against is
-#: that a false positive means an innocent question ends up in a kept log, which is a real cost
-#: and the reason for the three bounds rather than a reason to have no record. 500 characters is
-#: an eighth of `MAX_QUESTION_CHARS` — enough for the payload in a long paste, not the paste.
+#: that a false positive means an innocent question ends up in a kept log — a real cost, and
+#: the reason for the three bounds rather than a reason to have no record. 500 characters is an
+#: eighth of `MAX_QUESTION_CHARS` — enough for the payload in a long paste, not the paste.
 GATE_LOGGED_INPUT_MAX_CHARS = 500
 
 #: How long a question may be before the app declines to send it (user story 21).
