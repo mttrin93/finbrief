@@ -287,18 +287,43 @@ FETCH_BACKOFF_SECONDS = 0.5
 #: closes" as prose in the description and `"1mo"` in `finance/quotes.py` — two copies of one
 #: fact nothing would have caught disagreeing (issue #9 review). A token unfit for prose and
 #: prose unfit for an API are two names, but they are two names in **one place**.
+#: `HISTORY_AUTO_ADJUST` is here for the same one-place reason, and it is not cosmetic: adjusted
+#: closes are split- and dividend-adjusted, so the *same* company plotted both ways diverges
+#: across any corporate action in the window. `scripts/record_market_fixtures.py` records the
+#: closes every chart test asserts against, so a recorder that adjusted differently from the
+#: fetcher would bake a silent mismatch into the fixtures — on the one path no test covers
+#: (issue #9 review). It was typed twice before this.
 HISTORY_PERIOD = "1mo"
 HISTORY_PERIOD_LABEL = "one month"
 HISTORY_INTERVAL = "1d"
+HISTORY_AUTO_ADJUST = True
 
-#: How long a finance fetch may hang before it is abandoned, in seconds.
+#: How long a **single HTTP request** on a finance fetch may hang before it is abandoned, in
+#: seconds.
 #:
 #: An unofficial free endpoint that accepts a connection and then stalls is the failure a retry
 #: cannot help with, and `TimedCache` holds its lock across the refresh — so without a ceiling
 #: one stalled socket blocks every session's quotes for as long as the OS allows. Fifteen
-#: seconds is generous for a JSON response and short enough that three attempts stay inside a
-#: turn.
+#: seconds is generous for a JSON response.
+#:
+#: **Per request, not per fetch, and the difference is worth stating** because the first version
+#: of this comment implied the latter. One `fetch_quote` makes two requests (`.info` and the
+#: history), `FETCH_ATTEMPTS` is 3, and `TimedCache` holds its lock across all of it, so the
+#: worst case a stalled endpoint can hold the quote lock for is `3 × 2 × 15s` plus backoff —
+#: about 91 seconds, not 15. That is the honest ceiling; it is bounded and survivable, where
+#: yfinance's own default of 30s per request made it ~181s, and *un*bounded before the clamp
+#: reached the quote path at all (issue #9 review).
+#:
+#: `finance/news.py` passes this to `urlopen` directly. `finance/quotes.py` cannot: yfinance
+#: passes `timeout=30` explicitly at every call site, so a session default is overridden and the
+#: clamp has to sit on the session's `request` — see `_bounded_session` there.
 FETCH_TIMEOUT_SECONDS = 15
+
+#: The worst case `FETCH_TIMEOUT_SECONDS` actually permits on the quote path, derived rather
+#: than typed so the docstring above cannot drift from it. Two requests per attempt.
+QUOTE_FETCH_WORST_CASE_SECONDS = FETCH_ATTEMPTS * 2 * FETCH_TIMEOUT_SECONDS + sum(
+    FETCH_BACKOFF_SECONDS * 2**attempt for attempt in range(FETCH_ATTEMPTS - 1)
+)
 
 #: The `days` window `get_recent_news` uses when the model names none, and the ceiling it
 #: clamps to. A month is where "recent news" stops being recent; the default is a week because

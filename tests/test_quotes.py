@@ -12,7 +12,11 @@ D/E arriving as `425.544` when the ratio is 4.26×. Every fixture here is a real
 
 from __future__ import annotations
 
+import pytest
+
+from finbrief import config
 from finbrief.config import TICKERS
+from finbrief.finance import quotes as quotes_module
 from finbrief.finance.quotes import Close, Quote
 
 
@@ -133,3 +137,117 @@ def test_the_price_history_is_oldest_first_so_a_chart_needs_no_sorting(recorded_
     assert all(isinstance(close, Close) for close in closes)
     assert [c.date for c in closes] == sorted(c.date for c in closes)
     assert closes[-1].date > closes[0].date
+
+
+# --------------------------------------------------------------------------------------
+# The fetch timeout, which was documented for a release before it was applied (#9 review)
+# --------------------------------------------------------------------------------------
+
+
+class _RecordingSession:
+    """Stands in for a backend `Session`, recording the timeout each request was given.
+
+    A real `curl_cffi.Session` is not needed and would not help: what is under test is the
+    clamp `_build_bounded_session` installs, and the clamp is a wrapper around whatever
+    `request` it found. Asserting against a recorder is what makes the *timeout value*
+    visible — with a real session the assertion could only be "it did not hang", which is
+    the assertion that passed for a release while the ceiling was 30.
+    """
+
+    def __init__(self) -> None:
+        self.timeouts: list[object] = []
+
+    def request(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return "response"
+
+    # yfinance's own call shape, to prove the clamp survives the delegation `get` performs.
+    def get(self, url, **kwargs):
+        return self.request(method="GET", url=url, **kwargs)
+
+
+def _bound(recorder):
+    """Apply the production clamp to `recorder`, by the production code path."""
+    import sys
+    import types
+
+    # `_build_bounded_session` imports `yfinance._http` for `new_session`. Stubbing that one
+    # attribute runs the real clamp over the recorder without importing yfinance — which the
+    # hermetic contract would allow but which would pull in a scraper for no reason.
+    module = types.ModuleType("yfinance._http")
+    module.new_session = lambda: recorder  # type: ignore[attr-defined]
+    package = sys.modules.get("yfinance") or types.ModuleType("yfinance")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, "yfinance", package)
+        patch.setitem(sys.modules, "yfinance._http", module)
+        patch.setattr(package, "_http", module, raising=False)
+        return quotes_module._build_bounded_session()
+
+
+def test_a_request_with_no_timeout_gets_the_configured_ceiling():
+    # The case that was broken: yfinance names `timeout=30` at every call site, so nothing was
+    # applying `FETCH_TIMEOUT_SECONDS` to the quote path at all. The clamp is what makes the
+    # documented number real.
+    recorder = _RecordingSession()
+    session = _bound(recorder)
+
+    session.get("https://query1.finance.yahoo.com/v8/finance/chart/NVDA")
+
+    assert recorder.timeouts == [config.FETCH_TIMEOUT_SECONDS]
+
+
+def test_yfinances_own_thirty_second_timeout_is_clamped_down():
+    # Verbatim the value `YfData.get`/`.post`/`.get_raw_json` default to and forward. An
+    # explicit keyword beats a session default, so this cannot be configured away and has to be
+    # clamped.
+    recorder = _RecordingSession()
+    session = _bound(recorder)
+
+    session.request(method="GET", url="https://query1.finance.yahoo.com/", timeout=30)
+
+    assert recorder.timeouts == [config.FETCH_TIMEOUT_SECONDS]
+    assert recorder.timeouts[0] < 30, "the ceiling has to bind, not merely be offered"
+
+
+def test_a_caller_asking_for_less_than_the_ceiling_keeps_it():
+    # `min`, not assignment: the ceiling is a maximum, and raising a caller's 1s to 15s would
+    # make this a *worse* guarantee than none.
+    recorder = _RecordingSession()
+    session = _bound(recorder)
+
+    session.request(method="GET", url="https://query1.finance.yahoo.com/", timeout=1)
+
+    assert recorder.timeouts == [1.0]
+
+
+def test_curl_cffis_unspecified_sentinel_is_not_mistaken_for_a_number():
+    # `curl_cffi` spells "no timeout given" as its own `NOT_SET` object, neither `None` nor a
+    # number. Compared naively it would sail past the clamp; `min` against it would raise.
+    class NotSet:
+        pass
+
+    recorder = _RecordingSession()
+    session = _bound(recorder)
+
+    session.request(method="GET", url="https://query1.finance.yahoo.com/", timeout=NotSet())
+
+    assert recorder.timeouts == [config.FETCH_TIMEOUT_SECONDS]
+
+
+def test_the_bounded_session_is_built_once_per_process():
+    # `build_once`, not a fresh session per fetch: yfinance's `YfData` is a singleton whose
+    # `_set_session` two concurrent builders would race, and a new session per call would
+    # re-negotiate the cookie and crumb every time.
+    assert hasattr(quotes_module.bounded_session, "cache_clear")
+    assert hasattr(quotes_module.bounded_session, "cache_info")
+
+
+def test_the_worst_case_the_timeout_permits_is_derived_and_survivable():
+    # The comment on `FETCH_TIMEOUT_SECONDS` used to imply it bounded a whole fetch. It bounds
+    # one request: two per attempt, `FETCH_ATTEMPTS` attempts, all under `TimedCache`'s lock.
+    # honest number is derived in `config` so the prose cannot drift from it — and pinned here
+    # because "about 91 seconds" is a claim in that prose.
+    assert pytest.approx(91.5) == config.QUOTE_FETCH_WORST_CASE_SECONDS
+    assert config.QUOTE_FETCH_WORST_CASE_SECONDS < 120, (
+        "the quote lock must not be holdable for longer than a user waits before reloading"
+    )

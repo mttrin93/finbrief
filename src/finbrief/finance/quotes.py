@@ -37,9 +37,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from finbrief.caching import build_once
 from finbrief.config import (
     FETCH_ATTEMPTS,
     FETCH_BACKOFF_SECONDS,
+    FETCH_TIMEOUT_SECONDS,
+    HISTORY_AUTO_ADJUST,
     HISTORY_INTERVAL,
     HISTORY_PERIOD,
     QUOTE_TTL_SECONDS,
@@ -164,6 +167,54 @@ def _percent_change(price: float | None, previous: float | None) -> float | None
     return (price - previous) / previous * 100.0
 
 
+def _build_bounded_session():
+    """A yfinance session whose every request carries `config.FETCH_TIMEOUT_SECONDS`.
+
+    **Why this is not simply `Ticker(session=Session(timeout=...))`.** yfinance passes
+    `timeout=30` *explicitly* at every call site (`YfData.get`, `.post`, `.get_raw_json` and the
+    cookie/crumb helpers all default the parameter and forward it), and an explicit keyword
+    beats a session default. So a session configured with a timeout has none: measured against
+    yfinance 1.5.1, the effective per-request ceiling was 30 seconds however the session was
+    built. The documented 15 was a comment about behaviour the code did not have (issue #9
+    review) — `config.FETCH_TIMEOUT_SECONDS` was read by `finance/news.py` and nothing else.
+
+    **The clamp therefore sits on `request`**, the chokepoint both backends' `get`/`post` funnel
+    through, as an instance attribute rather than a subclass. Two reasons for that shape:
+    `yfinance._http.is_supported_session` rejects anything that is not an instance of the
+    backend's own `Session` class, so a wrapper object is not an option; and shadowing the bound
+    method on the instance leaves `new_session()` to make yfinance's own choices — the
+    `impersonate="chrome"` fingerprint, the fallback User-Agent — rather than this module
+    restating them and drifting from them.
+
+    `min`, not assignment: a caller asking for *less* than the ceiling gets what it asked for.
+    """
+    from yfinance import _http
+
+    session = _http.new_session()
+    unbounded = session.request
+
+    def bounded(*args, **kwargs):
+        requested = kwargs.get("timeout")
+        # `NOT_SET` is curl_cffi's sentinel for "unspecified": neither None nor a number, so it
+        # is normalised here rather than compared against.
+        ceiling = FETCH_TIMEOUT_SECONDS
+        if isinstance(requested, int | float) and not isinstance(requested, bool):
+            ceiling = min(float(requested), FETCH_TIMEOUT_SECONDS)
+        kwargs["timeout"] = ceiling
+        return unbounded(*args, **kwargs)
+
+    session.request = bounded
+    return session
+
+
+#: One bounded session per process, through `build_once` for the reason CLAUDE.md gives for the
+#: three on the retrieval path: with parallel tool calls, `get_stock_data` and
+#: `calculate_ratios` can miss this cold key concurrently, and `YfData` is a **singleton** whose
+#: `_set_session` two builders would race. Sharing one session also keeps the cookie and
+#: crumb yfinance negotiates on first use, which a per-call session would pay for again.
+bounded_session = build_once(_build_bounded_session)
+
+
 def fetch_quote(ticker: str) -> Quote:
     """Fetch one quote from yfinance. **The one call, and the one thing no test covers.**
 
@@ -177,9 +228,11 @@ def fetch_quote(ticker: str) -> Quote:
     """
     import yfinance
 
-    handle = yfinance.Ticker(ticker)
+    handle = yfinance.Ticker(ticker, session=bounded_session())
     info = handle.info
-    history = handle.history(period=HISTORY_PERIOD, interval=HISTORY_INTERVAL, auto_adjust=True)
+    history = handle.history(
+        period=HISTORY_PERIOD, interval=HISTORY_INTERVAL, auto_adjust=HISTORY_AUTO_ADJUST
+    )
     closes = tuple(
         Close(date=stamp.date().isoformat(), close=float(row["Close"]))
         for stamp, row in history.iterrows()

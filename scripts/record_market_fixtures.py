@@ -43,7 +43,7 @@ import yfinance as yf
 
 from finbrief.config import UNIVERSE
 from finbrief.finance.news import FEED_URL_TEMPLATE, NEWS_USER_AGENT
-from finbrief.finance.quotes import HISTORY_INTERVAL, HISTORY_PERIOD
+from finbrief.finance.quotes import HISTORY_AUTO_ADJUST, HISTORY_INTERVAL, HISTORY_PERIOD
 
 FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures" / "market"
 
@@ -90,10 +90,13 @@ def record_quotes() -> None:
     for company in UNIVERSE:
         ticker = yf.Ticker(company.ticker)
         info = {key: _plain(ticker.info.get(key)) for key in RECORDED_INFO_KEYS}
-        # The production window, read from `finance/quotes.py`, so a fixture cannot be
-        # recorded over a different span from the one the tool asks for.
+        # The production window *and* the production adjustment, read from `finance/quotes.py`,
+        # so a fixture cannot be recorded over a different span, or on a different price basis,
+        # than the one the tool asks for. `auto_adjust` was typed here as a literal until #9's
+        # review: adjusted closes are split- and dividend-adjusted, so the two settings diverge
+        # across any corporate action in the window, and this is the one path no test covers.
         history = ticker.history(
-            period=HISTORY_PERIOD, interval=HISTORY_INTERVAL, auto_adjust=True
+            period=HISTORY_PERIOD, interval=HISTORY_INTERVAL, auto_adjust=HISTORY_AUTO_ADJUST
         )
         closes = [
             # ISO date and close only. The tool renders a line chart and nothing reads the
