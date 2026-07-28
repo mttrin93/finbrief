@@ -82,6 +82,13 @@ networking dependency, add a test there. And **a claim in a comment cannot fail*
 six false claims were prose asserting coverage the code lacked, so every test in that file
 exercises the call it is about — the DNS case calls each of the four resolvers rather than
 asserting that three route through the fourth, which is precisely the sentence that was wrong.
+**Raising is only half the guard**, because a raised exception is loud only if the caller
+propagates it: OpenTelemetry's `BatchSpanProcessor` catches the `EgressBlocked` on its own export
+thread and logs it, so with the telemetry switch removed `Guard.validate` returned an entirely
+normal verdict and the test asserting only that verdict passed while the POST was attempted
+(issue #8 review). `conftest.EGRESS_ATTEMPTS` records every refused target inside `_blocked`
+itself, so an attempt a library swallows is still visible; a test about a backend that might
+swallow one compares that list's length across the call rather than trusting `pytest.raises`.
 Four more mechanisms keep it true *without* leaning on the guard: tiktoken's cl100k_base table
 is vendored under `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it —
 without that, `get_encoding` silently downloads it); the EDGAR fixtures under

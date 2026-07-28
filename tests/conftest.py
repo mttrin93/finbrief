@@ -39,13 +39,33 @@ class EgressBlocked(RuntimeError):
     """A test tried to reach the network. That is a defect in the test, not in the guard."""
 
 
+#: Every target this guard has refused, in order, for the whole session.
+#:
+#: **Because raising is only loud if the caller lets the exception through**, and a library that
+#: wraps its own side channel in `try/except` swallows it. That is not hypothetical: with
+#: `security/advice.py`'s telemetry switch removed, `guardrails-ai` POSTs to its endpoint from
+#: OpenTelemetry's `BatchSpanProcessor`, which catches the `EgressBlocked` on its export thread
+#: and logs `Exception while exporting Span.` — so `Guard.validate` returns a completely normal
+#: verdict, and a test asserting only on that verdict passes while a packet is being attempted
+#: (issue #8 review). A recorded attempt cannot be swallowed: the append happens inside the
+#: refusal, before any caller sees it.
+#:
+#: Compare a `len()` before and after the call under test rather than asserting the whole
+#: list is empty: another test's legitimate assertion of a blocked call is not this one's
+#: failure.
+EGRESS_ATTEMPTS: list[str] = []
+
+
 def _blocked(target: object, hint: str = "") -> EgressBlocked:
     """The one refusal message, shared by all three backends the guard covers.
 
     Shared because a per-backend wording is a per-backend thing to get out of step, and because
     `tests/test_hermetic_suite.py` asserts on the word "hermetic" appearing in whatever a
     wrapping library re-raises.
+
+    Records the target in `EGRESS_ATTEMPTS` on the way past, for the reason that list gives.
     """
+    EGRESS_ATTEMPTS.append(str(target))
     return EgressBlocked(
         f"the test suite tried to reach {target!r}. Tests are hermetic — no network "
         f"(CLAUDE.md). Record a fixture for this data instead of fetching it: see "
@@ -89,6 +109,10 @@ def _install_egress_guard() -> None:
     Three of the six were a *docstring or comment* claiming coverage the code lacked, which is
     the pattern to distrust: prose about a guard cannot fail, so every claim one of these makes
     now has a test that exercises the call rather than describing it.
+
+    **Raising is not the whole mechanism, and `EGRESS_ATTEMPTS` is the other half.** A guard
+    that only raises is loud only when the caller propagates the exception; a library that wraps
+    its own side channel swallows it and the call looks clean from outside. See that list.
 
     **What it is: a denylist over the egress backends this repo can reach, not a proof.**
     Python has no in-process way to stop a C library from opening a socket, so a guard like
@@ -208,6 +232,11 @@ def _block_curl_cffi() -> None:
         return
 
     def blocked_perform(*args: object, **kwargs: object) -> None:
+        # Recorded like every other refusal, even though the target is unknowable here: the
+        # target URL is set through `setopt` and is not an argument to `perform`. A backend that
+        # did not append would be a backend `EGRESS_ATTEMPTS` cannot see, which is the same
+        # denylist-with-a-hole shape the guard itself warns about.
+        EGRESS_ATTEMPTS.append("curl_cffi (libcurl, target set via setopt)")
         raise EgressBlocked(
             "the test suite tried to reach the network through curl_cffi (libcurl), which "
             "bypasses Python's socket layer. Tests are hermetic — no network (CLAUDE.md). "
