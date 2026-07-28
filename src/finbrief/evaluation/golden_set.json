@@ -53,7 +53,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "S2",
@@ -314,7 +314,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E3",
@@ -339,7 +339,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E4",
@@ -364,7 +364,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E5",
@@ -389,7 +389,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E6",
@@ -414,7 +414,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "E7",
@@ -439,7 +439,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "T1",
@@ -724,7 +724,7 @@
       "recall_trivial_sections": ["AAPL Item 7A", "MSFT Item 7A"],
       "basis_mismatch": true,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M3",
@@ -869,7 +869,7 @@
       "recall_trivial_sections": [],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     },
     {
       "id": "M7",
@@ -908,7 +908,7 @@
       "recall_trivial_sections": ["TSLA Item 7A"],
       "basis_mismatch": false,
       "tool_expectation": null,
-      "verified_against_edgar": false
+      "verified_against_edgar": true
     }
   ]
 }
