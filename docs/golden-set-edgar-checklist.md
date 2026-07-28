@@ -1,4 +1,4 @@
-# Golden set — EDGAR hand-verification record (numeric rows)
+# Golden set — EDGAR hand-verification record
 
 **The hand-authored verification record for `src/finbrief/evaluation/golden_set.json` — no
 generator, which is why it sits in `docs/` and not `docs/verification/`.** Every file under
@@ -28,17 +28,26 @@ Candidates live in `src/finbrief/evaluation/golden_set.json`, every row currentl
 conjunction of the rows, so the set cannot claim verification until each box below is ticked and
 the flags flipped.
 
-**Scope.** Every row carrying a number, plus S1 (a category set rather than a figure, but the
-one other row whose ground truth is an enumeration that could be incomplete). The 18
-non-numeric rows are prose paraphrases whose passages are quoted verbatim in the JSON — worth a
-read-through, not a figure-by-figure pass.
-
-**What to check per row.** (a) the figure is in the filing; (b) it is in the Item the row
-declares, not a neighbouring one; (c) it is the filer's own fiscal year as recorded; (d) for
-table figures, the column really is the year claimed.
+**Scope: all 28 rows, in two sections with two different bars.** The numeric section below covers
+the 10 rows whose ground truth is a figure or an enumeration, figure by figure. *Prose rows
+(verbatim-quote pass)* covers the other 18, where the reference quotes its chunk verbatim and the
+bar is correspondingly lower — that section's header says why. Both are needed: the conjunction
+test in `tests/test_golden_set.py` will not let the set-level flag flip while any of the 28 rows
+is unverified.
 
 CIKs resolved offline from `edgartools`' bundled `company_tickers.parquet`; URL form is the one
 `ingestion/edgar.py` records in the fixtures (`…/data/{cik}/{accession}-index.html`).
+
+---
+
+# Numeric rows (figure-by-figure pass)
+
+Every row whose ground truth is a figure, plus S1 (a category set rather than a figure, but the one
+other row whose ground truth is an enumeration that could be incomplete): S1, E2–E7, M2, M6, M7.
+
+**What to check per row.** (a) the figure is in the filing; (b) it is in the Item the row declares,
+not a neighbouring one; (c) it is the filer's own fiscal year as recorded; (d) for table figures,
+the column really is the year claimed.
 
 ---
 
@@ -50,11 +59,11 @@ Ground truth claims Item 1A organises its risks under **exactly four** headings.
 matching `^Risks? Related to …$` across all 129 of TSLA's Item 1A chunks — so the risk is a
 *missed fifth heading* worded differently, not a wrong one.
 
-- [ ] `Risks Related to Our Ability to Grow Our Business` — chunk `:0`
-- [ ] `Risks Related to Our Operations` — chunk `:34`
-- [ ] `Risks Related to Government Laws and Regulations` — chunk `:94`
-- [ ] `Risks Related to the Ownership of Our Common Stock` — chunk `:117`
-- [ ] **no fifth top-level risk heading exists in Item 1A**
+- [x] `Risks Related to Our Ability to Grow Our Business` — chunk `:0`
+- [x] `Risks Related to Our Operations` — chunk `:34`
+- [x] `Risks Related to Government Laws and Regulations` — chunk `:94`
+- [x] `Risks Related to the Ownership of Our Common Stock` — chunk `:117`
+- [x] **no fifth top-level risk heading exists in Item 1A**
 
 ---
 
@@ -62,11 +71,11 @@ matching `^Risks? Related to …$` across all 129 of TSLA's Item 1A chunks — s
 
 https://www.sec.gov/Archives/edgar/data/59478/0000059478-26-000013-index.html
 
-- [ ] Mounjaro + Zepbound = **56 percent** of total revenues in 2025
-- [ ] the six named products (Mounjaro, Zepbound, Verzenio, Trulicity, Taltz, Jardiance incl.
+- [x] Mounjaro + Zepbound = **56 percent** of total revenues in 2025
+- [x] the six named products (Mounjaro, Zepbound, Verzenio, Trulicity, Taltz, Jardiance incl.
       Glyxambi/Synjardy/Trijardy XR) = **82 percent** of total revenues in 2025
-- [ ] each of the six > **$3 billion** of direct product and/or collaboration and other revenues
-- [ ] in **Item 1A**, not Item 7
+- [x] each of the six > **$3 billion** of direct product and/or collaboration and other revenues
+- [x] in **Item 1A**, not Item 7
 
 ---
 
@@ -74,9 +83,9 @@ https://www.sec.gov/Archives/edgar/data/59478/0000059478-26-000013-index.html
 
 https://www.sec.gov/Archives/edgar/data/1018724/0001018724-26-000004-index.html
 
-- [ ] long-term debt face value **$68.8 billion** as of December 31, 2025
-- [ ] "including the current portion", "primarily consisting of fixed rate unsecured senior notes"
-- [ ] in **Item 7A**, not the Item 8 debt note it cross-references
+- [x] long-term debt face value **$68.8 billion** as of December 31, 2025
+- [x] "including the current portion", "primarily consisting of fixed rate unsecured senior notes"
+- [x] in **Item 7A**, not the Item 8 debt note it cross-references
 
 ---
 
@@ -84,10 +93,10 @@ https://www.sec.gov/Archives/edgar/data/1018724/0001018724-26-000004-index.html
 
 https://www.sec.gov/Archives/edgar/data/1318605/0001628280-26-003952-index.html
 
-- [ ] **Total gross margin 18.0 %** for 2025 (17.9 % 2024, 18.2 % 2023)
-- [ ] Total gross profit **$17,094** million for 2025
-- [ ] Gross margin total automotive **17.8 %** for 2025 (18.4 % 2024, 19.4 % 2023)
-- [ ] **column order is 2025 / 2024 / 2023** — I inferred this from the same table's cost line
+- [x] **Total gross margin 18.0 %** for 2025 (17.9 % 2024, 18.2 % 2023)
+- [x] Total gross profit **$17,094** million for 2025
+- [x] Gross margin total automotive **17.8 %** for 2025 (18.4 % 2024, 19.4 % 2023)
+- [x] **column order is 2025 / 2024 / 2023** — I inferred this from the same table's cost line
       (`Total cost of revenues $77,733 $80,240 $79,113 $(2,507)(3)%`, where col1 − col2 = the
       stated change) rather than from a column header, because the header row does not survive
       extraction. **This is the single most load-bearing inference in the numeric rows**: if the
@@ -99,12 +108,12 @@ https://www.sec.gov/Archives/edgar/data/1318605/0001628280-26-003952-index.html
 
 https://www.sec.gov/Archives/edgar/data/1045810/0001045810-26-000021-index.html
 
-- [ ] a **0.5 %** decrease in the yield curve → fair value of the investment portfolio down
+- [x] a **0.5 %** decrease in the yield curve → fair value of the investment portfolio down
       approximately **$0.2 billion**
-- [ ] stated "as of the end of fiscal year 2026 and 2025" (the same figure for both years)
-- [ ] the filing is the **FY2026** 10-K (fiscal year ended January 25, 2026) — the only FY2026
+- [x] stated "as of the end of fiscal year 2026 and 2025" (the same figure for both years)
+- [x] the filing is the **FY2026** 10-K (fiscal year ended January 25, 2026) — the only FY2026
       filer in the KB
-- [ ] in **Item 7A** (NVDA has its own; it is not a pointer filer)
+- [x] in **Item 7A** (NVDA has its own; it is not a pointer filer)
 
 ---
 
@@ -112,10 +121,10 @@ https://www.sec.gov/Archives/edgar/data/1045810/0001045810-26-000021-index.html
 
 https://www.sec.gov/Archives/edgar/data/37996/0000037996-26-000015-index.html
 
-- [ ] Company debt **excluding Ford Credit** = **$21.9 billion** at December 31, 2025
-- [ ] including **$0.9 billion** of finance leases
-- [ ] **$1.3 billion** higher than at December 31, 2024
-- [ ] the leverage-framework sentence (targets investment grade ratings through a normal business
+- [x] Company debt **excluding Ford Credit** = **$21.9 billion** at December 31, 2025
+- [x] including **$0.9 billion** of finance leases
+- [x] **$1.3 billion** higher than at December 31, 2024
+- [x] the leverage-framework sentence (targets investment grade ratings through a normal business
       cycle) is in the same passage — E6 and T2 both cite this chunk
 
 ---
@@ -124,9 +133,9 @@ https://www.sec.gov/Archives/edgar/data/37996/0000037996-26-000015-index.html
 
 https://www.sec.gov/Archives/edgar/data/1326801/0001628280-26-003942-index.html
 
-- [ ] fixed-rate senior notes outstanding **$59.0 billion** at December 31, 2025
-- [ ] **$29.0 billion** at December 31, 2024
-- [ ] in **Item 7A**
+- [x] fixed-rate senior notes outstanding **$59.0 billion** at December 31, 2025
+- [x] **$29.0 billion** at December 31, 2024
+- [x] in **Item 7A**
 
 ---
 
@@ -137,25 +146,25 @@ Both halves need checking; the second is the one that makes the row honest.
 
 **AAPL** `0000320193-25-000079:Item 7A:1` · https://www.sec.gov/Archives/edgar/data/320193/0000320193-25-000079-index.html
 
-- [ ] **$2,416** million decline in fair value, investment portfolio, 100 bp all tenors
-- [ ] as of **September 27, 2025** (prior year $2,755m)
-- [ ] term debt is a **separate line**: 100 bp → **$129** million increase in annual interest expense
+- [x] **$2,416** million decline in fair value, investment portfolio, 100 bp all tenors
+- [x] as of **September 27, 2025** (prior year $2,755m)
+- [x] term debt is a **separate line**: 100 bp → **$129** million increase in annual interest expense
 
 **MSFT** `0000950170-25-100235:Item 7A:1` · https://www.sec.gov/Archives/edgar/data/789019/0000950170-25-100235-index.html
 
-- [ ] **(1,415)** million, "100 basis point increase in U.S. treasury interest rates", impact = **Fair Value**
-- [ ] as of **June 30, 2025**
-- [ ] the table is headed "potential loss in future earnings or fair values, **including associated
+- [x] **(1,415)** million, "100 basis point increase in U.S. treasury interest rates", impact = **Fair Value**
+- [x] as of **June 30, 2025**
+- [x] the table is headed "potential loss in future earnings or fair values, **including associated
       derivatives**" — Apple's is not worded that way
 
 **META** `0001628280-26-003942:Item 7A:3` · https://www.sec.gov/Archives/edgar/data/1326801/0001628280-26-003942-index.html
 
-- [ ] **$711** million decrease, 100 bp increase in market interest rates
-- [ ] covers **available-for-sale debt securities AND cash equivalents** (a wider instrument set
+- [x] **$711** million decrease, 100 bp increase in market interest rates
+- [x] covers **available-for-sale debt securities AND cash equivalents** (a wider instrument set
       than Apple's "investment portfolio")
-- [ ] as of **December 31, 2025** (prior year $680m)
+- [x] as of **December 31, 2025** (prior year $680m)
 
-- [ ] **the basis/date differences as stated in the reference are accurate** — if they are not, the
+- [x] **the basis/date differences as stated in the reference are accurate** — if they are not, the
       row must be re-worded or demoted to two filers, because the whole defence of keeping it is
       that the reference discloses the mismatch
 
@@ -165,18 +174,18 @@ Both halves need checking; the second is the one that makes the row honest.
 
 **NVDA** `0001045810-26-000021:Item 7A:1` · https://www.sec.gov/Archives/edgar/data/1045810/0001045810-26-000021-index.html
 
-- [ ] hypothetical **10 %** decrease in publicly-held equity securities → fair value down **$1.8 billion**
-- [ ] "and an insignificant amount" for the prior year — as of **January 25, 2026** and January 26, 2025
-- [ ] non-marketable equity securities measured at **cost minus impairment**, adjusted for
+- [x] hypothetical **10 %** decrease in publicly-held equity securities → fair value down **$1.8 billion**
+- [x] "and an insignificant amount" for the prior year — as of **January 25, 2026** and January 26, 2025
+- [x] non-marketable equity securities measured at **cost minus impairment**, adjusted for
       observable price changes
 
 **AMZN** `0001018724-26-000004:Item 7A:8`, `:9` · https://www.sec.gov/Archives/edgar/data/1018724/0001018724-26-000004-index.html
 
-- [ ] recorded value in equity, equity warrant and convertible debt investments = **$69.1 billion**
+- [x] recorded value in equity, equity warrant and convertible debt investments = **$69.1 billion**
       as of December 31, 2025
-- [ ] publicly traded portion **$5.0 billion**, "which include our equity investment in **Rivian**"
-- [ ] private-company holdings "primarily relate to **Anthropic**"
-- [ ] Amazon states "we believe that market sensitivities are **not practicable**" — the row's
+- [x] publicly traded portion **$5.0 billion**, "which include our equity investment in **Rivian**"
+- [x] private-company holdings "primarily relate to **Anthropic**"
+- [x] Amazon states "we believe that market sensitivities are **not practicable**" — the row's
       asymmetry (NVDA quantifies, AMZN declines to) rests on this sentence
 
 ---
@@ -185,18 +194,302 @@ Both halves need checking; the second is the one that makes the row honest.
 
 **TSLA** `0001628280-26-003952:Item 7A:1` · https://www.sec.gov/Archives/edgar/data/1318605/0001628280-26-003952-index.html
 
-- [ ] **10 %** adverse change, all currencies → gain or loss of **$1.70 billion** at December 31, 2025
-- [ ] **$1.15 billion** at December 31, 2024
-- [ ] "assuming no foreign currency hedging"; and `:0` — Tesla "do[es] not typically hedge foreign
+- [x] **10 %** adverse change, all currencies → gain or loss of **$1.70 billion** at December 31, 2025
+- [x] **$1.15 billion** at December 31, 2024
+- [x] "assuming no foreign currency hedging"; and `:0` — Tesla "do[es] not typically hedge foreign
       currency risk", primary exposures the **Chinese yuan and euro**
 
 **META** `0001628280-26-003942:Item 7A:1`, `:2` · https://www.sec.gov/Archives/edgar/data/1326801/0001628280-26-003942-index.html
 
-- [ ] FX transaction **gains, net $352 million** for FY2025
-- [ ] FX transaction **losses, net $690 million (2024) and $366 million (2023)** — note the sign
+- [x] FX transaction **gains, net $352 million** for FY2025
+- [x] FX transaction **losses, net $690 million (2024) and $366 million (2023)** — note the sign
       flips between 2025 and the prior years; the reference states it that way
-- [ ] beginning in 2025, short-term FX forwards for cash management, **not designated as hedging
+- [x] beginning in 2025, short-term FX forwards for cash management, **not designated as hedging
       instruments**, **none outstanding** at December 31, 2025
+
+---
+
+# Prose rows (verbatim-quote pass)
+
+The remaining 18 rows: S2–S7, E1, T1–T7, M1, M3, M4, M5. Together with the 10 above this covers
+all 28, which is what the conjunction test requires before either flag can flip.
+
+**Why the bar is lower here.** These references quote their chunks **verbatim** — there was no
+transcription step between the ingested text and the reference, so there is nothing to
+re-derive and no arithmetic or column-attribution to get wrong. That is what the numeric section
+above is guarding against and it does not apply here. Two residual risks remain, and a single
+search in the filing settles both at once:
+
+- **ingestion fidelity** — the extractor could have mangled, truncated or spliced the passage, so
+  the words I quote might not be the words the filer wrote;
+- **wrong Item attribution** — the passage could be real but sit in a different Item than the row
+  declares, which would make the row cite grounding the KB does not hold under that label.
+
+So: search the phrase, confirm it appears, and confirm the Item heading above it is the one the
+row names. Two boxes, one search.
+
+**Reading the search phrases.** Each is lifted verbatim from the quoted passage and chosen to be
+distinctive rather than boilerplate — every one was checked against the whole 5,842-chunk corpus
+and every one is confined to its intended filer. Where a phrase spans more than one chunk that is
+the chunker's overlap window, not a second occurrence: in the filing it is one place. Case is as
+filed; the em-dashes and curly quotes in the JSON passages are the filer's own, which is why the
+phrases below avoid them.
+
+---
+
+## S2 — MSFT · Item 1A · FY2025
+
+`0000950170-25-100235:Item 1A:0`, `:1`, `:2` · https://www.sec.gov/Archives/edgar/data/789019/0000950170-25-100235-index.html
+
+Search: **"narrower product lines may let them be more effective in deploying technical"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## S3 — AAPL · Item 1A · FY2025
+
+`0000320193-25-000079:Item 1A:0`, `:1`, `:2` · https://www.sec.gov/Archives/edgar/data/320193/0000320193-25-000079-index.html
+
+Search: **"global supply chain is large and complex"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A** — and *not* in Goldman's or JPMorgan's Apple Card discussion, which is
+      this row's 45 labelled false positives
+
+---
+
+## S4 — MSFT · Item 7A · FY2025
+
+`0000950170-25-100235:Item 7A:0` · https://www.sec.gov/Archives/edgar/data/789019/0000950170-25-100235-index.html
+
+Search: **"monitor our foreign currency exposures daily to maximize the economic effectiveness"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7A**
+
+---
+
+## S5 — AMZN · Item 1A · FY2025
+
+`0001018724-26-000004:Item 1A:3` · https://www.sec.gov/Archives/edgar/data/1018724/0001018724-26-000004-index.html
+
+Search: **"e-commerce services, web and infrastructure computing services"**
+
+The obvious phrase — "rapidly evolving and intensely competitive" — also appears in Alphabet's
+filing, so this longer one is used instead.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## S6 — GS · Item 7 · FY2025 · `pointer-filer`
+
+`0000886982-26-000091:Item 7:311`, `:313` · https://www.sec.gov/Archives/edgar/data/886982/0000886982-26-000091-index.html
+
+Search: **"positions held for market making for our clients and for our investing and financing activities"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7** — and Goldman's Item 7A is a pointer into Item 7, holding no market-risk
+      text of its own. This is the row that asserts the pointer-filer rule, so the Item check *is*
+      the substance here, not a formality.
+
+---
+
+## S7 — F · Item 1A · FY2025
+
+`0000037996-26-000015:Item 1A:7`, `:69` · https://www.sec.gov/Archives/edgar/data/37996/0000037996-26-000015-index.html
+
+Search: **"continued strain in U.S.-China relations"** (chunk `:69`)
+
+The row's other chunk `:7` carries a near-identical planning sentence; Ford states it twice, which
+is why the row cites both.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## E1 — JNJ · Item 1A · FY2025
+
+`0000200406-26-000016:Item 1A:22` · https://www.sec.gov/Archives/edgar/data/200406/0000200406-26-000016-index.html
+
+Search: **"does not purchase third-party product liability insurance"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## T1 — NVDA · Item 1 · **FY2026**
+
+`0001045810-26-000021:Item 1:0` · https://www.sec.gov/Archives/edgar/data/1045810/0001045810-26-000021-index.html
+
+Search: **"data center scale AI infrastructure company reshaping all industries"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1**, in the **FY2026** 10-K
+
+---
+
+## T2 — F · Item 7 · FY2025
+
+`0000037996-26-000015:Item 7:110` · https://www.sec.gov/Archives/edgar/data/37996/0000037996-26-000015-index.html
+
+Search: **"leverage framework that targets investment grade credit ratings"**
+
+Same chunk as E6, already checked for its figures above — this box is only the leverage-framework
+sentence T2's reference quotes.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7**
+
+---
+
+## T3 — TSLA · Item 1A · FY2025
+
+`0001628280-26-003952:Item 1A:6` · https://www.sec.gov/Archives/edgar/data/1318605/0001628280-26-003952-index.html
+
+Search: **"thousands of parts purchased globally from hundreds of suppliers"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## T4 — AMZN · Item 1 · FY2025
+
+`0001018724-26-000004:Item 1:1` · https://www.sec.gov/Archives/edgar/data/1018724/0001018724-26-000004-index.html
+
+Search: **"organized our operations into three segments"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1** — Amazon repeats the segment list in Item 7 and Item 8, so confirm the
+      hit is the Item 1 one
+
+---
+
+## T5 — LLY · Item 1A · FY2025
+
+`0000059478-26-000013:Item 1A:33` · https://www.sec.gov/Archives/edgar/data/59478/0000059478-26-000013-index.html
+
+Search: **"cardiometabolic health products will continue to represent a significant and growing portion"**
+
+Same chunk as E2, whose figures are checked above — this box is the qualitative sentence T5's
+reference adds.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## T6 — MSFT · Item 7 · FY2025
+
+`0000950170-25-100235:Item 7:9` · https://www.sec.gov/Archives/edgar/data/789019/0000950170-25-100235-index.html
+
+Search: **"presented on a basis consistent with our internal management reporting"**
+
+The segment names themselves recur throughout the filing, so this sentence is the anchor.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7**
+
+---
+
+## T7 — GM · Item 1A · FY2025
+
+`0001467858-26-000013:Item 1A:38`, `:39` · https://www.sec.gov/Archives/edgar/data/1467858/0001467858-26-000013-index.html
+
+Search: **"reducing or pausing certain imports"** (chunk `:39`)
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## M1 — TSLA, two Items, FY2025 · `decomposition-hop`
+
+One filer, two Sections, so two blocks. The margin figures in Item 7 chunk `:57` are checked under
+E4 above; these boxes are the liquidity and cyclicality prose plus the Item 1A half.
+
+**TSLA Item 7** `0001628280-26-003952:Item 7:5`, `:10`, `:57` · https://www.sec.gov/Archives/edgar/data/1318605/0001628280-26-003952-index.html
+
+Search: **"overall growth has allowed our business to generally fund itself"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7**
+
+**TSLA Item 1A** `0001628280-26-003952:Item 1A:6`
+
+Search: **"U.S. trade policy alterations in 2025"**
+
+Same chunk as T3 — one search covers both rows.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## M3 — F + GM, both Item 1A, FY2025 · `cross-filer`
+
+**F** `0000037996-26-000015:Item 1A:69` · https://www.sec.gov/Archives/edgar/data/37996/0000037996-26-000015-index.html
+
+Search: **"Unprecedented trade policy (including tariffs)"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+**GM** `0001467858-26-000013:Item 1A:38`, `:39` · https://www.sec.gov/Archives/edgar/data/1467858/0001467858-26-000013-index.html
+
+Search: **"cannot predict with complete precision the breadth of tariffs"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+---
+
+## M4 — BAC + GS, both Item 7, FY2025 · `cross-filer` · `pointer-filer`
+
+Both filers are pointer filers with no Item 7A of their own, so as with S6 the Item check is the
+substance of this row rather than a formality.
+
+**BAC** `0000070858-26-000157:Item 7:307` · https://www.sec.gov/Archives/edgar/data/70858/0000070858-26-000157-index.html
+
+Search: **"primarily within our Global Markets segment"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7**, and BAC's Item 7A is a pointer into Item 7
+
+**GS** `0000886982-26-000091:Item 7:311` · https://www.sec.gov/Archives/edgar/data/886982/0000886982-26-000091-index.html
+
+Search: **"adverse impact to our earnings due to changes in market conditions"**
+
+Same chunk as S6 — one search covers both rows.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 7**, and GS's Item 7A is a pointer into Item 7
+
+---
+
+## M5 — PFE + LLY, both Item 1A, FY2025 · `cross-filer`
+
+**PFE** `0000078003-26-000026:Item 1A:14`, `:15`, `:19` · https://www.sec.gov/Archives/edgar/data/78003/0000078003-26-000026-index.html
+
+Search: **"patent-based or regulatory exclusivity expiries in 2026 through 2030"**
+
+Pfizer states this twice (chunks `:14` and `:19`), which is why the row cites both.
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
+
+**LLY** `0000059478-26-000013:Item 1A:40` · https://www.sec.gov/Archives/edgar/data/59478/0000059478-26-000013-index.html
+
+Search: **"Trulicity will lose significant patent and remaining data protections"**
+
+- [ ] the quoted passage appears in the filing
+- [ ] it is in **Item 1A**
 
 ---
 
