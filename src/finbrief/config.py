@@ -400,7 +400,12 @@ GATE_LATENCY_BUDGET_PREREGISTERED_MS = 800
 #: the gate *is* this fast, measured from the structured logs over a real run, and a gate that
 #: enforced it by abandoning slow calls would satisfy the number by not doing the work.
 #: `security/report.py` compares the measured p50 against this and the README quotes it, so the
-#: prose and the verdict cannot disagree.
+#: prose and the verdict cannot disagree — bound by
+#: `tests/test_grounding_scope.py::test_the_readme_names_both_latency_budgets`, as an **equality
+#: on the millisecond figure**. That test asserted `GATE_LATENCY_BUDGET_MS // 1000` against the
+#: string `"1 s"` until issue #8's review, which made 1000–1999 ms indistinguishable *and*
+#: passed on the words "the Tier-1 spec" while the README named no revised figure — so this
+#: sentence was false in the one place written to keep it true.
 #:
 #: One second rather than 800 ms, and revised for reasons rather than to fit: it is a figure the
 #: gate cleared on every one of eight measured passes, where 800 ms was cleared on two. The gate

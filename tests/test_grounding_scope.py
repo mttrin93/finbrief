@@ -240,6 +240,16 @@ def test_the_readme_names_both_latency_budgets():
     A README quoting only the budget now being met would turn a revised pre-registration into a
     number that had always held, which is the whole reason
     `GATE_LATENCY_BUDGET_PREREGISTERED_MS` still exists (ADR-0006 T7 amendment §2).
+
+    **Both assertions are equalities on the millisecond figure, and the second one used not to
+    be.** It read `f"{GATE_LATENCY_BUDGET_MS // 1000} s" in readme or "1s" in readme`, which is
+    two defects in one line: the floor division made 1000–1999 ms indistinguishable, so the
+    binding this test exists to enforce would have survived the budget moving to 1900; and the
+    README did not name the revised figure at all — the assertion passed on the substring
+    `"1 s"` inside "the Tier-**1 s**pec", an accident (issue #8 review). `config.py`'s claim
+    that the README quotes this constant "so the prose and the verdict cannot disagree" was
+    therefore false, in the one test written to keep it true. Prefer an equality over a bound
+    (CLAUDE.md).
     """
     from finbrief.config import (
         GATE_LATENCY_BUDGET_MS,
@@ -249,4 +259,4 @@ def test_the_readme_names_both_latency_budgets():
     readme = README.read_text(encoding="utf-8")
 
     assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in readme
-    assert f"{GATE_LATENCY_BUDGET_MS // 1000} s" in readme or "1s" in readme
+    assert f"{GATE_LATENCY_BUDGET_MS} ms" in readme
