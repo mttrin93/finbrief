@@ -358,8 +358,43 @@ def test_a_turn_answered_from_the_conversation_shows_no_panel_and_no_banner(app,
     assert "Two risks, briefly: […]" in [md.value for md in assistant.markdown]
     assert not assistant.expander
     assert not app.warning
+    captions = [caption.value for caption in assistant.caption]
     # The disclaimer is still owed — it is not a property of having retrieved something.
-    assert DISCLAIMER in [caption.value for caption in assistant.caption]
+    assert DISCLAIMER in captions
+    # And the empty space is **accounted for**. Without this the turn renders identically to one
+    # whose tools all failed, and a reader cannot tell "nothing needed fetching" from "nothing
+    # could be fetched" — an absence reported as a measurement (CLAUDE.md). Recorded as a
+    # decision on this ticket and shipped uncaptioned until #9's review.
+    assert any("Answered from context already retrieved" in value for value in captions)
+    assert any("no new search, so no new sources to cite" in value for value in captions)
+
+
+def test_a_turn_that_used_a_tool_is_not_captioned_as_context_reuse(app, monkeypatch):
+    # The note's other half: it must not appear on a turn that *did* call something, or it stops
+    # meaning anything. A finance card and no search is still a turn that fetched.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+    app.run()
+
+    app.chat_input[0].set_value("What is Tesla trading at?").run()
+
+    assert not app.exception
+    captions = [caption.value for caption in app.chat_message[1].caption]
+    assert not any("Answered from context already retrieved" in value for value in captions)
+
+
+def test_the_context_reuse_note_survives_the_next_rerun(app, monkeypatch):
+    # Replayed from the transcript row rather than recomputed, and through the same `getattr`
+    # tolerance the cards use: reading `turn.used_tools` on a row written before T5 would reach
+    # the missing `cards` field and raise, which is why the caller passes the fact in.
+    stub_answer(monkeypatch, a_turn_without_searching())
+    app.run()
+    app.chat_input[0].set_value("Summarise that in two lines.").run()
+
+    app.chat_input[0].set_value("And the valuation?").run()
+
+    assert not app.exception
+    captions = [caption.value for caption in app.chat_message[1].caption]
+    assert any("Answered from context already retrieved" in value for value in captions)
 
 
 def test_a_turn_that_did_not_search_replays_without_a_banner(app, monkeypatch):
@@ -485,12 +520,16 @@ def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsy
 
 def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
     # The generation tier's named case. A step-limit failure reads to a user as the app hanging
-    # and then dying, so it gets a message about *their* question rather than
-    # `GraphRecursionError: Recursion limit of 24 reached`.
+    # and then dying, so it gets a message about *their* question rather than LangGraph's own
+    # "Recursion limit of N reached". The N is `MAX_AGENT_STEPS`, read rather than typed: the
+    # message is the thing under test and a stale literal here would still pass while describing
+    # a limit the agent no longer has (issue #9 review).
     from langgraph.errors import GraphRecursionError
 
+    from finbrief.agent.agent import MAX_AGENT_STEPS
+
     def out_of_steps(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
-        raise GraphRecursionError("Recursion limit of 24 reached")
+        raise GraphRecursionError(f"Recursion limit of {MAX_AGENT_STEPS} reached")
 
     monkeypatch.setattr(agent, "answer", out_of_steps)
     app.run()

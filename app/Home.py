@@ -37,6 +37,7 @@ from langgraph.errors import GraphRecursionError
 from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
     CLUSTERS,
+    HISTORY_PERIOD_LABEL,
     MAX_QUESTION_CHARS,
     PEERS,
     UNIVERSE,
@@ -477,7 +478,12 @@ def _render_quote(card: QuoteCard) -> None:
             y="close",
             height=180,
         )
-        st.caption(f"Daily closes, last month ({len(quote.closes)} sessions).")
+        # `HISTORY_PERIOD_LABEL`, not "last month" typed again. That constant exists because the
+        # window was already prose in the tool description and `"1mo"` in `quotes.py` — and this
+        # caption was a third copy (issue #9 review). The session count stays derived from the
+        # data rather than from the label: `"1mo"` yields ~21 trading sessions, not 30, and the
+        # exact number is a property of the response.
+        st.caption(f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions).")
 
 
 def _render_ratios(card: RatiosCard) -> None:
@@ -620,6 +626,34 @@ def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
             st.text(context.body)
 
 
+def render_context_reuse_note(*, used_tools: bool) -> None:
+    """Say so when a turn answered from the conversation instead of calling anything.
+
+    **The absence this exists to stop being silent.** A follow-up like "summarise that" or a
+    second "give me the full brief" in a warm thread is answered from what the thread already
+    retrieved — correct context reuse, and the behaviour ADR-0008's checkpointed history is for.
+    But it renders as an answer with no cards, no sources panel and no "how I answered", which
+    is *pixel-identical* to a turn whose tools all failed. A reader cannot tell "nothing needed
+    fetching" from "nothing could be fetched", and CLAUDE.md's rule is that an absence must not
+    be reported as a measurement: "we cannot say what this query found" is a different claim
+    from "this query found nothing".
+
+    It was recorded as a decision on this ticket — warm-thread briefs make zero tool calls and
+    are captioned on the turn — and `AgentTurn.used_tools` was added for it, but nothing ever
+    read that property outside the tests (issue #9 review). This is the reader.
+
+    Deliberately a caption and not a banner: reuse is the *correct* path, so it is a note about
+    provenance rather than a warning about a problem. The failure cases already have banners of
+    their own, from `render_sources` and `tools/finance.py`.
+    """
+    if used_tools:
+        return
+    st.caption(
+        ":material/history: Answered from context already retrieved in this conversation; "
+        "no new search, so no new sources to cite."
+    )
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -644,10 +678,15 @@ for message in st.session_state.messages:
                 #
                 # `.cards` through `getattr`, because a row written before T5 holds an
                 # `AgentTurn` with no such field — the same one-rerun-after-deploy window every
-                # `from_payload` on this path tolerates, and why the field is defaulted.
-                render_tool_cards(getattr(turn, "cards", ()))
+                # `from_payload` on this path tolerates, and why the field is defaulted. Bound
+                # to a local rather than read twice: `turn.used_tools` would reach the same
+                # missing attribute without the tolerance, so the note below is told the fact
+                # instead of asked to derive it.
+                cards = getattr(turn, "cards", ())
+                render_tool_cards(cards)
                 render_sources(turn.contexts, searched=turn.searched)
                 render_how_i_answered(turn.searches)
+                render_context_reuse_note(used_tools=bool(turn.searches or cards))
             elif (contexts := message.get("contexts")) is not None:
                 # The T4 row shape, kept readable for the same one-rerun window. `searched`
                 # defaults to True because before the agent existed contexts were always
@@ -702,8 +741,8 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
             # The **generation tier** of PLAN §2's tiered handling: a failure of the answering
             # loop itself rather than of a data source. The agent ran out of steps, which reads
             # to a user as the app hanging and then dying — so it gets its own message naming
-            # the cause and the action, where the generic branch below would print
-            # `GraphRecursionError: Recursion limit of 24 reached`.
+            # the cause and the action, where the generic branch below would print LangGraph's
+            # own "Recursion limit of N reached" with `MAX_AGENT_STEPS` in place of N.
             status.update(label="Gave up", state="error", expanded=False)
             st.error(
                 "That question took more tool calls than FinBrief allows in one turn. Ask it "
@@ -727,6 +766,9 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
             render_tool_cards(reply.cards)
             render_sources(reply.contexts, searched=reply.searched)
             render_how_i_answered(reply.searches)
+            # `used_tools` direct here, unlike the replay path above: this object was built by
+            # *this* process, so it cannot predate the current shape.
+            render_context_reuse_note(used_tools=reply.used_tools)
             st.caption(DISCLAIMER)
             st.session_state.messages.append(
                 {

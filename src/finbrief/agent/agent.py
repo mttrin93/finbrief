@@ -338,8 +338,14 @@ def answer(
     caller wants progress.
 
     Raises whatever the model, the tools or the store raise — including
-    `GraphRecursionError` once a loop exceeds `MAX_AGENT_STEPS`. The caller renders the
-    failure; tiered error handling lands in Phase 5.
+    `GraphRecursionError` once a loop exceeds `MAX_AGENT_STEPS`. **The caller renders the
+    failure, and that is the whole division of labour**: this function does not classify an
+    error, because the three tiers PLAN §2 names are distinguished by what the *reader* can do
+    about them, and only the surface knows that. `app/Home.py` catches `GraphRecursionError` as
+    the generation tier, `tools/finance.py` turns a dead API into a refusal-as-result before it
+    ever reaches here (the API tier), and `retrieval` returns an empty result rather than
+    raising (the retrieval tier). T5 shipped all three; this sentence used to say they were
+    still to come (issue #9 review).
     """
     started = time.perf_counter()
     state: dict[str, Any] = {}

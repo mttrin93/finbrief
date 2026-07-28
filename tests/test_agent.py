@@ -494,15 +494,44 @@ def test_the_agent_binds_all_four_tools(tmp_path, filings_store):
     }
 
 
+#: Super-steps in one round of the agent loop: the register's `before_model` node, the model,
+#: the tool node. Named because three separate assertions below are about it.
+SUPER_STEPS_PER_ROUND = 3
+
+#: Tool calls a full brief needs made serially — business, risks, valuation, news (demo step 4).
+FULL_BRIEF_TOOL_CALLS = 4
+
+
+def test_the_step_ceiling_is_the_value_the_arithmetic_argues_for():
+    # **Holds the value, not an inequality.** This test used to assert
+    # `serial_full_brief < MAX_AGENT_STEPS`, which 20, 24 and 15 all satisfy — so it pinned
+    # nothing, and a regression that halved the ceiling would have stayed green until the demo
+    # (issue #9 review). The number and the reasoning that produced it are asserted separately:
+    # the equality catches a silent change, the derivation below says whether a *deliberate*
+    # change is still enough.
+    assert MAX_AGENT_STEPS == 24
+
+
 def test_the_step_ceiling_clears_a_full_brief_made_one_tool_at_a_time():
     # The arithmetic `MAX_AGENT_STEPS` is set from, asserted rather than left in a comment: one
-    # round of the loop is three super-steps (the register's `before_model` node, the model, the
-    # tool node), so a brief's four tool calls made serially cost 3 × 4 + 2 = 14. At T4's twelve
-    # the one demo query this ticket exists to deliver would have raised `GraphRecursionError`,
-    # and only for models that decline to fan out.
-    serial_full_brief = 3 * 4 + 2
+    # round of the loop is three super-steps, so a brief's four tool calls made serially cost
+    # 3 × 4 + 2 = 14. At T4's twelve the one demo query this ticket exists to deliver would have
+    # raised `GraphRecursionError`, and only for models that decline to fan out.
+    serial_full_brief = SUPER_STEPS_PER_ROUND * FULL_BRIEF_TOOL_CALLS + 2
 
-    assert serial_full_brief < MAX_AGENT_STEPS
+    assert serial_full_brief == 14, "the arithmetic in `agent.py`'s comment, executed"
+    assert serial_full_brief <= MAX_AGENT_STEPS
+
+
+def test_the_step_ceiling_keeps_the_headroom_its_comment_claims():
+    # `agent.py` says twenty-four "leaves room for seven serial rounds: the four a brief needs,
+    # plus a retry after a refused ticker and headroom for a model that thinks in smaller
+    # pieces". That is a claim about a quotient, so it is checked as one — lowering the ceiling
+    # to 14 would still clear the test above while deleting every one of those spare rounds.
+    serial_rounds = (MAX_AGENT_STEPS - 2) // SUPER_STEPS_PER_ROUND
+
+    assert serial_rounds == 7
+    assert serial_rounds - FULL_BRIEF_TOOL_CALLS == 3, "three rounds spare beyond a full brief"
 
 
 def test_a_finance_tool_result_comes_back_on_the_turn_as_a_card(tmp_path, filings_store):
