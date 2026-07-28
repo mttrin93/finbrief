@@ -48,6 +48,14 @@ class GateResult:
     #: The layer the corpus says must stop it, or `None` for a benign question.
     expected: Layer | None
     screening: Screening
+    #: Whether layer 2 caught this case **only** because layer 1 folded it first —
+    #: `input_gate.folding_required`, which owns the measurement and the argument for it.
+    #:
+    #: **Required rather than defaulted, like `InjectionResult.retrieved` and for the same
+    #: reason.** A default of `False` would let a caller that forgot to measure report layer 1
+    #: catching nothing, and a zero in that cell is indistinguishable from a layer with no
+    #: evidence for its place — which is the claim the whole table rests on (issue #8 review).
+    folding_required: bool
 
     @property
     def passed(self) -> bool:
@@ -195,6 +203,11 @@ def _marginal_contribution(run: SuiteRun) -> str:
 
     The "caught here" column is the whole argument: a layer whose number is zero is a layer with
     no evidence for its place, and a reader can check that claim against the rows below.
+
+    **Every one of the four is a measurement of this run**, which was not true of layer 1's
+    until issue #8's review: it counted corpus rows by their `technique` label, so it could
+    not have reached zero however little normalisation contributed.
+    `input_gate.folding_required` is the measurement; `GateResult.folding_required` carries it.
     """
     by_denylist = [
         result
@@ -206,12 +219,10 @@ def _marginal_contribution(run: SuiteRun) -> str:
         for result in run.gate
         if result.screening.blocked and result.screening.layer is Layer.CLASSIFIER
     ]
-    obfuscated = [
-        result
-        for result in run.gate
-        if result.expected is Layer.DENYLIST
-        and result.technique != "plain instruction override"
-    ]
+    # Layer 1's cell, **measured** — `input_gate.folding_required` per case, recorded by the
+    # run. No filter on `expected` is needed and none is wanted: a case layer 2 does not catch
+    # at all reports `False`, so this counts exactly the catches layer 1 made possible.
+    folded = [result for result in run.gate if result.folding_required]
     refused = [result for result in run.answers if result.refused]
     return f"""\
 ## Marginal contribution — what each layer catches that the one before it does not
@@ -220,8 +231,8 @@ def _marginal_contribution(run: SuiteRun) -> str:
 |---|---|---|---|---|
 | 1 | Normalisation | *Obfuscation.* Folds case, accents, leetspeak, zero-width joiners, \
 fullwidth Latin, homoglyphs and letter-spacing into one surface form, so layer 2 needs one \
-rule per payload family rather than one per spelling. | {len(obfuscated)} obfuscated \
-spelling(s) reduced to a form layer 2 matches | Pure function, no model call |
+rule per payload family rather than one per spelling. | {len(folded)} case(s) layer 2 catches \
+only after folding | Pure function, no model call |
 | 2 | Bounded-gap denylist | *Known payload families*, for free. {len(RULES)} rules, each \
 naming what it is for. A catch exits the gate; a pass **always** escalates. | \
 {len(by_denylist)} | Pure function, no model call |
@@ -233,10 +244,12 @@ advice nobody asked for and the result of a successful indirect injection — ne
 any input layer sees. {len(ADVICE_RULES)} rules. | {len(refused)} answer(s) refused | Pure \
 function, no model call |
 
-None of the four is redundant, and the rows below are what that claim rests on:
-layer 2 catches nothing layer 1 did not first make matchable, and layer 3's
-column counts only the cases layer 2 verifiably passed (`tests/test_input_gate.py`
-asserts that gap in both directions).
+None of the four is redundant, and every count above is a measurement rather than a
+row count. Layer 1's is `input_gate.folding_required` per case — layer 2 caught it
+after folding and would **not** have caught the raw string — so the cell goes to
+zero if normalisation stops contributing, which a count of corpus rows could not do.
+Layer 3's counts only the cases layer 2 verifiably passed
+(`tests/test_input_gate.py` asserts that gap in both directions).
 """
 
 

@@ -33,7 +33,13 @@ from finbrief.security.report import (
 
 
 def a_gate_result(
-    *, expected=Layer.DENYLIST, blocked=True, layer=Layer.DENYLIST, ms=1, escalated=False
+    *,
+    expected=Layer.DENYLIST,
+    blocked=True,
+    layer=Layer.DENYLIST,
+    ms=1,
+    escalated=False,
+    folded=False,
 ) -> GateResult:
     return GateResult(
         case_id="case",
@@ -46,6 +52,7 @@ def a_gate_result(
             classifier_verdict=Verdict.SAFE if escalated and not blocked else None,
             latency_ms=ms,
         ),
+        folding_required=folded,
     )
 
 
@@ -284,6 +291,24 @@ def test_the_marginal_contribution_table_counts_this_runs_catches() -> None:
 
     assert "Marginal contribution" in report
     assert "1 answer(s) refused" in report
+
+
+def test_layer_ones_cell_counts_the_cases_folding_actually_caught() -> None:
+    """The count that could not fail, now able to.
+
+    It was every `DENYLIST` case whose `technique` was not the string
+    `"plain instruction override"` — a row count that reported 12 against a measured 9, and
+    credited layer 1 with six payloads carrying no obfuscation. It would have read 12 with
+    `normalize.py` deleted (issue #8 review). Both directions, because only the second one
+    distinguishes a measurement from a tally.
+    """
+    folded = render_report(
+        a_run(gate=(a_gate_result(folded=True), a_gate_result(folded=False)))
+    )
+    none_folded = render_report(a_run(gate=(a_gate_result(folded=False),) * 3))
+
+    assert "1 case(s) layer 2 catches only after folding" in folded
+    assert "0 case(s) layer 2 catches only after folding" in none_folded
 
 
 def test_an_answer_containing_a_pipe_cannot_break_the_table() -> None:

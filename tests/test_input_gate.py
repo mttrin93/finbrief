@@ -30,7 +30,7 @@ from finbrief.prompts import (
 from finbrief.security import corpus
 from finbrief.security.classifier import Verdict, classify
 from finbrief.security.denylist import denylisted
-from finbrief.security.input_gate import Layer, screen
+from finbrief.security.input_gate import Layer, folding_required, screen
 from finbrief.security.normalize import normalise
 
 SETTINGS = Settings.from_env({"OPENROUTER_API_KEY": "test-key"})
@@ -213,6 +213,73 @@ def test_every_classifier_case_gets_past_the_denylist(case) -> None:
 @pytest.mark.parametrize("question", corpus.BENIGN_QUESTIONS)
 def test_a_benign_question_is_allowed_by_the_whole_gate(question: str) -> None:
     assert a_screening(question, CLASSIFIER_SAFE_LABEL).blocked is False
+
+
+# --------------------------------------------------------------------------------------
+# Layer 1's marginal contribution, as a measurement (user story 34)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["override-leetspeak", "override-zero-width", "override-cyrillic", "override-fullwidth"],
+)
+def test_an_obfuscated_payload_is_caught_only_because_layer_one_folded_it(case_id: str) -> None:
+    """The claim layer 1's cell in the artifact makes, per obfuscation family.
+
+    Asserted through `folding_required` rather than through a verdict, for the reason
+    `test_normalization.py` gives about its own assertions: a test that only checked "this gets
+    blocked" passes with the rule doing all the work.
+    """
+    payload = next(case.payload for case in corpus.DIRECT_CASES if case.id == case_id)
+
+    assert folding_required(payload) is True
+
+
+@pytest.mark.parametrize("case_id", ["role-spoof", "delimiter-forgery"])
+def test_a_structural_rule_owes_layer_one_nothing(case_id: str) -> None:
+    """The half the old count got wrong, and the reason this is a measurement now.
+
+    `role-spoof` and `delimiter-forgery` match `:`, `<` and `>` — characters normalisation
+    *destroys* — so they are `raw=True` rules and folding cannot be what makes them match. The
+    artifact nonetheless counted them among layer 1's "obfuscated spelling(s)", because the cell
+    was `technique != "plain instruction override"` over the corpus rather than a measurement
+    (issue #8 review). If this ever reports `True`, either a rule stopped being raw or the
+    counterfactual in `folding_required` no longer means "layer 1 did nothing".
+    """
+    payload = next(case.payload for case in corpus.DIRECT_CASES if case.id == case_id)
+
+    assert folding_required(payload) is False
+
+
+def test_layer_one_is_credited_with_less_than_every_denylist_catch() -> None:
+    """A strict inequality, because "all of them" is what the broken count effectively said.
+
+    12 of 13 is the number a row count produces; the measured answer is smaller because several
+    denylist cases are plain text or structural. This is the shape of assertion that would have
+    caught it — the old cell could not have failed here only by accident.
+    """
+    denylist_cases = [c for c in corpus.DIRECT_CASES if c.caught_by is Layer.DENYLIST]
+    folded = [c for c in denylist_cases if folding_required(c.payload)]
+
+    assert 0 < len(folded) < len(denylist_cases)
+
+
+@pytest.mark.parametrize("question", corpus.BENIGN_QUESTIONS)
+def test_no_benign_question_is_credited_to_layer_one(question: str) -> None:
+    """`folding_required` is only ever `True` about a catch, so a benign question owes nothing.
+
+    This is what lets the report count over *every* gate row without filtering on `expected`.
+    """
+    assert folding_required(question) is False
+
+
+@pytest.mark.parametrize(
+    "case", [c for c in corpus.DIRECT_CASES if c.caught_by is Layer.CLASSIFIER]
+)
+def test_no_classifier_case_is_credited_to_layer_one(case) -> None:
+    """Layer 2 catches these in neither form, so folding cannot be what caught them."""
+    assert folding_required(case.payload) is False
 
 
 # --------------------------------------------------------------------------------------

@@ -38,7 +38,7 @@ from finbrief.config import Settings, get_settings
 from finbrief.observability.logging_setup import configure_logging
 from finbrief.security import corpus
 from finbrief.security.advice import validate_answer
-from finbrief.security.input_gate import screen
+from finbrief.security.input_gate import folding_required, screen
 from finbrief.security.report import (
     AnswerResult,
     GateResult,
@@ -79,6 +79,10 @@ def run_gate(settings: Settings) -> tuple[GateResult, ...]:
             technique=case.technique,
             expected=case.caught_by,
             screening=screen(case.payload, settings=settings),
+            # Layer 1's marginal contribution, per case. Pure and free — two denylist scans —
+            # and recorded here rather than inferred in the report, so the artifact's layer-1
+            # cell is a measurement of this run like every other cell (issue #8 review).
+            folding_required=folding_required(case.payload),
         )
         for case in corpus.DIRECT_CASES
     ]
@@ -90,6 +94,10 @@ def run_gate(settings: Settings) -> tuple[GateResult, ...]:
             technique="benign analyst question",
             expected=None,
             screening=screen(question, settings=settings),
+            # Measured for a benign question too, rather than hardcoded `False`: a question that
+            # only escapes layer 2 because it was *not* folded would be a false negative worth
+            # seeing, and asserting it cannot happen is cheaper than assuming it.
+            folding_required=folding_required(question),
         )
         for question in corpus.BENIGN_QUESTIONS
     ]

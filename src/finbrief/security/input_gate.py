@@ -41,7 +41,7 @@ from finbrief.config import GATE_LOGGED_INPUT_MAX_CHARS, Settings
 from finbrief.observability.logging_setup import log_event
 from finbrief.security.classifier import Verdict, classify
 from finbrief.security.denylist import denylisted
-from finbrief.security.normalize import normalise
+from finbrief.security.normalize import Normalised, normalise
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,33 @@ def screen(
 
     _log(screening, question=question, normalised=normalised.text)
     return screening
+
+
+def folding_required(question: str) -> bool:
+    """Whether layer 2 catches `question` **only** after layer 1 folded it. Pure, no model call.
+
+    This is layer 1's marginal contribution, measured rather than described (user story 34),
+    and it lives here because it is a claim about the *composition* of layers 1 and 2 — neither
+    module alone can make it.
+
+    **It replaces a count that could not fail.** `security/report.py` filled layer 1's cell in
+    the marginal-contribution table with "every `DENYLIST` corpus case whose `technique` string
+    is not `plain instruction override`" — a row count, not a measurement. It reported 12 where
+    the measured answer is 9; it counted `role-spoof`, `delimiter-forgery`, `persona-dan`,
+    `persona-recast`, `extraction-verbatim` and `guardrails-off` as "obfuscated spellings" when
+    none of them carries any obfuscation; it would have read 12 with this whole module deleted;
+    and it moved if anybody reworded a label. It also happened to equal the number of techniques
+    `tests/test_normalization.py` parametrises over, which is probably why it read as right
+    (issue #8 review).
+
+    The counterfactual is "layer 1 did nothing": the raw string in both matching forms.
+    `squeezed` is still `raw` with its spaces removed, because that derivation is `Normalised`'s
+    invariant rather than a step this function may skip — so letter-spacing, which the squeeze
+    alone defeats, correctly reports `False` here. What this measures is the *folding*: case,
+    accents, homoglyphs, leetspeak, zero-width characters, fullwidth Latin and punctuation.
+    """
+    unfolded = Normalised(raw=question, text=question, squeezed=question.replace(" ", ""))
+    return denylisted(unfolded) is None and denylisted(normalise(question)) is not None
 
 
 def _elapsed_ms(started: float) -> int:
