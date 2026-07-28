@@ -30,7 +30,8 @@ answer and a check whose own verdict is nondeterministic. The pattern set is che
 both directions against a fixed corpus, and free of a second failure mode in front of every
 reply — and what it misses is stated rather than implied: novel phrasings of advice are this
 layer's blind spot exactly as they are layer 2's, and there is no layer 5. ADR-0002's
-faithfulness scoring (T9) is what measures the residue statistically.
+RAGAs faithfulness run (T10, #11), over T9's golden set, is what measures the residue
+statistically.
 
 **`on_fail=EXCEPTION`, turned into a result.** ADR-0006 asks for `on_fail="exception"` →
 graceful refusal, and the two halves live in different places: raising is Guardrails' contract,

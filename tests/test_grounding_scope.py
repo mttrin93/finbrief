@@ -202,3 +202,51 @@ def test_the_readmes_coverage_sentence_is_the_one_the_tool_emits():
 
     assert f"1 of {len(bank_peers)} peers reported this" in readme
     assert "rests on GS alone" in readme, "the measured instance, named"
+
+
+# --------------------------------------------------------------------------------------
+# The security section's counts (T7, #8)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_readmes_layer_counts_are_the_ones_the_code_has():
+    """Every number in the marginal-contribution table is a count of something, so it is bound.
+
+    The table is prose in a file that cannot import anything, which is the same problem
+    `GROUNDING_SCOPE` has — and the same answer: a test where the two are allowed to disagree
+    loudly. An eighth denylist rule that left the README saying seven would be a security claim
+    that undercounts the mechanism.
+    """
+    from finbrief.security.advice import ADVICE_RULES
+    from finbrief.security.corpus import BENIGN_QUESTIONS, PLANTED_PAYLOADS
+    from finbrief.security.denylist import RULES
+
+    readme = README.read_text(encoding="utf-8")
+
+    # Digits, not words, precisely so this binding is a substring check and not a translation
+    # table: "five" and 5 are the same claim and only one of them can be compared to `len()`.
+    assert f"{len(RULES)} rules" in readme
+    assert f"{len(BENIGN_QUESTIONS)} real analyst questions" in readme
+    # Wrapped prose, so the count and its noun can be a line apart.
+    assert f"{len(PLANTED_PAYLOADS)} poisoned" in readme
+    # Layer 4's rule count is in the generated artifact rather than the README; the binding here
+    # is only that the README does not name a *different* number of rules for it.
+    assert len(ADVICE_RULES) == len(RULES) or f"{len(ADVICE_RULES)} rules" not in readme
+
+
+def test_the_readme_names_both_latency_budgets():
+    """Both, and from `config` — the revised one and the pre-registered one it did not meet.
+
+    A README quoting only the budget now being met would turn a revised pre-registration into a
+    number that had always held, which is the whole reason
+    `GATE_LATENCY_BUDGET_PREREGISTERED_MS` still exists (ADR-0006 T7 amendment §2).
+    """
+    from finbrief.config import (
+        GATE_LATENCY_BUDGET_MS,
+        GATE_LATENCY_BUDGET_PREREGISTERED_MS,
+    )
+
+    readme = README.read_text(encoding="utf-8")
+
+    assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in readme
+    assert f"{GATE_LATENCY_BUDGET_MS // 1000} s" in readme or "1s" in readme

@@ -11,12 +11,17 @@ below comes from a run: which layer actually stopped each corpus case, how many 
 each layer let through, and how many answers layer 4 refused. A hand-written table would agree
 with the code on the day it was written.
 
-**What the latency section may and may not be read as.** ADR-0006 budgets the input gate at
-≤800ms p50 (`config.GATE_LATENCY_BUDGET_MS`), and a p50 over a corpus that is mostly *blocked*
-payloads would flatter it: a denylist catch exits in microseconds and never pays for the model
-call. So two medians are reported — over every screening, and over the **escalated** ones only —
-and the second is the honest number for "what does a question cost at the front door", because
-the ordinary question is the one that escalates.
+**What the latency section may and may not be read as.** A p50 over a corpus that is mostly
+*blocked* payloads flatters the gate: a denylist catch exits in microseconds and never pays for
+the model call. So two medians are reported — over every screening, and over the **escalated**
+ones only — and the second is the honest number for "what does a question cost at the front
+door", because the ordinary question is the one that escalates.
+
+**Two budgets are printed, not one.** ADR-0006 pre-registered ≤800 ms
+(`config.GATE_LATENCY_BUDGET_PREREGISTERED_MS`), the measured escalated p50 missed it, and its
+T7 amendment §2 revised the figure to `GATE_LATENCY_BUDGET_MS` with the measurements that
+justify it. An artifact printing only the budget now being met would turn a missed
+pre-registration into a number that had always been satisfied.
 """
 
 from __future__ import annotations
@@ -25,7 +30,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import median
 
-from finbrief.config import GATE_LATENCY_BUDGET_MS
+from finbrief.config import (
+    GATE_LATENCY_BUDGET_MS,
+    GATE_LATENCY_BUDGET_PREREGISTERED_MS,
+)
 from finbrief.security.advice import ADVICE_RULES
 from finbrief.security.denylist import RULES
 from finbrief.security.input_gate import Layer, Screening
@@ -271,27 +279,46 @@ behaviour from being blocked at the front door.
 
 
 def _latency_section(run: SuiteRun) -> str:
+    """Both medians, and **both budgets** — the amended one and the one that was missed.
+
+    Printing only the figure now being met would turn a missed pre-registration into a number
+    that had always been satisfied, which is the quiet pass ADR-0006's T7 amendment §2 exists to
+    refuse. So the pre-registered 800 ms stays in the artifact with its verdict, beside the
+    amended budget the run is judged against.
+    """
     overall = latency_ms(run.gate)
     escalated = latency_ms(run.gate, escalated_only=True)
-    verdict = (
-        "not measured"
-        if escalated is None
-        else ("**within budget**" if escalated <= GATE_LATENCY_BUDGET_MS else "**over budget**")
-    )
     return f"""\
-## Latency — the ≤{GATE_LATENCY_BUDGET_MS}ms p50 (ADR-0006)
+## Latency — the escalated p50 (ADR-0006, T7 amendment §2)
 
 Measured from the `input_gate` structured log lines this run emitted, not asserted.
 
 - p50 over **every** screening: {_ms(overall)}
 - p50 over the **escalated** screenings — the ones that paid for the model call: \
-{_ms(escalated)} → {verdict}
+{_ms(escalated)}
+  - against the amended budget of ≤{GATE_LATENCY_BUDGET_MS} ms: \
+{_verdict_against(escalated, GATE_LATENCY_BUDGET_MS)}
+  - against the **pre-registered** ≤{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms: \
+{_verdict_against(escalated, GATE_LATENCY_BUDGET_PREREGISTERED_MS)}
 
-The second number is the one to read. A median over a corpus that is mostly
-blocked payloads flatters the gate, because a denylist catch exits in microseconds
-and never reaches layer 3 — and the ordinary analyst question is exactly the one
-that escalates. One model call per turn either way.
+**The escalated number is the one to read.** A median over a corpus that is mostly
+blocked payloads flatters the gate — a denylist catch exits in microseconds and
+never reaches layer 3 — and the ordinary analyst question is exactly the one that
+escalates. One model call per turn either way.
+
+The pre-registered row stays here because the escalated p50 **straddles** that
+figure run to run: 738–1041 ms across eight passes, over 800 in six of them. A
+single run's verdict against 800 ms is therefore close to a coin toss, which is why
+the budget was revised to a figure the gate clears on every pass measured rather
+than deleted. ADR-0006's T7 amendment §2 has the measurements, the faster model
+that was tested and rejected, and the reasoning.
 """
+
+
+def _verdict_against(escalated: int | None, budget: int) -> str:
+    if escalated is None:
+        return "not measured"
+    return "**within**" if escalated <= budget else f"**over by {escalated - budget} ms**"
 
 
 def _output_section(run: SuiteRun) -> str:
@@ -367,14 +394,15 @@ def _limits() -> str:
   check the `classifier_verdict` counts if a number looks surprising.
 - **Layer 4's rule set is deterministic**, so advice phrased in a way no rule
   matches is its blind spot, exactly as a novel payload is layer 2's. ADR-0002's
-  faithfulness scoring (T9, #4) is what measures the residue statistically.
+  RAGAs faithfulness run (T10, #11) over T9's golden set (#4) is what measures the residue
+  statistically.
 - **A refused answer is still in the agent's memory.** The output validator guards
   the surface, not the checkpointer: `answer()` has already run when it fires, so a
   follow-up in the same thread can reference text the reader never saw.
 - **Whether a marker resolves is not whether it is supported.** The citation-marker
   check (`security/markers.py`) reports `[n]` that names no retrieved chunk;
   whether a resolving marker's chunk actually supports the sentence is
-  faithfulness, and stays T9's.
+  faithfulness, and stays T10's (#11).
 """
 
 

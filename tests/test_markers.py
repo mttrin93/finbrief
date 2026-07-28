@@ -2,7 +2,7 @@
 
 T3's second deferred finding (issue #5, recorded on #8), taken in T7 as the deterministic half
 of the output side. What is asserted here is *resolution* and nothing else — whether the cited
-chunk supports the claim is faithfulness, measured by T9's RAGAs and out of scope by
+chunk supports the claim is faithfulness, measured by T10's RAGAs run (#11) and out of scope by
 construction (`security/markers.py`).
 """
 

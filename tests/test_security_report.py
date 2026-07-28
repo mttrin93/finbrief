@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from finbrief.config import GATE_LATENCY_BUDGET_MS
+from finbrief.config import (
+    GATE_LATENCY_BUDGET_MS,
+    GATE_LATENCY_BUDGET_PREREGISTERED_MS,
+)
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
 from finbrief.security import corpus
 from finbrief.security.classifier import Verdict
@@ -221,9 +224,28 @@ def test_the_report_names_the_models_it_measured() -> None:
     assert "openai/gpt-4o-mini" in report
 
 
-def test_the_report_states_the_budget_it_is_judged_against() -> None:
-    """From `config`, never typed, so the prose and the verdict cannot disagree."""
-    assert str(GATE_LATENCY_BUDGET_MS) in render_report(a_run(gate=(a_gate_result(),)))
+def test_the_report_states_both_budgets_so_the_missed_one_stays_visible() -> None:
+    """From `config`, never typed — and *both*, which is the honesty requirement.
+
+    ADR-0006 pre-registered 800 ms and the measured escalated p50 missed it, so the budget was
+    amended to 1 s with its reasoning. An artifact printing only the figure now being met would
+    turn a missed pre-registration into a number that had always been satisfied.
+    """
+    report = render_report(a_run(gate=(a_gate_result(),)))
+
+    assert str(GATE_LATENCY_BUDGET_MS) in report
+    assert str(GATE_LATENCY_BUDGET_PREREGISTERED_MS) in report
+    assert "pre-registered" in report
+
+
+def test_an_escalated_p50_over_a_budget_says_by_how_much() -> None:
+    """ "Over budget" is a verdict; "over by 142 ms" is the datum a reader can argue with."""
+    over = render_report(
+        a_run(gate=(a_gate_result(ms=942, blocked=False, expected=None, escalated=True),))
+    )
+
+    assert "over by 142 ms" in over
+    assert "**within**" in over, "and within the amended one, in the same rows"
 
 
 def test_the_report_disclaims_being_an_evaluation() -> None:

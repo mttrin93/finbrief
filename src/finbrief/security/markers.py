@@ -37,7 +37,8 @@ that resolves can still sit at the end of a paragraph of tool figures the chunk 
 about — T5 recorded the model doing exactly that. That is **faithfulness**, not marker
 resolution, and it is out of scope here by construction rather than by omission: deciding
 whether a chunk supports a sentence needs a judge model and ground truth, which is ADR-0002's
-golden set and RAGAs faithfulness (T9, #4). The bracket-rule adherence *rate* is T10's (#11),
+golden set (T9, #4) scored by T10's RAGAs run (#11) — which is also where the bracket-rule
+adherence *rate* belongs,
 beside the verbatim-query divergence it already reports. Stated as a limitation in the README
 rather than left implied.
 """
