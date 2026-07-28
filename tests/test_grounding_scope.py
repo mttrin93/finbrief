@@ -18,12 +18,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from finbrief.config import UNIVERSE
+from finbrief.config import (
+    ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY,
+    CLUSTERS,
+    PEERS,
+    QUOTE_TTL_SECONDS,
+    UNIVERSE,
+)
 from finbrief.ingestion.model import Section
 from finbrief.prompts import (
     AGENT_SYSTEM_PROMPT,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    LIVE_DATA_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
     query_translation_prompt,
@@ -152,3 +159,46 @@ def test_the_readme_states_the_same_scope_the_app_does():
     assert ", ".join(sorted(pointers)) in readme
     assert f"All {len(UNIVERSE)} companies have market-risk grounding" in readme
     assert f"{len(UNIVERSE) - len(pointers)} have an `Item 7A` Section" in readme
+
+
+def test_the_readme_states_the_same_live_data_scope_the_app_does():
+    # The *other* half of the scope, and it was unbound. T5 added a "What the live figures are,
+    # and are not" section to the README that types every number `prompts.LIVE_DATA_SCOPE` and
+    # `finance/ratios.py` derive — the 15-minute TTL, a peer set with its `n`, the coverage
+    # sentence, the free-tier call budget. `git diff` showed this file untouched by that commit,
+    # so the README became exactly the second copy `prompts.py` exists to prevent, and CLAUDE.md
+    # names which copy loses: "the disagreeing copy is the one on screen" (issue #9 review).
+    #
+    # Bound to the *derivations*, not to a literal: change `QUOTE_TTL_SECONDS` and this fails
+    # until the prose follows, which is the whole point.
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+
+    assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in readme
+    assert f"{ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY} calls a day" in readme
+    # The app's own sentence agrees, so the two cannot drift apart in opposite directions.
+    assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in LIVE_DATA_SCOPE
+
+
+def test_the_readmes_worked_peer_example_is_a_real_cluster_of_the_right_size():
+    # The README works Ford's comparison through as an example — "vs. mean of 2 `autos` peers:
+    # TSLA, GM" — which is `PeerComparison.basis`' sentence typed out by hand. A curation change
+    # that moved Ford or renamed the cluster would leave a worked example on the front page
+    # describing a comparison the tool does not make.
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    peers = PEERS["F"]
+    cluster = next(name for name, members in CLUSTERS.items() if "F" in members)
+
+    assert f"mean of {len(peers)} `{cluster}` peers: {', '.join(peers)}" in readme
+    assert len(peers) == 2, "the worked example is a three-member cluster, hence n = 2"
+
+
+def test_the_readmes_coverage_sentence_is_the_one_the_tool_emits():
+    # "1 of 2 peers reported this" is `Metric.coverage_note`'s wording, and the claim around it
+    # is measured: JPM and BAC report no `debtToEquity`, so a `banks` leverage comparison rests
+    # on GS alone. Both halves are bound — the count comes from the cluster, and the sentence
+    # from the same f-string the card renders.
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    bank_peers = PEERS["JPM"]
+
+    assert f"1 of {len(bank_peers)} peers reported this" in readme
+    assert "rests on GS alone" in readme, "the measured instance, named"

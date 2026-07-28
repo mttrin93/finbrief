@@ -43,17 +43,61 @@ Never invoke any of these from a test.
 `load_dotenv` out, strips the managed env prefixes (including `LANGCHAIN_`/`LANGSMITH_`, so
 tracing cannot POST), and clears the `load_env`/`get_settings` caches. Build configuration
 with `Settings.from_env({...})` or `monkeypatch.setenv`; never read a real `.env`, and never
-add a test dependency that fetches data at import time. Three more mechanisms keep the
-no-network half true: tiktoken's cl100k_base table is vendored under
+add a test dependency that fetches data at import time. **The no-network half is enforced, not
+asserted**: `conftest.py` patches `connect`/`connect_ex`/`create_connection` and **all four
+resolver entry points** (`getaddrinfo`, `gethostbyname`, `gethostbyname_ex`, `gethostbyaddr`) at
+import time — before collection, which is when an import-time fetch happens — so egress to a
+non-loopback host raises `EgressBlocked`; and it patches `curl_cffi.Curl.perform` separately,
+because `curl_cffi` binds libcurl and resolves and connects in **C**, touching Python's `socket`
+module not at all. That second half is not optional trivia: `yfinance` uses `curl_cffi` whenever
+it imports, so without it the one library T5 added was the one uncovered — measured at HTTP 429
+with the socket guard installed. The resolver list is four names for the same reason: each is its
+own CPython C entry point, so patching `getaddrinfo` alone left `gethostbyname` returning real
+addresses (issue #9 review).
+
+**The guard is a denylist over the backends this repo can reach, not a proof**, and it is
+described that way deliberately: a new HTTP dependency is a new path, and a guard advertised as
+total is how the claim came to be false four times (twice through tiktoken's cache, twice through
+this guard's own prose). `tests/test_hermetic_suite.py` carries **one test per backend** for
+that reason — an uncovered path shows up there as a live call, which is where the `curl_cffi`
+hole was found. Add a networking dependency, add a test there. And **a claim in a comment cannot
+fail**: three of the four false claims were prose asserting coverage the code lacked, so every
+test in that file exercises the call it is about — the DNS case calls each of the four resolvers
+rather than asserting that three route through the fourth, which is precisely the sentence that
+was wrong. Four more mechanisms keep it true *without* leaning on
+the guard: tiktoken's cl100k_base table is vendored under
 `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it — without that,
 `get_encoding` silently downloads it); the EDGAR fixtures under `tests/fixtures/edgar/`
 are recorded, never fetched — refresh them by hand with `scripts/record_edgar_fixtures.py`;
+the market and news fixtures under `tests/fixtures/market/` likewise, via
+`scripts/record_market_fixtures.py` (news recorded **raw**, so `feedparser` and the HTML
+stripper really run; quotes recorded **parsed** at the `yfinance.Ticker` boundary, which is
+therefore the one thing no test covers — the recorder says so);
 and retrieval runs against a **real on-disk Chroma with a fake embedding** — `tests/fakes.py`
 holds the doubles (`KeywordEmbeddings`, deterministic and lexical, so a test may assert an
 order; `a_context`, the shared `Context` builder) and conftest builds `filings_store` /
 `empty_filings_store` from them. Never point a test at the ingested `data/chroma`: it is only
 searchable by the paid model that wrote it, so a test that reaches for it either needs a key
 or asserts against noise.
+
+**A check that cannot fail is the bug class this repo keeps hitting**, and it is worth naming as
+one because the instances look unrelated until they are listed: tiktoken's warm cache made a
+"hermetic" suite pass locally and egress in CI (twice); the guard's docstring claimed `curl_cffi`
+coverage it lacked; a comment claimed `gethostbyname` routed through `getaddrinfo`; and
+`MAX_AGENT_STEPS` was pinned by `serial_full_brief < MAX_AGENT_STEPS`, an inequality that 15, 20
+and 24 all satisfy. **Prefer a check that exercises the thing over one that describes it, and
+prefer an equality over a bound.**
+
+The newest instance is a Streamlit-specific trap, so it is written down rather than rediscovered:
+**`AppTest.get("...")` returns `[]` for an element type it does not know, instead of raising.**
+`st.bar_chart` and `st.line_chart` both reach the element tree as `vega_lite_chart`, for which
+`AppTest` ships no typed accessor — they arrive as `UnknownElement` — so
+`assert not app.get("arrow_bar_chart")` passes on a page rendering no charts *and* on a page
+rendering ten. Assert against `tests/test_app_smoke.py`'s `charts()` helper, which walks the tree
+for `type == "vega_lite_chart"`; it also descends into `st.columns`, which `app.chat_message[n]`
+does not, so a chart inside a column is invisible to the obvious lookup as well. A new
+`app.get(...)` against an element `AppTest` has no wrapper for is a vacuous assertion by default
+(issue #9 review).
 
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
@@ -76,11 +120,33 @@ or asserts against noise.
   `default_filings_store` is the **shared per-process handle** the application reads, and the
   app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
   that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
-  question. Three process-level `lru_cache`s now sit on this path (`default_filings_store`,
-  `hybrid.bm25_index`, `retrieve._planner_model`, each keyed on the frozen `Settings` or the
-  store) and **conftest does not clear them**, unlike `load_env`/`get_settings`: a test that
+  question. Four process-level singletons sit on this path (`default_filings_store`,
+  `hybrid.bm25_index`, `retrieve._planner_model`, `quotes.bounded_session` — each keyed on the
+  frozen `Settings`, the store, or nothing at all) and every one goes through
+  `caching.build_once`, **not** a bare `lru_cache`: with
+  parallel tool calls two searches run concurrently, and two callers missing the same cold key
+  both construct — which for the Chroma handle is fatal, because chromadb's shared-system
+  registry is not reentrant (`AttributeError: 'RustBindingsAPI' object has no attribute
+  'bindings'`, from inside the tool node, on the first turn of a cold process). `lru_cache` is
+  atomic about its bookkeeping and says nothing about the function it wraps. A **fifth** singleton
+  added here without `build_once` is the same crash again — and `build_once`'s lock is one lock for
+  the wrapper, not one per key, which is stated there because the docstring first claimed
+  otherwise. They **are not cleared by conftest**,
+  unlike `load_env`/`get_settings`: a test that
   builds an index clears `bm25_index` itself (see `tests/test_hybrid.py`), and every other test
   injects its collaborator and never reaches them.
+- `finance/quotes.py` is the only place yfinance is called and `finance/news.py` the only
+  place RSS is read, for the reason `vectorstore.py` is the only place Chroma is opened: a second
+  caller is a second cache to miss, and ADR-0009's "peers add zero API surface" is exactly the
+  claim that a second caller would void. Units are normalised **once**, at that boundary —
+  `debtToEquity` arrives in percentage points (Ford reads `425.544`, i.e. 4.26×) while margins
+  arrive as fractions, and a ratio that looks like a percentage is how a brief reports Ford as
+  levered 425 times. Every figure is `float | None` and `None` means *not reported*, never zero;
+  `finance/ratios.py` excludes an absence from a peer mean and `Unit.format` prints it as words.
+  `tools/finance.py` is the wrapper — validation, refusals-as-results, quarantine, cards — and
+  decides no number. A card's artifact crosses the checkpoint, so it holds **JSON primitives
+  only**: `asdict` keeps tuples *and* enum members, and `json.dumps` will not tell you, because a
+  `StrEnum` is a `str`. Assert leaf types, not a round trip.
 - `retrieval/retrieve.py` is the only entry point to the knowledge base. It owns what a
   retrieval *means* — the composition, the ranking contract, the `Context` and `Retrieval`
   shapes — and crosses Chroma only through `vectorstore.nearest_chunks`; nothing above it

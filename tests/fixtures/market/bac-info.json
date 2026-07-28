@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Bank of America Corporation",
+    "longName": "Bank of America Corporation",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 62.13,
+    "regularMarketPrice": 62.13,
+    "previousClose": 62.05,
+    "regularMarketPreviousClose": 62.05,
+    "regularMarketChangePercent": 0.128931,
+    "marketCap": 436026343424,
+    "trailingPE": 14.34873,
+    "forwardPE": 11.79638,
+    "trailingEps": 4.33,
+    "debtToEquity": null,
+    "grossMargins": 0.0,
+    "profitMargins": 0.29524,
+    "operatingMargins": 0.38305,
+    "totalDebt": 774637027328,
+    "totalRevenue": 113931001856,
+    "fiftyTwoWeekHigh": 62.99,
+    "fiftyTwoWeekLow": 44.75
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 57.880001068115234
+    },
+    {
+      "date": "2026-06-30",
+      "close": 56.97999954223633
+    },
+    {
+      "date": "2026-07-01",
+      "close": 58.36000061035156
+    },
+    {
+      "date": "2026-07-02",
+      "close": 58.72999954223633
+    },
+    {
+      "date": "2026-07-06",
+      "close": 59.900001525878906
+    },
+    {
+      "date": "2026-07-07",
+      "close": 59.86000061035156
+    },
+    {
+      "date": "2026-07-08",
+      "close": 58.29999923706055
+    },
+    {
+      "date": "2026-07-09",
+      "close": 59.25
+    },
+    {
+      "date": "2026-07-10",
+      "close": 59.66999816894531
+    },
+    {
+      "date": "2026-07-13",
+      "close": 59.5
+    },
+    {
+      "date": "2026-07-14",
+      "close": 60.619998931884766
+    },
+    {
+      "date": "2026-07-15",
+      "close": 61.59000015258789
+    },
+    {
+      "date": "2026-07-16",
+      "close": 61.4900016784668
+    },
+    {
+      "date": "2026-07-17",
+      "close": 61.27000045776367
+    },
+    {
+      "date": "2026-07-20",
+      "close": 60.41999816894531
+    },
+    {
+      "date": "2026-07-21",
+      "close": 61.220001220703125
+    },
+    {
+      "date": "2026-07-22",
+      "close": 61.619998931884766
+    },
+    {
+      "date": "2026-07-23",
+      "close": 61.279998779296875
+    },
+    {
+      "date": "2026-07-24",
+      "close": 62.04999923706055
+    },
+    {
+      "date": "2026-07-27",
+      "close": 62.130001068115234
+    }
+  ]
+}

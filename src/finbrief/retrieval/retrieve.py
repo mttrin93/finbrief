@@ -37,12 +37,12 @@ import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_core.language_models import BaseChatModel
 
+from finbrief.caching import build_once
 from finbrief.config import RRF_K, RetrievalStrategy, Settings, get_settings
 from finbrief.ingestion.model import Section
 from finbrief.llm import build_chat_model
@@ -261,8 +261,7 @@ class Retrieval:
         )
 
 
-@lru_cache(maxsize=1)
-def _planner_model(settings: Settings) -> BaseChatModel:
+def _build_planner_model(settings: Settings) -> BaseChatModel:
     """The sub-query planner's chat model, built once per process.
 
     **`temperature=0.0` is named here rather than inherited from `build_chat_model`'s default**,
@@ -276,8 +275,16 @@ def _planner_model(settings: Settings) -> BaseChatModel:
     application's. Built eagerly as a `retrieve()` argument it was a fresh client, with its own
     connection pool, per `search_filings` call — including at `max_sub_queries=0`, where nothing
     ever invokes it. Every other collaborator on this path is built once (issue #6 review).
+
+    Through `build_once` since T5 (#9), like the other two cached constructors on this path: two
+    concurrent searches would otherwise each build a client. Harmless here, unlike the Chroma
+    handle — but a uniform rule is worth more than one micro-optimisation, and the next
+    collaborator added here inherits the guard instead of the bug.
     """
     return build_chat_model(settings, temperature=0.0)
+
+
+_planner_model = build_once(_build_planner_model)
 
 
 def retrieve(

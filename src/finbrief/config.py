@@ -243,6 +243,150 @@ PEERS: Mapping[str, tuple[str, ...]] = _build_peers(CLUSTERS, UNIVERSE)
 
 
 # --------------------------------------------------------------------------------------
+# Finance tools: the free-tier budget and the input caps (T5, ADR-0009)
+# --------------------------------------------------------------------------------------
+
+#: How long a fetched quote is served without re-asking, in seconds.
+#:
+#: **Fifteen minutes, because the feed itself is fifteen minutes delayed.** Yahoo's free
+#: quote data is delayed for most venues, so a TTL shorter than that delay spends a call to
+#: re-fetch a number that cannot have changed — the cache would cost quota and buy nothing.
+#: PLAN §4 names the same figure from the other direction (yfinance is unofficial: cache
+#: aggressively), and ADR-0009 leans on this path for peers, so a `big_tech` ratio comparison
+#: costs six quotes per window rather than six per question.
+QUOTE_TTL_SECONDS = 900
+
+#: How long a fetched headline list is served without re-asking, in seconds.
+#:
+#: The same figure for a different reason: the RSS feeds are free and uncapped, so this is
+#: politeness to a public endpoint rather than budget, and a brief is not a ticker tape — a
+#: headline that broke four minutes ago changes no answer this assistant is qualified to give.
+NEWS_TTL_SECONDS = 900
+
+#: Attempts per fetch, and the first backoff. `0.5 · 2ⁿ` between attempts, so three attempts
+#: wait 0.5s then 1.0s and add **at most 1.5s** to a failing call.
+#:
+#: Calibrated against the characteristic yfinance failure, which is transient: a scrape of a
+#: private endpoint returns an empty body or a 429 and then works. Three attempts is what turns
+#: that into an invisible recovery instead of a stale banner; a fourth would spend 3.5s to
+#: convert a persistent outage into a slower stale banner, which is the wrong trade against
+#: ADR-0005's latency thinking.
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF_SECONDS = 0.5
+
+#: The smallest response `finance/news.py` will accept as "a feed that answered and had nothing"
+#: rather than as a soft failure to retry.
+#:
+#: **Because an empty feed and a throttled one arrive identically at the parser**, and reporting
+#: one as the other is the absence-vs-measurement mistake in both directions: "no news this
+#: week" is a claim about the company; "the feed did not answer" is a claim about the feed.
+#: Until #9's review, *every* zero-entry response raised — so a genuinely quiet week reported as
+#: an outage, which is the inverse of the rule the same module draws elsewhere.
+#:
+#: 400 bytes, calibrated against the recorded fixtures: Yahoo's channel preamble — copyright,
+#: description, the `<image>` block — measures 541, 547 and 547 bytes in the three real feeds
+#: under `tests/fixtures/market/`, so a zero-item feed from this publisher still weighs ~565
+#: bytes. Anything materially under that is not a Yahoo channel.
+#:
+#: **What is measured and what is not**, because this is a threshold and thresholds invite
+#: over-trust: the *populated* side is measured (three real feeds, three consistent preambles).
+#: A real throttle response is **not** — nothing here has ever recorded one, so its size is an
+#: assumption. That is why size is only the second test: `finance/news.py` also asks whether the
+#: document parsed as a feed at all, which catches the HTML error page a blocked client gets
+#: however large it is.
+NEWS_MIN_FEED_BYTES = 400
+
+#: Alpha Vantage's free-tier daily call budget, as *documented by them* — not a knob, and not
+#: read by any fetch, because nothing calls Alpha Vantage (see `Settings.alphavantage_enabled`).
+#:
+#: It is here because it is a **number that appears in prose in four places** — this file,
+#: `.env.example`, PLAN §4 and the README's "What the live figures are, and are not" — and it is
+#: the whole argument for why the fallback is deferred. A budget typed four times is one that
+#: will disagree with itself, and `tests/test_grounding_scope.py` binds the README's copy to
+#: this one (issue #9 review).
+ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY = 25
+
+#: How much price history one quote fetch carries, at what interval, and how to say so in prose.
+#:
+#: `HISTORY_PERIOD` is yfinance's own period token, not a day count, and deliberately: `"1mo"`
+#: means "the last calendar month" and yields the ~21 *trading* sessions in it, where `"30d"`
+#: yields 30 rows over a span that shifts with the weekends and holidays inside it. The
+#: sparkline `get_stock_data` renders (user story 13) wants sessions.
+#:
+#: `HISTORY_PERIOD_LABEL` is here rather than in the prompt because
+#: `GET_STOCK_DATA_DESCRIPTION` states the window to the model, and `prompts.py`'s rule is that
+#: a prompt's every count is derived and never typed — the first draft had "a month of daily
+#: closes" as prose in the description and `"1mo"` in `finance/quotes.py` — two copies of one
+#: fact nothing would have caught disagreeing (issue #9 review). A token unfit for prose and
+#: prose unfit for an API are two names, but they are two names in **one place**.
+#: `HISTORY_AUTO_ADJUST` is here for the same one-place reason, and it is not cosmetic: adjusted
+#: closes are split- and dividend-adjusted, so the *same* company plotted both ways diverges
+#: across any corporate action in the window. `scripts/record_market_fixtures.py` records the
+#: closes every chart test asserts against, so a recorder that adjusted differently from the
+#: fetcher would bake a silent mismatch into the fixtures — on the one path no test covers
+#: (issue #9 review). It was typed twice before this.
+HISTORY_PERIOD = "1mo"
+HISTORY_PERIOD_LABEL = "one month"
+HISTORY_INTERVAL = "1d"
+HISTORY_AUTO_ADJUST = True
+
+#: How long a **single HTTP request** on a finance fetch may hang before it is abandoned, in
+#: seconds.
+#:
+#: An unofficial free endpoint that accepts a connection and then stalls is the failure a retry
+#: cannot help with, and `TimedCache` holds its lock across the refresh — so without a ceiling
+#: one stalled socket blocks every session's quotes for as long as the OS allows. Fifteen
+#: seconds is generous for a JSON response.
+#:
+#: **Per request, not per fetch, and the difference is worth stating** because the first version
+#: of this comment implied the latter. One `fetch_quote` makes two requests (`.info` and the
+#: history), `FETCH_ATTEMPTS` is 3, and `TimedCache` holds its lock across all of it, so the
+#: worst case a stalled endpoint can hold the quote lock for is `3 × 2 × 15s` plus backoff —
+#: about 91 seconds, not 15. That is the honest ceiling; it is bounded and survivable, where
+#: yfinance's own default of 30s per request made it ~181s, and *un*bounded before the clamp
+#: reached the quote path at all (issue #9 review).
+#:
+#: `finance/news.py` passes this to `urlopen` directly. `finance/quotes.py` cannot: yfinance
+#: passes `timeout=30` explicitly at every call site, so a session default is overridden and the
+#: clamp has to sit on the session's `request` — see `_bounded_session` there.
+FETCH_TIMEOUT_SECONDS = 15
+
+#: The worst case `FETCH_TIMEOUT_SECONDS` actually permits on the quote path, derived rather
+#: than typed so the docstring above cannot drift from it. Two requests per attempt.
+QUOTE_FETCH_WORST_CASE_SECONDS = FETCH_ATTEMPTS * 2 * FETCH_TIMEOUT_SECONDS + sum(
+    FETCH_BACKOFF_SECONDS * 2**attempt for attempt in range(FETCH_ATTEMPTS - 1)
+)
+
+#: The `days` window `get_recent_news` uses when the model names none, and the ceiling it
+#: clamps to. A month is where "recent news" stops being recent; the default is a week because
+#: that is the window a pre-earnings brief is about.
+NEWS_DEFAULT_DAYS = 7
+NEWS_MAX_DAYS = 30
+
+#: The most headlines one call reports. A cap on the *prompt*, not on the feed: every headline
+#: is text the model pays to read, and a brief that lists twenty is not a brief.
+NEWS_MAX_HEADLINES = 8
+
+#: How long a raw ticker argument may be before it is rejected unread (user story 21).
+#:
+#: The whitelist in `TICKERS` is the real validation — this is the length cap in front of it,
+#: so a model (or an injection routed through a tool argument) cannot hand a lookup a kilobyte
+#: of prose and have it echoed back inside an error message. Five is the longest Universe
+#: ticker; the slack is for a suffix a model might append (`NVDA.US`) that is still worth a
+#: clear "not in the Universe" rather than a length complaint.
+TICKER_MAX_CHARS = 12
+
+#: How long a question may be before the app declines to send it (user story 21).
+#:
+#: A cost and abuse bound, not a linguistic one: no analyst's question is 4,000 characters, and
+#: what arrives at that length is a paste — often a document with instructions in it, which is
+#: ADR-0006's problem and cheaper to refuse here than to classify. Enforced in the UI because
+#: that is the only door a human types through; the agent's own inputs are bounded by the tool
+#: signatures.
+MAX_QUESTION_CHARS = 4000
+
+
+# --------------------------------------------------------------------------------------
 # Retrieval strategy switches (ADR-0004, ADR-0005)
 # --------------------------------------------------------------------------------------
 
@@ -318,6 +462,20 @@ class Settings:
     retrieval_k: int
     max_sub_queries: int
     eval_mode: bool
+    #: **Deliberately unread, and this is the record of that.** Alpha Vantage was scoped as a
+    #: fundamentals fallback for when yfinance — an unofficial client for a private endpoint —
+    #: returns nothing. It is deferred rather than shipped: its free tier is **25 calls a day**,
+    #: which one `calculate_ratios` on a `big_tech` company would spend a quarter of, so a
+    #: fallback that fired on a bad afternoon would exhaust the budget and then fail anyway.
+    #:
+    #: What survives the free tier instead is the path in `finance/cache.py`: a TTL window, a
+    #: retry, and a **stale serve with its age** rather than an error. A second source would be
+    #: a second thing to be down; the stale banner is honest about the same outage for free.
+    #:
+    #: So this flag exists, is validated, and is read by nothing — which a reader is entitled to
+    #: find suspicious, hence this block. Written up in `.env.example` beside
+    #: `ALPHAVANTAGE_API_KEY` and in PLAN §4 under what T5 deferred; flipping it on today
+    #: changes no behaviour, and wiring it up is a ticket, not a config change (#9 review).
     alphavantage_enabled: bool
     sec_edgar_user_agent: str
     chroma_dir: str

@@ -38,7 +38,7 @@ def stubbed_agent(monkeypatch, agent_builds):
     """
     asked: list[dict[str, object]] = []
 
-    def fake_answer(question, *, thread_id, agent):
+    def fake_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — T5's callback
         asked.append({"question": question, "thread_id": thread_id, "agent": agent})
         return AgentTurn(
             text="Tesla identifies supply-chain concentration [1].",

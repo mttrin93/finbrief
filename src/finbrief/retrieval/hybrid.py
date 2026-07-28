@@ -52,13 +52,13 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import lru_cache
 from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
+from finbrief.caching import build_once
 from finbrief.config import RRF_K
 from finbrief.observability.logging_setup import log_event
 from finbrief.retrieval.vectorstore import all_chunks
@@ -415,8 +415,7 @@ class BM25Index:
         return tuple(document for _, document in scored[:k])
 
 
-@lru_cache(maxsize=2)
-def bm25_index(store: Chroma) -> BM25Index:
+def _bm25_index(store: Chroma) -> BM25Index:
     """The BM25 index over `store`'s chunks, built once per process.
 
     Cached because building it reads every chunk out of Chroma and tokenizes it — affordable
@@ -429,6 +428,12 @@ def bm25_index(store: Chroma) -> BM25Index:
     started with, while its vector searches see the new one. That is acceptable because ingest
     is an offline script and the app is restarted after it, and it is bounded — `maxsize=2`
     leaves room for one store to be replaced without unbounded retention of old corpora.
+
+    **`build_once` rather than `lru_cache`, for the reason `default_filings_store` is** (T5,
+    #9): with parallel tool calls, two searches in one step both miss this cold and both
+    tokenize 5,800 chunks. Waste rather than corruption — unlike the Chroma handle, which
+    raced fatally — but the fix is the same lock, and the argument for it is stronger here
+    because the duplicated work is seconds of it.
     """
     started = time.perf_counter()
     index = BM25Index.over(all_chunks(store))
@@ -439,3 +444,7 @@ def bm25_index(store: Chroma) -> BM25Index:
         build_ms=round((time.perf_counter() - started) * 1000),
     )
     return index
+
+
+#: `maxsize=2`, as the docstring above explains.
+bm25_index = build_once(_bm25_index, maxsize=2)

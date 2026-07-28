@@ -27,28 +27,58 @@ consequence of the design, not a defect, so the sidebar says so rather than leav
 discover it when their context disappears.
 """
 
+import logging
 import uuid
 
+import pandas as pd
 import streamlit as st
+from langgraph.errors import GraphRecursionError
 
-from finbrief.agent.agent import Search, answer, build_agent
+from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
     CLUSTERS,
+    HISTORY_PERIOD_LABEL,
+    MAX_QUESTION_CHARS,
     PEERS,
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
     get_settings,
 )
+from finbrief.finance.ratios import Metric, Unit
 from finbrief.observability.logging_setup import configure_logging
-from finbrief.prompts import DISCLAIMER, GROUNDING_SCOPE, GROUNDING_SCOPE_DETAILS
+from finbrief.prompts import (
+    DISCLAIMER,
+    GROUNDING_SCOPE,
+    GROUNDING_SCOPE_DETAILS,
+    LIVE_DATA_SCOPE,
+)
 from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
+from finbrief.tools.finance import (
+    NEWS_TOOL_NAME,
+    RATIOS_TOOL_NAME,
+    STOCK_TOOL_NAME,
+    FailedCard,
+    FinanceCard,
+    NewsCard,
+    QuoteCard,
+    RatiosCard,
+)
+from finbrief.tools.search_filings import TOOL_NAME as SEARCH_TOOL_NAME
+
+#: Under `finbrief.` so the JSON-lines handler `configure_logging` installs picks it up — a
+#: logger named for this module would propagate to root and print unstructured.
+logger = logging.getLogger("finbrief.app")
 
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
 st.title("FinBrief")
 st.caption(GROUNDING_SCOPE)
+# The second half of the scope, and it earns its own line rather than being appended to the one
+# above: `GROUNDING_SCOPE` is quoted by the *chain*'s prompt too, where there are no tools, so
+# the two sentences cannot be one string (`prompts.py`).
+st.caption(LIVE_DATA_SCOPE)
 
 # Fail here rather than on the first message: a missing key should be obvious before the
 # user has typed anything. Logging setup shares the guard because `LOG_LEVEL` is itself
@@ -160,6 +190,57 @@ def as_markdown(text: str) -> str:
     this persona has no reason to emit.
     """
     return text.replace("$", r"\$")
+
+
+def escaped(text: str) -> str:
+    """`text` with every Markdown-active character neutralised.
+
+    Stronger than `as_markdown`, and for a different threat. That function escapes `$` in text
+    FinBrief wrote; this one is for text **strangers** wrote — a headline title and a publisher
+    name, straight off a public RSS feed (user story 17). Rendered raw through `st.markdown`, a
+    title is free to inject an image, a link, a heading, or a run of emphasis that swallows the
+    rest of the card.
+
+    `st.text` would be the simpler answer and is what a source body uses, but a card wants its
+    headline bold and its publisher small, so the Markdown has to keep rendering around the
+    escaped text. Escaping the span is the narrower fix.
+
+    **Two sets, because Markdown has two kinds of special character.** A first draft escaped
+    them all everywhere and turned `finance.yahoo.com` into `finance\\.yahoo\\.com` on every
+    news card. `.`, `-`, `#` and `+` mean something only at the *start* of a line — a list item,
+    a heading — so they are escaped only in the leading position; the rest are active anywhere.
+    """
+    if not text:
+        return text
+    body = "".join(f"\\{one}" if one in _INLINE_ACTIVE else one for one in text)
+    return f"\\{body}" if text[0] in _LINE_START_ACTIVE else body
+
+
+#: Active anywhere in a line: emphasis, code, links, images, autolinks — plus `$`, for the KaTeX
+#: reason `as_markdown` exists, and `|`, which would otherwise open a table cell.
+_INLINE_ACTIVE = frozenset("\\`*_[]()<>$|!")
+
+#: Active only as a line's first character, where they open a list item, a heading or a quote.
+_LINE_START_ACTIVE = frozenset("#+-.>")
+
+
+def step_label(step: Step) -> str:
+    """What to show while a tool runs — user story 14's words (T5, #9).
+
+    The phrasing lives here and not on `Step`, because it is UI copy: the agent reports *which*
+    tool with *what* argument, and this file decides how that reads. The ticker arrives already
+    truncated (`Step.of`), so a refused call's raw argument cannot stretch the status line.
+
+    A tool with no label falls back to its own name rather than to something vague: a new tool
+    should look unfinished here, not anonymous.
+    """
+    where = f" · {step.ticker}" if step.ticker else ""
+    return {
+        SEARCH_TOOL_NAME: "Searching the filings",
+        STOCK_TOOL_NAME: "Fetching market data",
+        RATIOS_TOOL_NAME: "Comparing ratios against peers",
+        NEWS_TOOL_NAME: "Fetching recent headlines",
+    }.get(step.tool, step.tool) + where
 
 
 def distance_label(distance: float | None) -> str:
@@ -320,6 +401,226 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 )
 
 
+# --------------------------------------------------------------------------------------
+# Tool-call result cards (user story 13, T5 #9)
+# --------------------------------------------------------------------------------------
+
+
+def render_tool_cards(cards: tuple[FinanceCard, ...]) -> None:
+    """One card per finance-tool call this turn made, in call order.
+
+    Rendered from the turn's own cards, never re-fetched — the same rule the sources panel
+    follows, and here it bites harder: a second fetch goes through a TTL cache, so it could
+    legitimately return a *different* price from the one the answer above quotes.
+
+    Nothing at all for a turn that called no finance tool, so a pure-retrieval answer keeps the
+    shape T4 had. Each card carries its own staleness banner rather than one banner for the
+    group: a full brief can hold a fresh quote and a stale peer comparison, and a single banner
+    would have to overstate one of them.
+    """
+    for card in cards:
+        renderer = _RENDERERS.get(card.KIND)
+        if renderer is None:
+            # A kind this build has no renderer for — the one-rerun-after-deploy window every
+            # reader on this path tolerates, since a thread checkpointed by a *newer* build can
+            # replay here. Skipped, not raised; the answer text above it still stands.
+            continue
+        with st.container(border=True):
+            _render_staleness(card)
+            renderer(card)
+
+
+def _render_staleness(card: FinanceCard) -> None:
+    """User story 22's banner: the figures below are the last ones we could get, and their age.
+
+    A `warning`, not a `caption`: the reader is about to take a number off this card into a
+    note, and the fact that nobody could refresh it is the kind that has to interrupt.
+    `FailedCard` has no freshness at all — there is no figure to be stale about — which is why
+    this reads the attribute defensively rather than assuming every card has one.
+    """
+    freshness = getattr(card, "freshness", None)
+    if freshness is None or not freshness.stale:
+        return
+    st.warning(
+        f"Live data could not be refreshed. These figures are the last successful fetch, "
+        f"{freshness.age_minutes} minute(s) old.",
+        icon=":material/history:",
+    )
+
+
+def _render_quote(card: QuoteCard) -> None:
+    """A price card: the figures a valuation question opens with, then the month's shape."""
+    quote = card.quote
+    st.markdown(f"**{quote.ticker} · {escaped(quote.name)}**")
+    price, cap, multiple = st.columns(3)
+    price.metric(
+        f"Price ({quote.currency})",
+        Unit.PRICE.format(quote.price),
+        # `None`, not `"0.00%"`, when the change is unknown: `st.metric`'s delta arrow is a
+        # claim about direction, and there is nothing to claim.
+        None if quote.change_percent is None else f"{quote.change_percent:+.2f}%",
+    )
+    cap.metric("Market cap", Unit.MONEY.format(quote.market_cap))
+    multiple.metric("P/E (trailing)", Unit.MULTIPLE.format(quote.trailing_pe))
+    st.caption(
+        f"52-week range {Unit.PRICE.format(quote.fifty_two_week_low)}–"
+        f"{Unit.PRICE.format(quote.fifty_two_week_high)} · "
+        f"EPS {Unit.PRICE.format(quote.trailing_eps)} · previous close "
+        f"{Unit.PRICE.format(quote.previous_close)}"
+    )
+    if quote.closes:
+        st.line_chart(
+            pd.DataFrame(
+                {"close": [close.close for close in quote.closes]},
+                index=[close.date for close in quote.closes],
+            ),
+            y="close",
+            height=180,
+        )
+        # `HISTORY_PERIOD_LABEL`, not "last month" typed again. That constant exists because the
+        # window was already prose in the tool description and `"1mo"` in `quotes.py` — and this
+        # caption was a third copy (issue #9 review). The session count stays derived from the
+        # data rather than from the label: `"1mo"` yields ~21 trading sessions, not 30, and the
+        # exact number is a property of the response.
+        st.caption(f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions).")
+
+
+#: How many metric charts sit side by side before wrapping to a new row. Three keeps a
+#: two-bar chart wide enough to read on a laptop and fits the five metrics into two rows.
+_METRIC_CHART_COLUMNS = 3
+
+
+def _render_ratios(card: RatiosCard) -> None:
+    """A peer-comparison card: ADR-0009's basis, then each metric, then the bars."""
+    comparison = card.comparison
+    st.markdown(f"**{comparison.ticker} · {escaped(comparison.name)}**")
+    st.caption(comparison.basis)
+    if note := comparison.unavailable_note:
+        # Named, not silently absent from `n`: a peer whose quote failed is a gap in the *data*,
+        # where a peer with no figure for one metric is a fact about that company. The wording
+        # is `PeerComparison`'s because it has to branch on whether *every* peer failed, and
+        # this surface and the tool text were phrasing that branch separately (#9 review).
+        st.warning(note, icon=":material/link_off:")
+    for metric in comparison.metrics:
+        coverage = metric.coverage_note(comparison.n)
+        st.markdown(
+            f"**{metric.label}** · {metric.versus_peers}{f' — {coverage}' if coverage else ''}"
+        )
+    _render_metric_bars(card)
+
+
+def _render_metric_bars(card: RatiosCard) -> None:
+    """Company against peer mean — **one chart per metric, each on its own axis.**
+
+    Only the metrics where **both** numbers exist: a bar chart cannot draw "not reported", and a
+    missing figure plotted as zero is the one mistake this whole path is built to avoid. The
+    metric is still listed in the prose above, with its absence stated.
+
+    **Why one chart per metric and not one per `Unit`.** Splitting by unit was already necessary
+    — a P/E of 31.6 beside a gross margin of 0.74 draws the margin as a flat line — but it is
+    not sufficient, because two metrics can share a unit and still not share a scale.
+    `Unit.MULTIPLE` holds both P/E and debt-to-equity, and in the Universe those differ by two
+    orders of
+    magnitude: Ford's peer mean P/E is 162× (TSLA at 286×, GM at 37×) while its D/E is 4.26×. On
+    one axis the D/E bars are three pixels tall, and the leverage of a company with $159bn of
+    debt reads as zero — on the card T11 screenshots (issue #9 review).
+
+    A log axis was the alternative and is worse: bar *length* encodes magnitude, so log-scaled
+    bars misstate every ratio a reader takes off them, and `st.bar_chart` has no log scale to
+    offer anyway. Normalising to "percent of peer mean" was the other, and it throws away the
+    figures — on an equity-research card the actual multiple is the thing being reported. One
+    axis per metric keeps every bar at true scale and costs only layout, which `st.columns`
+    absorbs.
+    """
+    plottable = [
+        metric
+        for metric in card.comparison.metrics
+        if metric.value is not None and metric.peer_mean is not None
+    ]
+    if not plottable:
+        return
+    for start in range(0, len(plottable), _METRIC_CHART_COLUMNS):
+        row = plottable[start : start + _METRIC_CHART_COLUMNS]
+        # Always `_METRIC_CHART_COLUMNS` columns, even for a short final row: passing
+        # `len(row)` would stretch a lone chart across the full width and make the last metric
+        # look like the important one.
+        columns = st.columns(_METRIC_CHART_COLUMNS)
+        for column, metric in zip(columns, row, strict=False):
+            with column:
+                _render_one_metric_bar(card.comparison.ticker, metric)
+
+
+def _render_one_metric_bar(ticker: str, metric: Metric) -> None:
+    """One metric's two bars — the company and its peer mean — at that metric's own scale."""
+    # The scale and the axis label are `Unit`'s, not this function's: the surface was switching
+    # on the enum three times over, and a chart plotted at one scale under a caption naming
+    # another is a mistake nothing would catch (issue #9 review).
+    scale = metric.unit.chart_scale
+    st.bar_chart(
+        pd.DataFrame(
+            {metric.label: [metric.value * scale, metric.peer_mean * scale]},
+            index=[ticker, "peer mean"],
+        ),
+        height=200,
+    )
+    st.caption(f"{metric.label} · {metric.unit.axis_label.lower()}")
+
+
+def _render_news(card: NewsCard) -> None:
+    """News cards: title, publisher, date, and the stripped summary.
+
+    Every string here was written by a stranger, so every string here is escaped (`escaped`) and
+    the link has already been scheme-checked at the boundary (`finance.news.safe_link`). The
+    summary goes through `st.text` for the reason a source body does — it is quoted text, and it
+    renders character-identical.
+    """
+    st.markdown(f"**Recent headlines · {card.ticker}**")
+    st.caption(f"Last {card.days} day(s), {len(card.headlines)} headline(s).")
+    if not card.headlines:
+        # A fact, not a failure — the same distinction the tool's own text draws for the model.
+        st.info(
+            f"The feed answered and had nothing for {card.ticker} in that window.",
+            icon=":material/newspaper:",
+        )
+        return
+    for headline in card.headlines:
+        title = escaped(headline.title)
+        st.markdown(f"[{title}]({headline.link})" if headline.link else f"**{title}**")
+        when = "" if headline.published is None else f" · {headline.published[:10]}"
+        st.caption(f"{escaped(headline.source)}{when}")
+        if headline.summary:
+            st.text(headline.summary)
+
+
+def _render_failure(card: FailedCard) -> None:
+    """A tool call that produced no data, and why.
+
+    The message is the model-facing one, reused rather than rewritten: the analyst reading this
+    banner and the model writing the answer above it should be explaining the same failure, and
+    a second wording is a second explanation to keep in step.
+    """
+    st.warning(card.message, icon=":material/cloud_off:")
+
+
+#: card kind -> how to draw it. **The UI's one card-kind dispatch**, keyed on the same `KIND`
+#: strings `tools/finance.py` builds `_CARDS` and `_TOOL_BY_KIND` from.
+#:
+#: This was an `isinstance` cascade, the third of three independent enumerations of the card
+#: kinds — so adding a fourth card meant remembering three edits across two files with nothing
+#: to catch a missed one (issue #9 review). A map keyed on the kind means the UI's list is
+#: checkable against the engine's, which `tests/test_app_smoke.py` does: a card kind with no
+#: renderer here fails there rather than rendering an empty bordered box in front of a reader.
+#:
+#: Declared below the functions rather than beside `render_tool_cards`, because a dict of names
+#: is evaluated at import: referencing them above their definitions is a `NameError` at startup.
+_RENDERERS = {
+    QuoteCard.KIND: _render_quote,
+    RatiosCard.KIND: _render_ratios,
+    NewsCard.KIND: _render_news,
+    FailedCard.KIND: _render_failure,
+}
+
+
 def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
     """The sources panel: what each inline `[n]` in the answer above resolves to.
 
@@ -368,6 +669,34 @@ def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
             st.text(context.body)
 
 
+def render_context_reuse_note(*, used_tools: bool) -> None:
+    """Say so when a turn answered from the conversation instead of calling anything.
+
+    **The absence this exists to stop being silent.** A follow-up like "summarise that" or a
+    second "give me the full brief" in a warm thread is answered from what the thread already
+    retrieved — correct context reuse, and the behaviour ADR-0008's checkpointed history is for.
+    But it renders as an answer with no cards, no sources panel and no "how I answered", which
+    is *pixel-identical* to a turn whose tools all failed. A reader cannot tell "nothing needed
+    fetching" from "nothing could be fetched", and CLAUDE.md's rule is that an absence must not
+    be reported as a measurement: "we cannot say what this query found" is a different claim
+    from "this query found nothing".
+
+    It was recorded as a decision on this ticket — warm-thread briefs make zero tool calls and
+    are captioned on the turn — and `AgentTurn.used_tools` was added for it, but nothing ever
+    read that property outside the tests (issue #9 review). This is the reader.
+
+    Deliberately a caption and not a banner: reuse is the *correct* path, so it is a note about
+    provenance rather than a warning about a problem. The failure cases already have banners of
+    their own, from `render_sources` and `tools/finance.py`.
+    """
+    if used_tools:
+        return
+    st.caption(
+        ":material/history: Answered from context already retrieved in this conversation; "
+        "no new search, so no new sources to cite."
+    )
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -389,8 +718,18 @@ for message in st.session_state.messages:
                 # separately: it is the one authority on "which chunks, in which order" and on
                 # "was the knowledge base consulted at all", and a row that stored its own copy
                 # could disagree with the panel below it.
+                #
+                # `.cards` through `getattr`, because a row written before T5 holds an
+                # `AgentTurn` with no such field — the same one-rerun-after-deploy window every
+                # `from_payload` on this path tolerates, and why the field is defaulted. Bound
+                # to a local rather than read twice: `turn.used_tools` would reach the same
+                # missing attribute without the tolerance, so the note below is told the fact
+                # instead of asked to derive it.
+                cards = getattr(turn, "cards", ())
+                render_tool_cards(cards)
                 render_sources(turn.contexts, searched=turn.searched)
                 render_how_i_answered(turn.searches)
+                render_context_reuse_note(used_tools=bool(turn.searches or cards))
             elif (contexts := message.get("contexts")) is not None:
                 # The T4 row shape, kept readable for the same one-rerun window. `searched`
                 # defaults to True because before the agent existed contexts were always
@@ -400,35 +739,89 @@ for message in st.session_state.messages:
             st.caption(DISCLAIMER)
 
 if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
+    # The input-validation half of user story 21, and the only door a human types through.
+    # Checked before the question is appended to the transcript, so an over-long paste does not
+    # become part of a conversation nothing will answer — and before the agent, because the
+    # cheapest refusal is the one that costs no tokens. What arrives at this length is a paste
+    # rather than a question, often a document with instructions in it, which is ADR-0006's
+    # problem and cheaper to refuse here than to classify.
+    if len(prompt) > MAX_QUESTION_CHARS:
+        st.error(
+            f"That question is {len(prompt):,} characters, and FinBrief takes at most "
+            f"{MAX_QUESTION_CHARS:,}. Ask a shorter question — or paste the part you actually "
+            f"want an answer about.",
+            icon=":material/text_fields:",
+        )
+        st.stop()
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(as_markdown(prompt))
 
     with st.chat_message("assistant"):
         try:
-            # "Thinking", not "Searching the filings": the agent decides whether to search,
-            # so a spinner that names retrieval would be describing a step some turns skip.
-            # The per-tool progress this replaces it with lands with the tool cards in T5.
-            with st.spinner("Thinking…"):
+            # A `status` rather than a spinner, because with four tools the wait has *parts* and
+            # naming them is user story 14. Each step is written into the container as the model
+            # asks for the call, so the list persists for the whole wait instead of one label
+            # replacing another — and the reader can see that a full brief really did fetch four
+            # things. Still starts at "Thinking…": the agent decides whether to call anything,
+            # so a label naming retrieval would describe a step some turns skip.
+            with st.status("Thinking…", expanded=True) as status:
+
+                def note(step: Step) -> None:
+                    label = step_label(step)
+                    status.update(label=label)
+                    st.write(label)
+
                 reply = answer(
-                    prompt, thread_id=st.session_state.thread_id, agent=shared_agent()
+                    prompt,
+                    thread_id=st.session_state.thread_id,
+                    agent=shared_agent(),
+                    on_step=note,
                 )
-        except Exception as exc:  # noqa: BLE001 — tiered error handling lands in Phase 5
-            st.error(f"The model call failed: {exc}", icon=":material/error:")
+                status.update(label="Answered", state="complete", expanded=False)
+        except GraphRecursionError:
+            # The **generation tier** of PLAN §2's tiered handling: a failure of the answering
+            # loop itself rather than of a data source. The agent ran out of steps, which reads
+            # to a user as the app hanging and then dying — so it gets its own message naming
+            # the cause and the action, where the generic branch below would print LangGraph's
+            # own "Recursion limit of N reached" with `MAX_AGENT_STEPS` in place of N.
+            status.update(label="Gave up", state="error", expanded=False)
+            st.error(
+                "That question took more tool calls than FinBrief allows in one turn. Ask it "
+                "in two parts — the filings half first, then the figures — or name a company.",
+                icon=":material/repeat_on:",
+            )
+        except Exception as exc:  # noqa: BLE001 — the last resort, and it names no internals
+            # The exception *type*, not its message. A client error string can carry a request
+            # URL, and a request URL can carry an API key — the same reason `log_event` never
+            # records one (`observability/logging_setup.py`). The detail goes to the log, where
+            # it is already structured; the reader gets something actionable instead.
+            logger.exception("chat_turn_failed")
+            status.update(label="Failed", state="error", expanded=False)
+            st.error(
+                f"FinBrief could not answer that ({type(exc).__name__}). Try again — and if it "
+                f"keeps happening, the server log has the detail.",
+                icon=":material/error:",
+            )
         else:
             st.markdown(as_markdown(reply.text))
+            render_tool_cards(reply.cards)
             render_sources(reply.contexts, searched=reply.searched)
             render_how_i_answered(reply.searches)
+            # `used_tools` direct here, unlike the replay path above: this object was built by
+            # *this* process, so it cannot predate the current shape.
+            render_context_reuse_note(used_tools=reply.used_tools)
             st.caption(DISCLAIMER)
             st.session_state.messages.append(
                 {
                     "role": "assistant",
                     "content": reply.text,
-                    # The whole turn, because the panels need three facts about it and one of
-                    # them — the query variants each search ran — belongs to the search rather
-                    # than to any chunk. Display data, not memory: the checkpointer remains the
-                    # agent's memory of record (ADR-0008), and nothing here is ever read back
-                    # into a conversation.
+                    # The whole turn, because the panels need four facts about it and two of
+                    # them — the query variants each search ran, and the tool cards — belong to
+                    # the call rather than to any chunk. Display data, not memory: the
+                    # checkpointer remains the agent's memory of record (ADR-0008), and nothing
+                    # here is ever read back into a conversation.
                     "turn": reply,
                 }
             )

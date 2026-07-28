@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Johnson & Johnson",
+    "longName": "Johnson & Johnson",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 265.95,
+    "regularMarketPrice": 265.95,
+    "previousClose": 263.4,
+    "regularMarketPreviousClose": 263.4,
+    "regularMarketChangePercent": 0.968116,
+    "marketCap": 640912523264,
+    "trailingPE": 30.888504,
+    "forwardPE": 20.72524,
+    "trailingEps": 8.61,
+    "debtToEquity": 57.709,
+    "grossMargins": 0.6814,
+    "profitMargins": 0.21482,
+    "operatingMargins": 0.2919,
+    "totalDebt": 49036001280,
+    "totalRevenue": 97929003008,
+    "fiftyTwoWeekHigh": 269.43,
+    "fiftyTwoWeekLow": 164.23
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 258.510009765625
+    },
+    {
+      "date": "2026-06-30",
+      "close": 253.97000122070312
+    },
+    {
+      "date": "2026-07-01",
+      "close": 253.97999572753906
+    },
+    {
+      "date": "2026-07-02",
+      "close": 263.0400085449219
+    },
+    {
+      "date": "2026-07-06",
+      "close": 259.3299865722656
+    },
+    {
+      "date": "2026-07-07",
+      "close": 267.239990234375
+    },
+    {
+      "date": "2026-07-08",
+      "close": 263.3999938964844
+    },
+    {
+      "date": "2026-07-09",
+      "close": 259.1000061035156
+    },
+    {
+      "date": "2026-07-10",
+      "close": 256.9800109863281
+    },
+    {
+      "date": "2026-07-13",
+      "close": 257.7699890136719
+    },
+    {
+      "date": "2026-07-14",
+      "close": 253.85000610351562
+    },
+    {
+      "date": "2026-07-15",
+      "close": 247.02000427246094
+    },
+    {
+      "date": "2026-07-16",
+      "close": 249.97000122070312
+    },
+    {
+      "date": "2026-07-17",
+      "close": 253.0399932861328
+    },
+    {
+      "date": "2026-07-20",
+      "close": 248.82000732421875
+    },
+    {
+      "date": "2026-07-21",
+      "close": 250.61000061035156
+    },
+    {
+      "date": "2026-07-22",
+      "close": 255.6300048828125
+    },
+    {
+      "date": "2026-07-23",
+      "close": 259.2699890136719
+    },
+    {
+      "date": "2026-07-24",
+      "close": 263.3999938964844
+    },
+    {
+      "date": "2026-07-27",
+      "close": 265.95001220703125
+    }
+  ]
+}

@@ -28,9 +28,19 @@ business overview, risk factors, current valuation, and recent news — in minut
 > which retriever surfaced it and what it contributed to the fused score — so *why* a chunk
 > was retrieved is checkable on the turn itself, not only in an aggregate table. Building it
 > falsified a pre-registered hypothesis, which is written up in ADR-0004's T6 amendment and on
-> [issue #6](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/6). The finance and news tools, and the
-> security gate, are the phases that follow — so the agent has one tool today, and the
-> tool-*selection* it exists for starts mattering when there are four. The three files under
+> [issue #6](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/6).
+>
+> **Three finance tools now sit beside the search tool** (T5, [#9](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/9)),
+> so the tool-*selection* the agent loop exists for is finally exercised: `get_stock_data`,
+> `calculate_ratios` and `get_recent_news` over free public data, each result rendered as a card
+> or chart beside the answer and each figure stated in the units a note quotes. Ratios compare a
+> company against the mean of its own curated cluster inside the Universe, never an outside
+> ticker (ADR-0009), and every comparison carries its peer set, its size **and its range** — with
+> two peers a single outlier moves a mean a long way. A figure a source does not report reads
+> *not reported*, never `0.0`. When a source cannot be refreshed the last good figure is shown
+> with a banner saying how old it is. The security gate is the phase that follows.
+>
+> The three files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
 > hand-authored. The plan lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
@@ -47,8 +57,11 @@ business overview, risk factors, current valuation, and recent news — in minut
 
 ## What answers are grounded in
 
-Grounded in Items 1, 1A, 7 and 7A of the latest annual 10-K on file for each of the 15
-companies in FinBrief's Universe — **54 of 60** company × Section pairs. The app states this
+**Filing** answers are grounded in Items 1, 1A, 7 and 7A of the latest annual 10-K on file for
+each of the 15
+companies in FinBrief's Universe — **54 of 60** company × Section pairs. *Filing* answers, and
+not every answer, because the finance tools put live figures in front of the analyst too — those
+have their own scope, below. The app states this
 under its title and in a sidebar panel from the same
 [`src/finbrief/prompts.py`](./src/finbrief/prompts.py) text the model is given, so the page
 and the persona cannot disagree about what is grounded (user story 18, ADR-0007). Every
@@ -72,6 +85,35 @@ cross-checked against the ingest run's own evidence by `tests/test_grounding_sco
 Retrieved text is shown verbatim in the sources panel: it renders through `st.text`, not
 Markdown, because a filer's own `$178,353` is a KaTeX expression to a Markdown renderer and
 a citation surface that silently reformats the figures is not a citation surface.
+
+## What the live figures are, and are not
+
+Price, ratios and headlines come from three tools over free public data, never from the filings
+— a 10-K has no prices in it. Their limits are stated because "live" is a word a reader will
+over-read:
+
+- **Delayed, and cached for 15 minutes.** The free quote feed is itself delayed by roughly that
+  much, so a shorter TTL would spend a call to re-fetch a number that cannot have changed. It is
+  a recent quote, not a tick, and the app says so.
+- **Peers are the company's own curated cluster inside the Universe** and are never chosen by the
+  model or drawn from outside (ADR-0009). Every comparison names its peer set and size — *vs.
+  mean of 2 `autos` peers: TSLA, GM* — and reports the **range** beside the mean, because with
+  two or three peers one outlier dominates an arithmetic mean: Ford's peers are TSLA at 286× and
+  GM at 37×, and the mean of 162× describes neither.
+- **A figure a source does not report reads *not reported*, never `0.0`.** This is routine rather
+  than defensive: JPM and BAC report no debt-to-equity at all, so a `banks` leverage comparison
+  rests on GS alone and says "1 of 2 peers reported this". A zero D/E on a bank's card would say
+  it carries no leverage.
+- **When a fetch fails**, the last good figure is shown with a banner giving its age; when
+  nothing is cached, the answer says the figure could not be fetched. No number is ever a
+  placeholder, and the assistant is told not to supply one from memory.
+- **News summaries are third-party text**, HTML-stripped and quarantined as data before the model
+  sees them, with only `http(s)` links rendered — a syndicated feed is writable by strangers
+  (ADR-0006).
+- **yfinance is unofficial** and Alpha Vantage's free tier is 25 calls a day. FinBrief reads only
+  the first; the TTL cache, the retry and the stale banner are how it degrades rather than a
+  second data source. `ALPHAVANTAGE_API_KEY` and `FINBRIEF_ALPHAVANTAGE_ENABLED` exist in the
+  configuration and nothing reads them yet — a fundamentals fallback is deferred, not shipped.
 
 ## Conversation memory, and who owns it
 

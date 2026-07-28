@@ -302,9 +302,46 @@ retrieval chain and landed with it — ticket T3, #5)
   agent seam (`agent/citations.py`), because a second search that reused `[1]` would make every
   marker above it unresolvable — and a tool cannot do it, since LangGraph runs a step's calls
   concurrently against identical state (#7 review).
-- Still open (ticket T5, #9): three `@tool` functions with caching + error handling, tool-call
-  cards in the UI, per-tool progress indicators. Until they land the agent has one tool, so
-  the tool-*selection* the loop exists for is not yet exercised.
+- The tools half is ✅ **done** (`t5-finance-tools`, #9). `finance/` holds the engine — a TTL
+  cache with retry and a stale fallback (`Fetched(value, age, stale)`, so no surface can render a
+  figure without its staleness), the yfinance quote path, the RSS headline path, and ADR-0009's
+  peer arithmetic; `tools/finance.py` is the wrapper that validates the model's argument against
+  the Universe whitelist, turns every failure into a sentence the model can act on, quarantines
+  headlines as data, and puts a JSON-safe card on each reply for the UI. **Parallel tool calls
+  re-enabled**, inverting T4's flag: it was the second line of a two-line defence against a
+  citation collision the register at the `before_model` seam already makes unrepresentable, and
+  with four tools the fan-out is a real latency win on demo step 4.
+- **Three defects the live demo run found, none of which a hermetic test could have.** (a) Two
+  parallel searches both missed the cold `default_filings_store` cache and both constructed a
+  `chromadb.PersistentClient` over the same directory; chromadb's registry is not reentrant and
+  the loser died inside the tool node, killing the full-brief query. `lru_cache` is atomic about
+  its bookkeeping and not about the function it wraps — T4's serialisation *was* the guarantee.
+  Fixed by `caching.build_once` over all three process-level singletons. (b) The brief's four
+  section headings, newly added to the prompt, were read by the model as *search terms*:
+  `search_filings("Business")` names no company, retrieval returned six other filers' chunks for
+  a Tesla question, and the model then wrote two sections from its weights with no `[n]` at all —
+  my prompt had undercut its own tool description. Fixed; re-measured at 5/5 TSLA sources with
+  every claim cited. (c) `asdict` left enum members in the card artifacts, which `json.dumps`
+  accepted because a `StrEnum` *is* a `str`, so the round-trip test passed while LangGraph warned
+  on every turn.
+- One finding recorded rather than fixed, on ADR-0003's standing rule that the prompt is not
+  tuned against a paid model to move a number: asked to keep square brackets for filing excerpts,
+  the model still writes `[Yahoo Finance]` and still appends an `[n]` to a paragraph of tool
+  figures. Stated once in the prompt, **measured** by T10 (#11) — the same treatment as the
+  verbatim-query contract.
+- Deferred, and stated as deferred: Alpha Vantage as a fundamentals fallback. `alphavantage_enabled`
+  and `ALPHAVANTAGE_API_KEY` remain unread configuration; the cache, the retry and the stale
+  banner are how the free tier is survived instead of a second source.
+- A second finding of the same class, from #9's own code review: **AC-1's two-tool pairing had no
+  routing rule.** The acceptance criterion is that a valuation question fires `get_stock_data`
+  *and* `calculate_ratios`, and the prompt never said so — `calculate_ratios` already returns a
+  trailing P/E, so one call plausibly satisfies the model. A line now says it ("a valuation
+  question wants the quote *and* the peer comparison"), and it is recorded here as **measured, not
+  enforced**: a prompt line is not a guarantee, and this ticket alone has three instances of the
+  model declining one (the verbatim-query contract, the square-bracket rule, and the section
+  headings read as search terms). The golden set records **one tool per row**, so T10's
+  tool-calling eval will not score the pair either — noted on #11 so the gap is a known
+  measurement hole rather than an assumed pass.
 - Two findings from the first live run, recorded on the tickets that will use them: the model
   rephrased both queries despite the verbatim instruction (#11 — the rate is a reportable
   metric, and per ADR-0003 the prompt is not tuned against a paid model to move it), and the
@@ -447,6 +484,7 @@ Each item built only when fully understood; anything not defensible is cut befor
 | Risk | Mitigation |
 |---|---|
 | yfinance flakiness / rate limits | TTL cache, retry with backoff, cached-fallback banner in UI |
+| **A stalled quote endpoint holds the quote cache lock for ~91 s** (`config.QUOTE_FETCH_WORST_CASE_SECONDS`) | `FETCH_TIMEOUT_SECONDS` bounds one *request*, not a fetch: two requests per attempt × `FETCH_ATTEMPTS` = 3, all inside `TimedCache`'s lock, which is held across the refresh so two sessions asking about one ticker coalesce into one call. Bounded and survivable, and **much worse before #9's review** — the clamp reached `news.py` only, so the ceiling was yfinance's own 30 s per request (~181 s) and was unbounded before that. Mitigation for a **demo**: warm the cache with the tickers being shown before recording (a `get_stock_data` per company), so the demo path is a cache hit and never a fetch. A stall looks like the `st.status` spinner sitting on "Fetching …" — not a crash, and it does eventually return a stale-with-banner card if anything is cached. Recorded for T11 on #12. Reducing the worst case further means retrying *outside* the lock, which trades the free tier's call budget for latency and is a change to ADR-0009's "zero new API surface" — deliberately not made here |
 | Alpha Vantage 25 calls/day | Feature flag; cache to disk; yfinance primary |
 | 10-K PDFs/HTML messy to parse | Use EDGAR's structured formats; section regexes; accept imperfect edges, note in README reflection |
 | Scope creep (all optional tasks) | Strict P0→P1→P2 ordering; P0+P1 alone already exceed the "2 medium + 1 hard" bonus bar |

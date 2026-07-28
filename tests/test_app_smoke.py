@@ -7,17 +7,33 @@ that a message reaches the agent seam. `test_app_state.py` owns session and thre
 behaviour (ADR-0008).
 """
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from fakes import a_context
+from fakes import a_context, recorded_quotes
 from streamlit.testing.v1 import AppTest
 
 from finbrief.agent import agent
-from finbrief.agent.agent import AgentTurn, Search
+from finbrief.agent.agent import AgentTurn, Search, Step
+from finbrief.config import MAX_QUESTION_CHARS, PEERS
+from finbrief.finance.news import Headline
+from finbrief.finance.ratios import compare
 from finbrief.ingestion.model import Section
-from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK
+from finbrief.prompts import DISCLAIMER, NO_CONTEXT_FALLBACK, unavailable_message
 from finbrief.retrieval.hybrid import Retriever, Surfaced
+from finbrief.tools.finance import (
+    _CARDS,
+    _DATA_CARDS,
+    _TOOL_BY_KIND,
+    FINANCE_TOOL_NAMES,
+    FailedCard,
+    Freshness,
+    NewsCard,
+    QuoteCard,
+    RatiosCard,
+)
 
 APP = str(Path(__file__).parents[1] / "app" / "Home.py")
 
@@ -61,13 +77,19 @@ def a_turn_without_searching(text="Two risks, briefly: […]"):
     return AgentTurn(text=text, searches=())
 
 
-def stub_answer(monkeypatch, answer=None):
+def stub_answer(monkeypatch, answer=None, steps=()):
     """Replace the agent seam with a fixed turn, recording the questions."""
     asked = []
     result = answer if answer is not None else a_turn()
 
-    def fake_answer(question, *, thread_id, agent):  # noqa: ARG001 — state is seam 3's other file
+    # `on_step` is accepted and driven, not merely tolerated: T5 made the page pass a callback,
+    # and a stub that only absorbed it would leave the progress list untested while looking
+    # fine.
+    def fake_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3's other file
         asked.append(question)
+        for step in steps:
+            if on_step is not None:
+                on_step(step)
         return result
 
     monkeypatch.setattr(agent, "answer", fake_answer)
@@ -340,8 +362,43 @@ def test_a_turn_answered_from_the_conversation_shows_no_panel_and_no_banner(app,
     assert "Two risks, briefly: […]" in [md.value for md in assistant.markdown]
     assert not assistant.expander
     assert not app.warning
+    captions = [caption.value for caption in assistant.caption]
     # The disclaimer is still owed — it is not a property of having retrieved something.
-    assert DISCLAIMER in [caption.value for caption in assistant.caption]
+    assert DISCLAIMER in captions
+    # And the empty space is **accounted for**. Without this the turn renders identically to one
+    # whose tools all failed, and a reader cannot tell "nothing needed fetching" from "nothing
+    # could be fetched" — an absence reported as a measurement (CLAUDE.md). Recorded as a
+    # decision on this ticket and shipped uncaptioned until #9's review.
+    assert any("Answered from context already retrieved" in value for value in captions)
+    assert any("no new search, so no new sources to cite" in value for value in captions)
+
+
+def test_a_turn_that_used_a_tool_is_not_captioned_as_context_reuse(app, monkeypatch):
+    # The note's other half: it must not appear on a turn that *did* call something, or it stops
+    # meaning anything. A finance card and no search is still a turn that fetched.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+    app.run()
+
+    app.chat_input[0].set_value("What is Tesla trading at?").run()
+
+    assert not app.exception
+    captions = [caption.value for caption in app.chat_message[1].caption]
+    assert not any("Answered from context already retrieved" in value for value in captions)
+
+
+def test_the_context_reuse_note_survives_the_next_rerun(app, monkeypatch):
+    # Replayed from the transcript row rather than recomputed, and through the same `getattr`
+    # tolerance the cards use: reading `turn.used_tools` on a row written before T5 would reach
+    # the missing `cards` field and raise, which is why the caller passes the fact in.
+    stub_answer(monkeypatch, a_turn_without_searching())
+    app.run()
+    app.chat_input[0].set_value("Summarise that in two lines.").run()
+
+    app.chat_input[0].set_value("And the valuation?").run()
+
+    assert not app.exception
+    captions = [caption.value for caption in app.chat_message[1].caption]
+    assert any("Answered from context already retrieved" in value for value in captions)
 
 
 def test_a_turn_that_did_not_search_replays_without_a_banner(app, monkeypatch):
@@ -418,8 +475,12 @@ def test_a_bad_log_level_reports_a_clear_error_and_stops(app, monkeypatch):
 
 
 def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
-    def boom(question, *, thread_id, agent):  # noqa: ARG001
-        raise RuntimeError("upstream refused")
+    # The generation tier's last resort (PLAN §2). It names the exception **type** and not its
+    # message: a client's error string can carry a request URL, and a request URL can carry an
+    # API key — the same reason `log_event` never records one. Until T5 this branch printed
+    # `f"The model call failed: {exc}"`, i.e. the message verbatim.
+    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        raise RuntimeError("upstream refused: https://api.example/v1?key=sk-secret")
 
     monkeypatch.setattr(agent, "answer", boom)
     app.run()
@@ -427,9 +488,63 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     app.chat_input[0].set_value("What are Tesla's risks?").run()
 
     assert not app.exception
-    assert "upstream refused" in app.error[0].value
+    banner = app.error[0].value
+    assert "RuntimeError" in banner, "the type is actionable"
+    assert "sk-secret" not in banner and "upstream refused" not in banner
     # A failed turn must not leave a phantom assistant message in the transcript.
     assert [m["role"] for m in app.session_state.messages] == ["user"]
+
+
+def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):
+    # The detail is not lost, only moved: the banner is for the reader and the traceback is for
+    # whoever debugs it, which is what makes withholding the message from the page affordable.
+    #
+    # Read off **stderr** rather than through `caplog`, and that is the honest instrument here:
+    # the page calls `configure_logging`, which sets `propagate=False` on the `finbrief` logger
+    # and installs its own JSON-lines handler, so `caplog`'s root handler never sees the record.
+    # What this asserts is therefore the line an operator actually reads.
+    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(agent, "answer", boom)
+    app.run()
+    capsys.readouterr()
+
+    app.chat_input[0].set_value("What are Tesla's risks?").run()
+
+    lines = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    (failure,) = [line for line in lines if line.get("event") == "chat_turn_failed"]
+    assert failure["level"] == "ERROR"
+    assert "upstream refused" in failure["error"], "the traceback travels, in one JSON object"
+
+
+def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
+    # The generation tier's named case. A step-limit failure reads to a user as the app hanging
+    # and then dying, so it gets a message about *their* question rather than LangGraph's own
+    # "Recursion limit of N reached". The N is `MAX_AGENT_STEPS`, read rather than typed: the
+    # message is the thing under test and a stale literal here would still pass while describing
+    # a limit the agent no longer has (issue #9 review).
+    from langgraph.errors import GraphRecursionError
+
+    from finbrief.agent.agent import MAX_AGENT_STEPS
+
+    def out_of_steps(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        raise GraphRecursionError(f"Recursion limit of {MAX_AGENT_STEPS} reached")
+
+    monkeypatch.setattr(agent, "answer", out_of_steps)
+    app.run()
+
+    app.chat_input[0].set_value("Compare all fifteen companies.").run()
+
+    assert not app.exception
+    banner = app.error[0].value
+    assert "more tool calls than FinBrief allows" in banner
+    assert "Recursion limit" not in banner
+    assert "two parts" in banner, "it says what to do instead"
 
 
 # --------------------------------------------------------------------------------------
@@ -814,3 +929,455 @@ def test_the_panel_reports_the_variants_of_a_search_that_returned_no_chunks(app,
     # says nothing at all, and the empty collection gets its own banner instead.
     assert "Surfaced no chunk" not in " ".join(c.value for c in panel.caption)
     assert sources_panel(assistant) is None
+
+
+# --- T5 (#9): tool-call cards, progress, and the input cap -----------------------------
+
+
+def a_quote_card(*, stale=False, age_seconds=0.0, ticker="NVDA", **figures):
+    """A `get_stock_data` card, built from a real recorded quote unless overridden."""
+    quote = recorded_quotes()[ticker]
+    if figures:
+        quote = replace(quote, **figures)
+    return QuoteCard(quote=quote, freshness=Freshness(stale=stale, age_seconds=age_seconds))
+
+
+def a_ratios_card(ticker="F", *, stale=False, age_seconds=0.0, peers=None):
+    """A `calculate_ratios` card over the recorded quotes for a whole cluster."""
+    quotes = recorded_quotes()
+    available = {t: quotes[t] for t in (peers if peers is not None else PEERS[ticker])}
+    return RatiosCard(
+        comparison=compare(quotes[ticker], available),
+        freshness=Freshness(stale=stale, age_seconds=age_seconds),
+    )
+
+
+def a_news_card(headlines, *, ticker="TSLA", days=7, stale=False):
+    return NewsCard(
+        ticker=ticker,
+        days=days,
+        headlines=tuple(headlines),
+        freshness=Freshness(stale=stale, age_seconds=0.0),
+    )
+
+
+def a_turn_with(cards, text="Here is what I found."):
+    """A turn that called finance tools and did not search — cards without citations."""
+    return AgentTurn(text=text, searches=(), cards=tuple(cards))
+
+
+def send(app, question="What is NVIDIA trading at?"):
+    app.run()
+    app.chat_input[0].set_value(question).run()
+    return app.chat_message[1]
+
+
+def charts(app):
+    """Every chart on the page, walked out of the tree by hand.
+
+    Two reasons `AppTest.get` will not do it. `st.bar_chart` and `st.line_chart` reach the
+    element tree as `vega_lite_chart`, for which `AppTest` ships no typed accessor — they arrive
+    as `UnknownElement`, and `app.get("arrow_bar_chart")` returns an empty list rather than
+    failing, which is how an assertion about charts passes while rendering none. And the ratio
+    charts sit inside `st.columns`, which `app.chat_message[1]` does not recurse into.
+    """
+    found = []
+
+    def walk(node):
+        if getattr(node, "type", None) == "vega_lite_chart":
+            found.append(node)
+        for child in getattr(node, "children", {}).values():
+            walk(child)
+
+    walk(app._tree)
+    return found
+
+
+def test_a_quote_card_renders_the_figures_a_valuation_question_opens_with(app, monkeypatch):
+    # User story 13. The figures come off the turn's own card, never re-fetched: a second fetch
+    # goes through a TTL cache and could legitimately return a different price from the one the
+    # answer above quotes.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+
+    assistant = send(app)
+
+    labels = {metric.label: metric.value for metric in assistant.metric}
+    assert labels["Price (USD)"] == "196.51"
+    assert labels["Market cap"] == "4.76T"
+    assert labels["P/E (trailing)"] == "31.6x"
+    assert any("52-week range 164.07–236.54" in c.value for c in assistant.caption)
+
+
+def test_a_quote_cards_change_is_a_delta_and_not_a_number_when_it_is_unknown(app, monkeypatch):
+    # `st.metric`'s delta draws a coloured arrow, which is a claim about direction. With no
+    # change to report there is nothing to claim — so no delta at all, rather than a zero that
+    # reads as "flat". Both halves asserted, because "no delta" alone would also pass if the
+    # delta never rendered.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card(change_percent=None)]))
+    app.run()
+    app.chat_input[0].set_value("What is NVIDIA trading at?").run()
+    (unknown,) = [m for m in app.chat_message[1].metric if m.label == "Price (USD)"]
+
+    assert not unknown.delta
+
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+    app.chat_input[0].set_value("And now?").run()
+    known = [m for m in app.chat_message[3].metric if m.label == "Price (USD)"][0]
+
+    assert known.delta == "-4.99%"
+
+
+def test_a_figure_the_source_did_not_report_renders_as_words(app, monkeypatch):
+    # Ford has no trailing P/E in the recorded snapshot. `0.0x` on the card would be a number
+    # nobody measured, which is the failure the whole absence-preserving path exists to prevent.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card(ticker="F")]))
+
+    assistant = send(app)
+
+    (multiple,) = [m for m in assistant.metric if m.label == "P/E (trailing)"]
+    assert multiple.value == "not reported"
+
+
+def test_a_ratios_card_states_the_peer_set_and_its_size(app, monkeypatch):
+    # ADR-0009's inline basis, on the surface the analyst reads. One wording, shared with the
+    # tool's own text (`PeerComparison.basis`), so the card and the answer cannot describe two
+    # different comparisons.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F")]))
+
+    assistant = send(app)
+
+    assert any("vs. mean of 2 `autos` peers: TSLA, GM" in c.value for c in assistant.caption)
+
+
+def test_a_ratios_card_reports_the_range_beside_every_mean(app, monkeypatch):
+    # Ford's autos peers are TSLA at 286x and GM at 37x, so a mean of 162x describes neither.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F")]))
+
+    assistant = send(app)
+
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "peer mean 161.6x (range 36.9x–286.3x)" in body
+
+
+def test_a_ratios_card_says_when_only_some_peers_reported_a_metric(app, monkeypatch):
+    # JPM's cluster has two peers and only GS reports a debt-to-equity.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("JPM")]))
+
+    assistant = send(app)
+
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "1 of 2 peers reported this" in body
+
+
+def test_a_ratios_card_names_a_peer_whose_quote_could_not_be_fetched(app, monkeypatch):
+    # A gap in the data, not a fact about the company — and named, because "mean of 1 of 2
+    # peers" and "mean of 2 peers" are different claims.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F", peers=["TSLA"])]))
+
+    assistant = send(app)
+
+    assert any("No quote for GM" in warning.value for warning in assistant.warning)
+    assert any("remaining peers" in warning.value for warning in assistant.warning)
+
+
+def test_a_ratios_card_with_no_peer_quotes_does_not_promise_a_mean(app, monkeypatch):
+    # The banner and the rows beneath it have to agree. With every peer quote dead the rows read
+    # "vs. peers: none reported this", and the banner used to claim "the means below rest on the
+    # remaining peers" — a mean of a set with nothing in it (issue #9 review).
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F", peers=[])]))
+
+    assistant = send(app)
+    warnings = " ".join(warning.value for warning in assistant.warning)
+    assert "no peer mean is reported" in warnings
+    assert "remaining peers" not in warnings
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "vs. peers: none reported this" in body
+
+
+def test_each_ratio_metric_gets_its_own_axis(app, monkeypatch):
+    # **A P/E and a debt-to-equity share `Unit.MULTIPLE` and do not share a scale.** Ford's
+    # peer mean P/E is 162x against a D/E of 4.26x, so on one axis the leverage of a company
+    # carrying $159bn of debt drew as three pixels — on the card T11 screenshots (#9 review).
+    # One chart per metric is the fix, so the count of charts is the assertion.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F")]))
+
+    send(app)
+
+    plottable = [
+        metric
+        for metric in a_ratios_card("F").comparison.metrics
+        if metric.value is not None and metric.peer_mean is not None
+    ]
+    assert len(plottable) > 1, "the fixture must exercise more than one metric to mean anything"
+    assert len(charts(app)) == len(plottable), "one axis each, not one axis per unit"
+    captions = " ".join(caption.value for caption in app.caption)
+    for metric in plottable:
+        assert metric.label in captions, "each chart names the metric it is plotting"
+
+
+def test_a_metric_with_no_peer_mean_is_not_plotted_as_zero(app, monkeypatch):
+    # The one mistake this whole path exists to avoid. A bar chart cannot draw "not reported",
+    # so the metric is listed in the prose with its absence stated and gets no chart at all.
+    stub_answer(monkeypatch, a_turn_with([a_ratios_card("F", peers=[])]))
+
+    assistant = send(app)
+
+    assert not charts(app), "no peer means, so nothing is plottable"
+    assert "vs. peers: none reported this" in " ".join(md.value for md in assistant.markdown)
+
+
+def test_news_cards_render_the_publisher_the_date_and_the_stripped_summary(app, monkeypatch):
+    headline = Headline(
+        title="Tesla and SpaceX Stocks Fall",
+        summary="Cathie Wood's ARK Invest is doubling down.",
+        source="finance.yahoo.com",
+        link="https://finance.yahoo.com/m/abc.html",
+        published="2026-07-28T10:49:00+00:00",
+    )
+    stub_answer(monkeypatch, a_turn_with([a_news_card([headline])]))
+
+    assistant = send(app, "Any recent Tesla news?")
+
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "https://finance.yahoo.com/m/abc.html" in body
+    assert any("finance.yahoo.com · 2026-07-28" in c.value for c in assistant.caption)
+    assert "Cathie Wood's ARK Invest is doubling down." in [t.value for t in assistant.text]
+
+
+def test_a_headline_title_cannot_smuggle_markdown_onto_the_page(app, monkeypatch):
+    # Every string on a news card was written by a stranger (user story 17). Rendered raw
+    # through `st.markdown`, a title is free to inject an image, a heading, or emphasis that
+    # swallows the rest of the card — so the span is escaped and the link around it stays ours.
+    hostile = Headline(
+        title="Ford **recalls** [click](https://evil.example) ![x](https://evil.example/x.png)",
+        summary="",
+        source="evil.example",
+        link="https://reuters.com/a",
+        published=None,
+    )
+    stub_answer(monkeypatch, a_turn_with([a_news_card([hostile], ticker="F")]))
+
+    assistant = send(app, "Any Ford news?")
+
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "\\*\\*recalls\\*\\*" in body, "the emphasis is inert"
+    assert "\\!\\[x\\]" in body, "and so is the image"
+    assert body.count("https://reuters.com/a") == 1, "the only live link is the one we built"
+
+
+def test_a_headline_with_no_safe_link_still_renders_its_title(app, monkeypatch):
+    # `finance.news.safe_link` empties a `javascript:` URL at the boundary; the card has to cope
+    # with a headline that has nowhere to click rather than dropping the story.
+    unlinked = Headline(
+        title="Ford recalls trucks", summary="", source="F", link="", published=None
+    )
+    stub_answer(monkeypatch, a_turn_with([a_news_card([unlinked], ticker="F")]))
+
+    assistant = send(app, "Any Ford news?")
+
+    body = " ".join(md.value for md in assistant.markdown)
+    assert "**Ford recalls trucks**" in body
+    assert "](" not in body, "no link markup at all, rather than an empty href"
+
+
+def test_an_empty_news_window_is_reported_as_a_fact_not_a_failure(app, monkeypatch):
+    stub_answer(monkeypatch, a_turn_with([a_news_card([])]))
+
+    assistant = send(app, "Any recent Tesla news?")
+
+    assert any("answered and had nothing" in info.value for info in assistant.info)
+    assert not assistant.warning, "an empty window is not a warning"
+
+
+def test_a_stale_card_carries_a_banner_saying_how_old_its_figures_are(app, monkeypatch):
+    # User story 22, on the surface. A warning rather than a caption: the reader is about to
+    # take a number off this card into a note, and "nobody could refresh this" has to interrupt.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card(stale=True, age_seconds=1860.0)]))
+
+    assistant = send(app)
+
+    assert any("31 minute(s) old" in warning.value for warning in assistant.warning)
+
+
+def test_a_fresh_card_carries_no_banner(app, monkeypatch):
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+
+    assistant = send(app)
+
+    assert not assistant.warning
+
+
+def test_each_card_carries_its_own_banner_rather_than_one_for_the_group(app, monkeypatch):
+    # A full brief can hold a fresh quote and a stale peer comparison, and a single banner for
+    # the group would have to overstate one of them.
+    stub_answer(
+        monkeypatch,
+        a_turn_with([a_quote_card(), a_ratios_card("F", stale=True, age_seconds=3600.0)]),
+    )
+
+    assistant = send(app)
+
+    banners = [w.value for w in assistant.warning if "could not be refreshed" in w.value]
+    assert len(banners) == 1
+    assert "60 minute(s) old" in banners[0]
+
+
+def test_a_failed_tool_call_renders_the_same_explanation_the_model_was_given(app, monkeypatch):
+    # One wording for the reader and the model: a second would be a second explanation to keep
+    # in step, and the analyst is reading the banner right beside the answer that used it.
+    message = unavailable_message("Live market data", "NVDA")
+    stub_answer(monkeypatch, a_turn_with([FailedCard(QuoteCard.KIND, "NVDA", message)]))
+
+    assistant = send(app)
+
+    assert any(message in warning.value for warning in assistant.warning)
+
+
+def test_a_turn_that_called_no_finance_tool_renders_no_cards(app, monkeypatch):
+    # The shape T4 had, unchanged: a pure-retrieval answer gains nothing from T5.
+    stub_answer(monkeypatch)
+
+    assistant = send(app, "What are Tesla's risk factors?")
+
+    assert not assistant.metric
+    assert not assistant.warning
+
+
+def test_the_cards_survive_the_next_turn_like_the_sources_do(app, monkeypatch):
+    # Replayed from the transcript row, so a chart does not vanish when the analyst asks a
+    # follow-up — the same property `test_the_sources_panel_survives_the_next_turn` asserts.
+    stub_answer(monkeypatch, a_turn_with([a_quote_card()]))
+    app.run()
+    app.chat_input[0].set_value("What is NVIDIA trading at?").run()
+
+    app.chat_input[0].set_value("And its P/E?").run()
+
+    first = app.chat_message[1]
+    assert [m.label for m in first.metric] == ["Price (USD)", "Market cap", "P/E (trailing)"]
+
+
+def test_a_transcript_row_from_before_the_cards_existed_replays(app, monkeypatch):
+    # A live session's transcript outlives a code reload, so a row holding a T4-shaped
+    # `AgentTurn` — built with no `cards` at all — is still in `session_state` on the first
+    # rerun after a deploy and must replay rather than `AttributeError` the page.
+    stub_answer(monkeypatch)
+    app.run()
+    app.session_state.messages = [
+        {"role": "user", "content": "What are Tesla's risk factors?"},
+        {"role": "assistant", "content": "Tesla identifies […] [1].", "turn": a_turn()},
+    ]
+
+    app.run()
+
+    assert not app.exception
+    assert sources_panel(app.chat_message[1]) is not None
+
+
+def test_each_tool_call_is_named_while_the_turn_runs(app, monkeypatch):
+    # User story 14. The list is written into the status container as each call is asked for, so
+    # it persists for the whole wait — and a reader can see that a full brief really did fetch
+    # four things rather than watching one label replace another.
+    stub_answer(
+        monkeypatch,
+        a_turn_with([a_quote_card()]),
+        steps=(
+            Step("search_filings"),
+            Step("get_stock_data", "NVDA"),
+            Step("calculate_ratios", "NVDA"),
+            Step("get_recent_news", "NVDA"),
+        ),
+    )
+
+    send(app)
+
+    (status,) = app.status
+    reported = [element.value for element in status.markdown]
+    assert reported == [
+        "Searching the filings",
+        "Fetching market data · NVDA",
+        "Comparing ratios against peers · NVDA",
+        "Fetching recent headlines · NVDA",
+    ]
+    assert status.label == "Answered"
+
+
+def test_a_turn_that_called_nothing_still_reports_that_it_was_thinking(app, monkeypatch):
+    # The label the agent's own decision makes necessary: it chooses whether to call anything,
+    # so a status naming retrieval would describe a step some turns skip.
+    stub_answer(monkeypatch, a_turn_without_searching())
+
+    send(app, "Summarise that.")
+
+    (status,) = app.status
+    assert not status.markdown
+    assert status.label == "Answered"
+
+
+def test_an_over_long_question_is_refused_before_it_reaches_the_agent(app, monkeypatch):
+    # User story 21's input cap. Refused before the transcript and before the agent: what
+    # arrives at this length is a paste rather than a question, often a document with
+    # instructions in it (ADR-0006), and the cheapest refusal is the one that costs no tokens.
+    asked = stub_answer(monkeypatch)
+    app.run()
+
+    app.chat_input[0].set_value("x" * (MAX_QUESTION_CHARS + 1)).run()
+
+    assert not app.exception
+    assert asked == [], "nothing reached the agent"
+    assert str(MAX_QUESTION_CHARS) in app.error[0].value.replace(",", "")
+    assert app.session_state.messages == [], "and nothing was added to the transcript"
+
+
+def test_a_question_at_the_cap_is_answered(app, monkeypatch):
+    # The boundary is inclusive, so the error message's number is the longest question that
+    # works rather than one character past it.
+    asked = stub_answer(monkeypatch)
+    app.run()
+
+    app.chat_input[0].set_value("x" * MAX_QUESTION_CHARS).run()
+
+    assert len(asked) == 1
+    assert not app.error
+
+
+# --------------------------------------------------------------------------------------
+# The card-kind dispatch, bound to the engine's (#9 review)
+# --------------------------------------------------------------------------------------
+
+
+def renderers_block() -> str:
+    """The text of `app/Home.py`'s `_RENDERERS` literal.
+
+    Read as source rather than imported, because importing `Home` *runs* it: it calls
+    `st.set_page_config`, `get_settings()` and `st.stop()` at module scope, so an import here
+    would need a key and would half-execute the page. Every other test in this file drives it
+    through `AppTest`, which is the supported way — but `AppTest` gives no handle on a
+    module-level dict, and the thing under test is precisely the completeness of that dict.
+    """
+    source = Path(APP).read_text(encoding="utf-8")
+    start = source.index("_RENDERERS = {")
+    return source[start : source.index("}", start)]
+
+
+def test_every_card_kind_the_engine_can_build_has_a_renderer():
+    # The two lists that have to agree, asserted against each other rather than kept in step by
+    # hand. There were three enumerations of the card kinds before this — the engine's `_CARDS`,
+    # its `_TOOL_BY_KIND`, and an `isinstance` cascade in the UI — so a fourth card meant three
+    # edits across two files with nothing to catch a missed one (issue #9 review). A card class
+    # the UI cannot draw now fails here instead of rendering an empty bordered box to a reader.
+    block = renderers_block()
+
+    for card in _CARDS.values():
+        assert f"{card.__name__}.KIND:" in block, (
+            f"{card.__name__} rebuilds from a payload but app/Home.py has no renderer for it"
+        )
+
+
+def test_the_tool_map_covers_every_data_card_and_not_the_failure_card():
+    # `_TOOL_BY_KIND` is derived from `_DATA_CARDS` rather than retyped, so this asserts the
+    # *shape* of the derivation: a `FailedCard` is the absence of a data card and has no tool of
+    # its own — it reads its label back from the kind that failed.
+    assert set(_TOOL_BY_KIND) == {card.KIND for card in _DATA_CARDS}
+    assert FailedCard.KIND not in _TOOL_BY_KIND
+    assert FailedCard.KIND in _CARDS, "it still has to rebuild from a payload"
+    assert set(_TOOL_BY_KIND.values()) == set(FINANCE_TOOL_NAMES)

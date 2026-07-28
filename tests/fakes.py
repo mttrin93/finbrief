@@ -6,16 +6,28 @@ Not a fixture module — these are the doubles a fixture is built from, kept out
 
 from __future__ import annotations
 
+import json
 import math
+from functools import lru_cache
+from pathlib import Path
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AnyMessage
 from pydantic import Field
 
+from finbrief.finance.cache import Fetched
+from finbrief.finance.news import Headline, parse_feed
+from finbrief.finance.quotes import Close, Quote
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.hybrid import Retriever, Surfaced, rrf_contribution
 from finbrief.retrieval.retrieve import Context
+
+#: Recorded market data and news (`scripts/record_market_fixtures.py`). Loaded here rather than
+#: only in `conftest.py` because the market doubles below are needed by plain helper *functions*
+#: — `test_agent.an_agent` builds a real agent outside any fixture — and a second loader would
+#: be a second place for the fixture layout to be known.
+MARKET_FIXTURES = Path(__file__).parent / "fixtures" / "market"
 
 
 def a_context(
@@ -70,6 +82,70 @@ def a_context(
         fused_score=sum(row.contribution for row in surfaced),
         provenance=surfaced,
     )
+
+
+@lru_cache(maxsize=1)
+def recorded_quotes() -> dict[str, Quote]:
+    """Every Universe company's real quote, parsed from its recorded `.info` and closes.
+
+    Parsed through `Quote.from_info` rather than hand-built, so what the tools and the ratio
+    arithmetic are tested against is the shape production actually produces — the absences
+    included (a bank with no D/E, Ford with no P/E, two banks with a gross margin of exactly
+    0.0).
+    """
+    quotes = {}
+    for path in sorted(MARKET_FIXTURES.glob("*-info.json")):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        ticker = path.stem.removesuffix("-info").upper()
+        quotes[ticker] = Quote.from_info(
+            ticker,
+            raw["info"],
+            tuple(Close(date=row["date"], close=row["close"]) for row in raw["closes"]),
+        )
+    assert quotes, f"no recorded quotes in {MARKET_FIXTURES}; run record_market_fixtures.py"
+    return quotes
+
+
+@lru_cache(maxsize=1)
+def recorded_feed_bytes() -> dict[str, bytes]:
+    """ticker -> the raw RSS bytes Yahoo served, verbatim.
+
+    Raw rather than parsed, unlike the quotes: `feedparser.parse` takes bytes, so a test can run
+    the real parser and the real HTML stripper over a real feed.
+    """
+    feeds = {
+        path.stem.removesuffix("-headlines").upper(): path.read_bytes()
+        for path in sorted(MARKET_FIXTURES.glob("*-headlines.xml"))
+    }
+    assert feeds, f"no recorded feeds in {MARKET_FIXTURES}; run record_market_fixtures.py"
+    return feeds
+
+
+@lru_cache(maxsize=1)
+def recorded_headlines() -> dict[str, tuple[Headline, ...]]:
+    """The recorded feeds, parsed and stripped — what a headline source hands back."""
+    return {
+        ticker: parse_feed(raw, ticker=ticker) for ticker, raw in recorded_feed_bytes().items()
+    }
+
+
+def a_quote_source(ticker: str) -> Fetched[Quote]:
+    """A `quotes.quote` stand-in over the recorded fixtures — always fresh, never networked.
+
+    Injected into `build_agent` and `build_finance_tools` so the agent tests drive the real
+    tools (spec seam 2: real loop, external data mocked). A test that wants an outage or a stale
+    serve passes its own source instead; this is the boring case, which is most of them.
+    """
+    return Fetched(recorded_quotes()[ticker], age_seconds=0.0, stale=False)
+
+
+def a_headline_source(ticker: str) -> Fetched[tuple[Headline, ...]]:
+    """A `news.headlines` stand-in over the recorded feeds. Raises for a ticker not recorded.
+
+    Only three feeds are recorded (the golden set's news rows), so a `KeyError` here is the same
+    outcome a dead feed produces — which is what the tool layer already turns into a message.
+    """
+    return Fetched(recorded_headlines()[ticker], age_seconds=0.0, stale=False)
 
 
 class ScriptedChatModel(GenericFakeChatModel):

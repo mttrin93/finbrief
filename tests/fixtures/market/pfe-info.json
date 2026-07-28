@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "Pfizer, Inc.",
+    "longName": "Pfizer Inc.",
+    "currency": "USD",
+    "fullExchangeName": "NYSE",
+    "currentPrice": 24.67,
+    "regularMarketPrice": 24.67,
+    "previousClose": 24.54,
+    "regularMarketPreviousClose": 24.54,
+    "regularMarketChangePercent": 0.529744,
+    "marketCap": 140605292544,
+    "trailingPE": 18.832062,
+    "forwardPE": 8.7033825,
+    "trailingEps": 1.31,
+    "debtToEquity": 71.602,
+    "grossMargins": 0.74801004,
+    "profitMargins": 0.118310004,
+    "operatingMargins": 0.31617,
+    "totalDebt": 64731000832,
+    "totalRevenue": 63315001344,
+    "fiftyTwoWeekHigh": 28.75,
+    "fiftyTwoWeekLow": 23.11
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 23.951004028320312
+    },
+    {
+      "date": "2026-06-30",
+      "close": 23.66598892211914
+    },
+    {
+      "date": "2026-07-01",
+      "close": 23.46942710876465
+    },
+    {
+      "date": "2026-07-02",
+      "close": 23.90186309814453
+    },
+    {
+      "date": "2026-07-06",
+      "close": 23.312177658081055
+    },
+    {
+      "date": "2026-07-07",
+      "close": 23.656160354614258
+    },
+    {
+      "date": "2026-07-08",
+      "close": 23.636505126953125
+    },
+    {
+      "date": "2026-07-09",
+      "close": 23.833066940307617
+    },
+    {
+      "date": "2026-07-10",
+      "close": 23.75444221496582
+    },
+    {
+      "date": "2026-07-13",
+      "close": 24.059110641479492
+    },
+    {
+      "date": "2026-07-14",
+      "close": 23.833066940307617
+    },
+    {
+      "date": "2026-07-15",
+      "close": 24.393266677856445
+    },
+    {
+      "date": "2026-07-16",
+      "close": 24.707763671875
+    },
+    {
+      "date": "2026-07-17",
+      "close": 24.61931037902832
+    },
+    {
+      "date": "2026-07-20",
+      "close": 24.32447052001953
+    },
+    {
+      "date": "2026-07-21",
+      "close": 24.51120376586914
+    },
+    {
+      "date": "2026-07-22",
+      "close": 24.393266677856445
+    },
+    {
+      "date": "2026-07-23",
+      "close": 24.579999923706055
+    },
+    {
+      "date": "2026-07-24",
+      "close": 24.540000915527344
+    },
+    {
+      "date": "2026-07-27",
+      "close": 24.670000076293945
+    }
+  ]
+}

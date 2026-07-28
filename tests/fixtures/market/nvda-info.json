@@ -1,0 +1,107 @@
+{
+  "info": {
+    "shortName": "NVIDIA Corporation",
+    "longName": "NVIDIA Corporation",
+    "currency": "USD",
+    "fullExchangeName": "NasdaqGS",
+    "currentPrice": 196.51,
+    "regularMarketPrice": 196.51,
+    "previousClose": 206.84,
+    "regularMarketPreviousClose": 206.84,
+    "regularMarketChangePercent": -4.9942,
+    "marketCap": 4759668391936,
+    "trailingPE": 31.644121,
+    "forwardPE": 15.269993,
+    "trailingEps": 6.21,
+    "debtToEquity": 6.555,
+    "grossMargins": 0.74144995,
+    "profitMargins": 0.62966,
+    "operatingMargins": 0.65596,
+    "totalDebt": 12814000128,
+    "totalRevenue": 253491003392,
+    "fiftyTwoWeekHigh": 236.54,
+    "fiftyTwoWeekLow": 164.07
+  },
+  "closes": [
+    {
+      "date": "2026-06-29",
+      "close": 194.97000122070312
+    },
+    {
+      "date": "2026-06-30",
+      "close": 200.08999633789062
+    },
+    {
+      "date": "2026-07-01",
+      "close": 197.5800018310547
+    },
+    {
+      "date": "2026-07-02",
+      "close": 194.8300018310547
+    },
+    {
+      "date": "2026-07-06",
+      "close": 195.5500030517578
+    },
+    {
+      "date": "2026-07-07",
+      "close": 196.92999267578125
+    },
+    {
+      "date": "2026-07-08",
+      "close": 204.1199951171875
+    },
+    {
+      "date": "2026-07-09",
+      "close": 202.77999877929688
+    },
+    {
+      "date": "2026-07-10",
+      "close": 210.9600067138672
+    },
+    {
+      "date": "2026-07-13",
+      "close": 203.52999877929688
+    },
+    {
+      "date": "2026-07-14",
+      "close": 211.8000030517578
+    },
+    {
+      "date": "2026-07-15",
+      "close": 212.5
+    },
+    {
+      "date": "2026-07-16",
+      "close": 207.39999389648438
+    },
+    {
+      "date": "2026-07-17",
+      "close": 202.80999755859375
+    },
+    {
+      "date": "2026-07-20",
+      "close": 203.27999877929688
+    },
+    {
+      "date": "2026-07-21",
+      "close": 207.2899932861328
+    },
+    {
+      "date": "2026-07-22",
+      "close": 212.05999755859375
+    },
+    {
+      "date": "2026-07-23",
+      "close": 208.75999450683594
+    },
+    {
+      "date": "2026-07-24",
+      "close": 206.83999633789062
+    },
+    {
+      "date": "2026-07-27",
+      "close": 196.50999450683594
+    }
+  ]
+}

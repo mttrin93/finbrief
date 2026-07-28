@@ -1,22 +1,212 @@
-"""Test isolation: no `.env`, no cached settings, no leaked logger state.
+"""Test isolation: no `.env`, no cached settings, no network, no leaked logger state.
 
 Tests must not depend on the developer's local `.env` or exported shell variables — a
 suite that passes only on a machine with a key is worse than no suite. Everything a test
 needs comes from `monkeypatch.setenv` or an explicit mapping.
+
+The no-network half is **enforced from here** rather than asserted (`_install_egress_guard`
+below), because it had been asserted twice and had been false twice. The recorded market and
+news fixtures it makes unnecessary to fetch are loaded by `fakes.py`, which plain helper
+functions can reach as well as fixtures can.
 """
 
 import gzip
 import json
 import logging
 import os
+import socket
 from pathlib import Path
 
+import fakes
 import pytest
 from fakes import KeywordEmbeddings
 
 from finbrief import config
 from finbrief.ingestion.model import ExtractedFiling, FilingRef, Section
 from finbrief.observability.logging_setup import PACKAGE_LOGGER
+
+# --------------------------------------------------------------------------------------
+# The no-network half of the hermetic contract, enforced (CLAUDE.md)
+# --------------------------------------------------------------------------------------
+
+#: Hosts a test may reach. Loopback only, and it is here for the local processes a test
+#: legitimately talks to (Streamlit's `AppTest` machinery, a Chroma client) — never for a
+#: data source.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "", "0.0.0.0"})
+
+
+class EgressBlocked(RuntimeError):
+    """A test tried to reach the network. That is a defect in the test, not in the guard."""
+
+
+def _install_egress_guard() -> None:
+    """Make an outbound connection raise, for the whole session, from collection onwards.
+
+    **Installed at conftest import rather than in a fixture, and deliberately.** A fixture
+    runs per test, and the breach worth catching is the one CLAUDE.md names explicitly — "never
+    add a test dependency that fetches data at import time" — which happens while pytest is
+    *collecting*, before any fixture exists. conftest is imported before the test modules it
+    collects, so this is the earliest hook there is.
+
+    **Why a guard at all, given the suite was already hermetic by contract.** Four times now a
+    ticket has shipped a "hermetic" claim that was false. Twice it was `tiktoken.get_encoding`,
+    which downloads its BPE table and caches it, so the author's warm cache passed and clean CI
+    egressed silently. The third time was **this function's own first draft**, whose docstring
+    claimed it covered `curl_cffi` and did not — see `_block_curl_cffi` below. The fourth was
+    **this function's second draft**, which patched `getaddrinfo` and left the three
+    `gethostby*` resolvers open — see the resolver note below. An assertion that the suite does
+    not reach the network is worth exactly as much as the author's cache state; this is the
+    mechanism that makes it worth more, and `tests/test_hermetic_suite.py` is what says the
+    mechanism works, backend by backend.
+
+    Three of the four were a *docstring or comment* claiming coverage the code lacked, which is
+    the pattern to distrust: prose about a guard cannot fail, so every claim one of these makes
+    now has a test that exercises the call rather than describing it.
+
+    **What it is: a denylist over the egress backends this repo can reach, not a proof.**
+    Python has no in-process way to stop a C library from opening a socket, so a guard like
+    this can only cover the paths it knows about, and a new HTTP dependency is a new path. That
+    limit is stated rather than papered over — a guard advertised as total is how the third
+    instance happened. What makes it worth having anyway is that the failure mode is now
+    *loud*: an uncovered backend shows up as a live call in `test_hermetic_suite.py`'s per-
+    backend tests, which is where the `curl_cffi` hole was found.
+
+    This function covers the **Python socket layer** — `connect`/`connect_ex` (the low-level
+    path), `create_connection` (what `urllib3`, and so `requests`, calls), and the **four
+    resolver entry points**, because a DNS query is egress too and blocking it fails earlier and
+    reads more clearly than a connect timeout. Anything with a non-tuple address is left alone:
+    an `AF_UNIX` path.
+
+    **Why four resolvers and not just `getaddrinfo`.** This function's *second* draft patched
+    `getaddrinfo` alone and a comment in `test_hermetic_suite.py` asserted that
+    "`socket.gethostbyname` routes through `getaddrinfo`". It does not: `gethostbyname`,
+    `gethostbyname_ex` and `gethostbyaddr` are each their own CPython C entry point
+    (`socket_gethostbyname` and friends in `socketmodule.c`), calling the platform resolver
+    directly and touching the Python-level `getaddrinfo` this guard replaces not at all.
+    Measured with only `getaddrinfo` patched, `socket.gethostbyname("example.com")` returned
+    `104.20.23.154` — a real DNS query, from inside a suite advertised as hermetic. That is the
+    **fourth** false hermetic claim on this repo, and the third to be a docstring or comment
+    claiming coverage the code lacked, which is why the tests below now *call* each resolver
+    instead of asserting about it in prose (issue #9 review).
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    real_getaddrinfo = socket.getaddrinfo
+    real_gethostbyname = socket.gethostbyname
+    real_gethostbyname_ex = socket.gethostbyname_ex
+    real_gethostbyaddr = socket.gethostbyaddr
+
+    def blocked(target: object) -> EgressBlocked:
+        return EgressBlocked(
+            f"the test suite tried to reach {target!r}. Tests are hermetic — no network "
+            f"(CLAUDE.md). Record a fixture for this data instead of fetching it: see "
+            f"scripts/record_market_fixtures.py and scripts/record_edgar_fixtures.py."
+        )
+
+    def local_host(host: object) -> bool:
+        return host is None or host in _LOOPBACK
+
+    def local_address(address: object) -> bool:
+        if not isinstance(address, tuple) or not address:
+            return True  # an AF_UNIX path, which never leaves the machine
+        return local_host(address[0])
+
+    def guarded_connect(self, address):
+        if not local_address(address):
+            raise blocked(address)
+        return real_connect(self, address)
+
+    def guarded_connect_ex(self, address):
+        if not local_address(address):
+            raise blocked(address)
+        return real_connect_ex(self, address)
+
+    def guarded_create_connection(address, *args, **kwargs):
+        if not local_address(address):
+            raise blocked(address)
+        return real_create_connection(address, *args, **kwargs)
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if not local_host(host):
+            raise blocked(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def guarded_gethostbyname(hostname):
+        if not local_host(hostname):
+            raise blocked(hostname)
+        return real_gethostbyname(hostname)
+
+    def guarded_gethostbyname_ex(hostname):
+        if not local_host(hostname):
+            raise blocked(hostname)
+        return real_gethostbyname_ex(hostname)
+
+    def guarded_gethostbyaddr(ip_address):
+        # A reverse lookup queries a PTR record, so the address here is the *question* asked of
+        # the resolver rather than a host being connected to — but it is still a packet, and
+        # `local_host` reads it the same way.
+        if not local_host(ip_address):
+            raise blocked(ip_address)
+        return real_gethostbyaddr(ip_address)
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+    socket.create_connection = guarded_create_connection
+    socket.getaddrinfo = guarded_getaddrinfo
+    socket.gethostbyname = guarded_gethostbyname
+    socket.gethostbyname_ex = guarded_gethostbyname_ex
+    socket.gethostbyaddr = guarded_gethostbyaddr
+
+
+def _block_curl_cffi() -> None:
+    """Block `curl_cffi`, which does its own DNS and connect inside libcurl.
+
+    **The hole `_install_egress_guard`'s first draft had, and claimed it did not.** That
+    docstring asserted `socket.create_connection` was "what `urllib3`, and so `requests` and
+    `curl_cffi`, calls". Only the first half is true: `curl_cffi` binds libcurl, which resolves
+    and connects in C without touching Python's `socket` module at all. Measured with the socket
+    guard installed, `curl_cffi.requests.get("https://query1.finance.yahoo.com/")` returned
+    **HTTP 429 — a live call**.
+
+    That is not a hypothetical dependency. `yfinance._http.new_session()` returns
+    `curl_cffi.Session(impersonate="chrome")` whenever `curl_cffi` is importable, and it is in
+    `uv.lock`, so the one library this ticket added is the one the guard did not cover. The
+    suite stayed hermetic only because `finance/quotes.py` defers its `import yfinance` and
+    every test injects a recorded source — hermetic *by contract*, which is the exact thing the
+    guard exists to stop relying on.
+
+    **`Curl.perform` is the chokepoint**, the libcurl analogue of `socket.connect`: every
+    synchronous request funnels through it whatever session or convenience helper called in.
+    `AsyncSession.request` covers the async path, which uses multi-handles instead.
+
+    **No loopback exemption, unlike the socket guard.** The target URL is set through `setopt`
+    and is not an argument to `perform`, so this cannot tell a local address from a remote one —
+    and nothing in this repo has any reason to use `curl_cffi` for loopback. Blocking it
+    outright is the safe reading of an ambiguous case.
+
+    Absent `curl_cffi`, this is a no-op: it is an optional `yfinance` backend, and a guard that
+    hard-required it would fail the suite on an environment that is *more* hermetic, not less.
+    """
+    try:
+        import curl_cffi
+    except ImportError:  # pragma: no cover — the more-hermetic environment
+        return
+
+    def blocked_perform(*args: object, **kwargs: object) -> None:
+        raise EgressBlocked(
+            "the test suite tried to reach the network through curl_cffi (libcurl), which "
+            "bypasses Python's socket layer. Tests are hermetic — no network (CLAUDE.md). "
+            "yfinance uses this backend; inject a recorded source instead, as "
+            "tests/fakes.py's `a_quote_source` does."
+        )
+
+    curl_cffi.Curl.perform = blocked_perform
+    curl_cffi.AsyncSession.request = blocked_perform
+
+
+_install_egress_guard()
+_block_curl_cffi()
 
 #: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
 #: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather
@@ -94,6 +284,23 @@ def recorded_filing() -> ExtractedFiling:
 def recorded_sections() -> dict[str, str]:
     """Individual real Section texts that broke something: pointers and a boundary miss."""
     return json.loads((FIXTURES / "section-samples.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="session")
+def recorded_quotes():
+    """Every Universe company's real quote, parsed from its recorded `.info` and closes.
+
+    The loader lives in `fakes.py` because plain helper functions need it too — `test_agent`
+    builds a real agent outside any fixture — and two loaders would be two places the fixture
+    layout is known.
+    """
+    return fakes.recorded_quotes()
+
+
+@pytest.fixture(scope="session")
+def recorded_feeds():
+    """ticker -> the raw RSS bytes Yahoo served, verbatim (see `fakes.recorded_feed_bytes`)."""
+    return fakes.recorded_feed_bytes()
 
 
 @pytest.fixture
