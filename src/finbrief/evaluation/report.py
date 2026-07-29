@@ -224,6 +224,96 @@ def free_metric_table(cells: Sequence[Cell], arms: Sequence[Arm]) -> str:
     return "\n".join(lines)
 
 
+def trivial_rows_table(cells: Sequence[Cell], arms: Sequence[Arm]) -> str:
+    """The rows the recall columns dropped, reported rather than merely excluded.
+
+    **The claim above this table used to be the whole of it** (code review of #11). The
+    deterministic section printed "Recall columns exclude whole `recall_trivial` rows (reported
+    separately)" and nothing reported them separately — `metrics.py`'s own docstring says "a row
+    that cannot miss is reported separately, not excluded and not folded in", and the artifact
+    made a false claim about its own contents. This is that table.
+
+    Their recall is printed *with* the trivial rows included, because that is the only reading
+    those rows have: at `k=5` over sections of ≤4 chunks a working retriever reaches them, so a
+    figure below 1.0 here is a retrieval that failed at something it could not fail at — which
+    is worth seeing, and is exactly what averaging them into the main column would hide.
+    """
+    trivial = [row for row in cells if row.score.recall_trivial]
+    if not trivial:
+        return (
+            "No golden-set row in this run is flagged `recall_trivial`, so the recall columns "
+            "above dropped nothing."
+        )
+    ids = sorted({row.question_id for row in trivial})
+    lines = [
+        f"`recall_trivial` rows, excluded from every recall column above: "
+        f"**{', '.join(ids)}** ({len(ids)} of {len({c.question_id for c in cells})} rows "
+        f"scored). Every one of their target sections holds ≤ 4 chunks, so a `k=5` retrieval "
+        f"reaches them whatever the retriever does — a figure below 1.000 below is a failure "
+        f"at something that cannot be failed.",
+        "",
+        "| arm | chunk recall | section recall |",
+        "|---|---|---|",
+    ]
+    for arm in arms:
+        rows = [row.score for row in trivial if row.arm == arm.name]
+        if not rows:
+            continue
+        lines.append(
+            f"| {arm.label} | {cell(summarise(rows, 'chunk_recall'))} "
+            f"| {cell(summarise(rows, 'section_recall'))} |"
+        )
+    return "\n".join(lines)
+
+
+def recall_ceiling_note(cells: Sequence[Cell], *, k: int) -> str:
+    """The headroom `chunk recall` actually had, which `metrics.py` promises beside it.
+
+    `RowScore.chunk_recall_ceiling` was computed per cell and rendered nowhere, while the module
+    that computes it says "recall is reported against the real denominator, **with its ceiling
+    beside it** … reporting the ceiling says how much headroom the retriever actually had" (code
+    review of #11). Printed once rather than per cell: the ceiling is a property of the golden
+    row's target count and `k`, so it is identical across arms and a column of it would repeat
+    itself four times.
+    """
+    by_row = {row.question_id: row.score for row in cells}
+    ceilings = [score.chunk_recall_ceiling for score in by_row.values()]
+    if not ceilings:
+        return ""
+    capped = sorted(
+        question_id for question_id, score in by_row.items() if score.chunk_recall_ceiling < 1.0
+    )
+    body = (
+        f"† **`chunk recall`'s ceiling, since it is not 1.0.** Mean ceiling over the "
+        f"{len(ceilings)} scored row(s) at `k={k}` is **{sum(ceilings) / len(ceilings):.3f}** "
+        f"(`min(k, targets) / targets`)."
+    )
+    if capped:
+        return (
+            f"{body} {len(capped)} row(s) target more chunks than `k={k}` can return and "
+            f"therefore *cannot* reach 1.000: **{', '.join(capped)}**. The denominator is the "
+            f"real one anyway — dividing by `min(k, targets)` would hide the headroom by "
+            f"construction."
+        )
+    return f"{body} No row targets more chunks than `k={k}` can return."
+
+
+def _noncommittal(rows: Sequence[Cell]) -> int:
+    """How many of `rows` ragas' `noncommittal` flag almost certainly fired on.
+
+    **`None` is counted as an absence, not as a flag**, and that is the correction: the test was
+    `(score or 0.0) < NONCOMMITTAL_FLOOR`, which turns the honest `None` `judge.score` returns
+    on a NaN into a counted noncommittal — a fabricated zero, in an artifact whose every other
+    summariser routes an absence through `Summary.absent` (code review of #11).
+    """
+    return sum(
+        1
+        for row in rows
+        if (score := row.judged.get(ANSWER_RELEVANCY)) is not None
+        and score < NONCOMMITTAL_FLOOR
+    )
+
+
 def _relevancy_cell(bucket: Bucket, rows: Sequence[Cell]) -> str:
     """Response relevancy for one bucket — or, on `tool-augmented`, why it is not comparable.
 
@@ -233,13 +323,27 @@ def _relevancy_cell(bucket: Bucket, rows: Sequence[Cell]) -> str:
     share price" is scored by ragas as *noncommittal* — which is a floor of ≈0 for being
     right. Printing that beside a semantic bucket's 0.9 would invite exactly the comparison it
     cannot support, so the count of noncommittal answers is printed instead of a mean.
+
+    **The flag is not confined to that bucket, so the count is not either** (code review of
+    #11). The bucket was standing in for the *condition* ADR-0002's amendment names, and the
+    condition fires elsewhere: the first artifact averaged nine ≈0 cells into the four published
+    multi-hop means, including correct on-topic answers scored 0.0 for declining to commit. So
+    every bucket prints its flagged count beside its mean, and the mean itself excludes them —
+    otherwise the number is a mean over two different things and the caveat is printed about the
+    wrong rows.
     """
-    if bucket is not Bucket.TOOL_AUGMENTED:
-        return cell(_summarise_judged(rows, ANSWER_RELEVANCY))
-    noncommittal = sum(
-        1 for row in rows if (row.judged.get(ANSWER_RELEVANCY) or 0.0) < NONCOMMITTAL_FLOOR
-    )
-    return f"not comparable — {noncommittal}/{len(rows)} noncommittal"
+    if bucket is Bucket.TOOL_AUGMENTED:
+        return f"not comparable — {_noncommittal(rows)}/{len(rows)} noncommittal"
+    flagged = _noncommittal(rows)
+    kept = [
+        row
+        for row in rows
+        if (score := row.judged.get(ANSWER_RELEVANCY)) is None or score >= NONCOMMITTAL_FLOOR
+    ]
+    rendered = cell(_summarise_judged(kept, ANSWER_RELEVANCY))
+    if not flagged:
+        return rendered
+    return f"{rendered} (+{flagged} noncommittal, excluded)"
 
 
 #: Below this, ragas' `noncommittal` flag has almost certainly fired: the metric multiplies
@@ -335,7 +439,8 @@ def render_report(
         "No judge, no spend: every figure below is computed from `Retrieval`'s own return "
         "value "
         "against the golden set's chunk ids, so a reviewer can re-derive it. Recall columns "
-        "exclude whole `recall_trivial` rows (reported separately) and count only sections a "
+        "exclude whole `recall_trivial` rows — reported separately in their own table below, "
+        "which is what that clause now means — and count only sections a "
         f"`k={provenance.k}` retrieval could miss.",
         "",
         "**Read `chunk recall` and `section recall` together, and neither as a quality score "
@@ -367,6 +472,12 @@ def render_report(
         "seeing this, which is the honest order.",
         "",
         free_metric_table(cells, arms),
+        "",
+        recall_ceiling_note(cells, k=provenance.k),
+        "",
+        "### The `recall_trivial` rows the columns above dropped",
+        "",
+        trivial_rows_table(cells, arms),
         "",
     ]
     parts += [
@@ -410,12 +521,25 @@ def _provenance_table(provenance: Provenance, golden: GoldenSet) -> str:
         ("planner model", f"`{provenance.planner_model}`"),
         ("embedding model", f"`{provenance.embedding_model}`"),
         ("k", str(provenance.k)),
-        ("golden set", f"{provenance.golden_set_rows} rows, verified against EDGAR"),
+        (
+            "golden set",
+            # **Derived, because it is a claim.** This read "verified against EDGAR" as a
+            # literal while `golden` was threaded in only to be `del`-ed one line later (code
+            # review of #11). `loader.py` raises on an unverified set, so the flag should always
+            # be true — which is exactly why printing it rather than asserting it costs nothing
+            # and closes the gap between what the artifact says and what it was given.
+            f"{provenance.golden_set_rows} rows, "
+            + (
+                "verified against EDGAR"
+                if golden.verified_against_edgar
+                else "**not verified against EDGAR**"
+            ),
+        ),
+        ("golden set schema", f"v{golden.schema_version}"),
         ("collection", provenance.collection_ingest_run),
         ("collection fingerprint", f"`{provenance.collection_fingerprint[:16]}…`"),
         ("cache", cache_lines or "not used"),
     ]
-    del golden
     return "\n".join(
         ["| | |", "|---|---|"] + [f"| {label} | {value} |" for label, value in rows]
     )
@@ -546,9 +670,14 @@ def decisions_section(clauses: Sequence[Any], trigger: Any, *, default_arm_label
         "",
         (
             (
-                "**Outcome: the trigger FIRES — on every bucket with the power to resolve one, "
-                "hybrid's gain is not detected, so ADR-0005's dominance argument is re-argued "
-                "rather than defended.**"
+                f"**Outcome: the trigger FIRES — on {trigger.resolving} of "
+                f"{len(trigger.per_bucket)} bucket(s) with the power to resolve one, hybrid's "
+                f"gain is not detected, so ADR-0005's dominance argument is re-argued rather "
+                f"than defended.** ADR-0005 §4 says *every* bucket, and that wording assumed "
+                f"every bucket would carry a measurement; {trigger.resolving} did. The count "
+                f"is printed because it is the difference between the clause as registered and "
+                f"the clause as it could be applied — the ADR's own code-review amendment "
+                f"records the wording as too strong and recommends a minimum count."
                 if trigger.fires
                 else "**Outcome: the trigger does not fire.** Hybrid's contribution is "
                 "resolved as a gain on at least one bucket, so the dominance argument stands "
@@ -922,7 +1051,13 @@ DEFERRALS: tuple[tuple[str, str, str], ...] = (
     (
         DEFERRAL_ADVICE_RESIDUE,
         "T7 (ADR-0006 T7 amendment §4)",
-        "advice probes through the live agent and `security.advice.validate_answer`",
+        # **No live agent, and this column said there was one.** `_deferrals_block` runs
+        # hand-authored probe strings straight through `validate_answer` — layer 4 is regex over
+        # a Guard, which is exactly why `deferrals.py` records this deferral as needing no live
+        # run. A generated artifact naming an instrument the code does not use (code review of
+        # #11).
+        "hand-labelled advice probes through `security.advice.validate_answer`, with "
+        "`ADVICE_ANSWERS` as positive controls so a fail-open cannot read as a 100% residue",
     ),
     (
         DEFERRAL_CITED_SUPPORT,

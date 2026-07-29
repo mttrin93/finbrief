@@ -16,11 +16,14 @@ from finbrief.evaluation.pipeline import Cell
 from finbrief.evaluation.report import (
     ALL_STAGES,
     Provenance,
+    _relevancy_cell,
     cell,
     headline_section,
     is_partial,
     missing_coverage,
+    recall_ceiling_note,
     render_report,
+    trivial_rows_table,
 )
 from finbrief.retrieval.retrieve import Retrieval
 
@@ -44,7 +47,15 @@ def a_provenance(**overrides) -> Provenance:
     return Provenance(**{**fields, **overrides})
 
 
-def a_cell(*, bucket: Bucket, arm: str, row: str, **judged) -> Cell:
+def a_cell(
+    *,
+    bucket: Bucket,
+    arm: str,
+    row: str,
+    recall_trivial: bool = False,
+    chunk_recall_ceiling: float = 0.83,
+    **judged,
+) -> Cell:
     score = RowScore(
         question_id=row,
         bucket=bucket,
@@ -54,13 +65,13 @@ def a_cell(*, bucket: Bucket, arm: str, row: str, **judged) -> Cell:
         target_hits=1,
         precision_at_k=0.2,
         chunk_recall=0.5,
-        chunk_recall_ceiling=0.83,
+        chunk_recall_ceiling=chunk_recall_ceiling,
         section_recall=1.0,
         section_precision=1.0,
         filer_precision=1.0,
         target_rank=1,
         leaked_chunk_ids=(),
-        recall_trivial=False,
+        recall_trivial=recall_trivial,
     )
     return Cell(
         question_id=row,
@@ -305,3 +316,227 @@ def test_a_measured_deferral_replaces_the_not_measured_wording():
 
     assert "0 verbatim of 14 searches" in rendered
     assert rendered.count("**not measured by this run**") == 3
+
+
+# --- the two claims the artifact used to make about itself --------------------------------
+
+
+def test_the_trivial_rows_clause_now_has_a_table_under_it():
+    """ "(reported separately)" was printed into the artifact and nothing reported them.
+
+    `metrics.py`'s docstring says "a row that cannot miss is reported separately, not excluded
+    and not folded in", and `grep -c recall_trivial report.py` found exactly one occurrence: the
+    prose making the claim (code review of #11).
+    """
+    cells = some_cells() + [
+        a_cell(
+            bucket=Bucket.SEMANTIC,
+            arm=arm.name,
+            row="S4",
+            recall_trivial=True,
+            context_precision=0.5,
+        )
+        for arm in SCORED_ARMS
+    ]
+
+    markdown = render_report(
+        provenance=a_provenance(), golden=load_golden_set(), cells=cells, arms=SCORED_ARMS
+    )
+
+    assert "reported separately in their own table below" in markdown
+    assert "### The `recall_trivial` rows the columns above dropped" in markdown
+    assert "**S4**" in markdown
+
+
+def test_a_run_with_no_trivial_rows_says_so_rather_than_printing_an_empty_table():
+    body = trivial_rows_table(some_cells(), SCORED_ARMS)
+
+    assert "dropped nothing" in body
+    assert "|---|" not in body
+
+
+def test_the_recall_ceiling_is_rendered_beside_the_column_it_qualifies():
+    """`RowScore.chunk_recall_ceiling` was computed per cell and rendered nowhere.
+
+    `metrics.py`: "recall is reported against the real denominator, **with its ceiling beside
+    it** … reporting the ceiling says how much headroom the retriever actually had."
+    """
+    note = recall_ceiling_note(some_cells(), k=5)
+
+    assert "0.830" in note, "the mean ceiling, from the cells' own field"
+    assert "cannot* reach 1.000" in note
+
+
+def test_a_corpus_with_no_capped_row_says_that_instead_of_naming_none():
+    cells = [
+        a_cell(bucket=Bucket.SEMANTIC, arm="vector", row="S1", chunk_recall_ceiling=1.0),
+    ]
+
+    note = recall_ceiling_note(cells, k=5)
+
+    assert "No row targets more chunks" in note
+
+
+# --- the noncommittal flag is keyed on the score, not on the bucket -----------------------
+
+
+def test_a_noncommittal_cell_outside_tool_augmented_is_flagged_and_excluded():
+    """The bucket was standing in for the condition, and the condition fires elsewhere.
+
+    Nine ≈0 relevancy cells sat in the first artifact's multi-hop bucket and were averaged into
+    its four published means — including correct, on-topic answers scored 0.0 for declining to
+    commit (code review of #11).
+    """
+    rows = [
+        a_cell(bucket=Bucket.MULTI_HOP, arm="hybrid", row="M1", answer_relevancy=0.0),
+        a_cell(bucket=Bucket.MULTI_HOP, arm="hybrid", row="M2", answer_relevancy=0.9),
+        a_cell(bucket=Bucket.MULTI_HOP, arm="hybrid", row="M3", answer_relevancy=0.8),
+    ]
+
+    rendered = _relevancy_cell(Bucket.MULTI_HOP, rows)
+
+    assert "(+1 noncommittal, excluded)" in rendered
+    assert "0.850" in rendered, "the mean is over the two that committed, not over three"
+
+
+def test_an_absent_relevancy_score_is_not_counted_as_noncommittal():
+    """`(score or 0.0)` turned the honest `None` into a flag — a fabricated zero.
+
+    `judge.score` returns `None` for a row ragas could not score, and every other summariser
+    here routes that through `Summary.absent`.
+    """
+    rows = [
+        a_cell(bucket=Bucket.MULTI_HOP, arm="hybrid", row="M1", answer_relevancy=None),
+        a_cell(bucket=Bucket.MULTI_HOP, arm="hybrid", row="M2", answer_relevancy=0.9),
+    ]
+
+    rendered = _relevancy_cell(Bucket.MULTI_HOP, rows)
+
+    assert "noncommittal" not in rendered
+    assert "1 absent" in rendered
+
+
+def test_the_tool_augmented_cell_counts_flags_and_not_absences():
+    rows = [
+        a_cell(bucket=Bucket.TOOL_AUGMENTED, arm="hybrid", row="T1", answer_relevancy=0.0),
+        a_cell(bucket=Bucket.TOOL_AUGMENTED, arm="hybrid", row="T2", answer_relevancy=None),
+    ]
+
+    assert _relevancy_cell(Bucket.TOOL_AUGMENTED, rows) == "not comparable — 1/2 noncommittal"
+
+
+# --- the finding sections, which no test rendered ------------------------------------------
+
+
+def a_cost(**overrides):
+    from finbrief.evaluation.latency import TranslationCost
+
+    fields = {
+        "planner_p50_ms": 900.0,
+        "planner_samples": 8,
+        "retrieval_translated_p50_ms": 1400.0,
+        "retrieval_untranslated_p50_ms": 1000.0,
+        "translated_samples": 14,
+        "untranslated_samples": 14,
+        "planner_disabled_lines": 14,
+        "refusal_lines_kept": 1,
+        "budget_ms": 1500.0,
+    }
+    return TranslationCost(**{**fields, **overrides})
+
+
+def test_the_latency_verdict_word_follows_the_budget():
+    from finbrief.evaluation.report import latency_section
+
+    within = latency_section(a_cost(planner_p50_ms=900.0), [])
+    over = latency_section(a_cost(planner_p50_ms=2900.0), [])
+
+    assert "**Verdict: within budget.**" in within
+    assert "**Verdict: **over budget**.**" in over
+
+
+def test_a_replayed_window_discloses_that_these_figures_are_not_a_fresh_timing():
+    """The disclosure is gated on `getattr(window, "replayed", False)`, so a renamed field would
+    make it silently vanish — and the section would then imply this run timed something."""
+    from finbrief.evaluation.latency import Window
+    from finbrief.evaluation.report import latency_section
+
+    fresh = Window(path="events.jsonl", offset=0, recorded_at="2026-07-29 12:00 UTC")
+    replayed = Window(
+        path="events.jsonl", offset=0, recorded_at="2026-07-29 12:00 UTC", replayed=True
+    )
+
+    assert "replayed" not in latency_section(a_cost(), [], window=fresh).split("\n")[0]
+    body = latency_section(a_cost(), [], window=replayed)
+    assert "**These figures are the measuring run of 2026-07-29 12:00 UTC's**, replayed" in body
+
+
+def test_the_hypothesis_and_decision_sections_render_from_a_run(monkeypatch):
+    """Neither was reachable from `render_report`, which takes `sections` as pre-rendered
+    strings
+    and every test passed none — so ~400 lines of the artifact's *findings* were unrendered in
+    CI.
+    """
+    from finbrief.evaluation.hypotheses import (
+        as_report_entries,
+        falsification_clause,
+        outcomes,
+        reexamination_trigger,
+    )
+    from finbrief.evaluation.report import decisions_section, hypothesis_section
+
+    cells = some_cells()
+    rendered = hypothesis_section(as_report_entries(outcomes(cells)))
+
+    assert "H1" in rendered and "H6" in rendered
+
+    decisions = decisions_section(
+        falsification_clause(cells),
+        reexamination_trigger(cells),
+        default_arm_label=SHIPPING_DEFAULT.label,
+    )
+
+    assert SHIPPING_DEFAULT.label in decisions
+
+
+def test_the_power_audit_renders_its_table_body():
+    from finbrief.evaluation.hypotheses import outcomes
+    from finbrief.evaluation.report import power_audit_section
+
+    labelled = tuple(
+        (outcome.prediction.id, outcome.comparison) for outcome in outcomes(some_cells())
+    )
+
+    rendered = power_audit_section(labelled, bucket_floor=6)
+
+    assert "| verdict | cells | how to read it |" in rendered
+    assert f"— the {len(labelled)} cells of" in rendered
+    assert f"of {len(labelled)} cells carry a measurement" in rendered
+    # The audit's own finding, derived rather than asserted: at ADR-0002's bucket floor the
+    # exact test tolerates zero minority signs, so the design can resolve only a near-unanimous
+    # effect.
+    assert "6" in rendered
+
+
+def test_the_provenance_table_derives_the_edgar_claim_rather_than_printing_it():
+    """`golden` was threaded into `_provenance_table` only to be `del`-ed one line later.
+
+    The row said "verified against EDGAR" as a literal, so the artifact asserted the thing whose
+    evidence it was handed and never read (code review of #11). `loader.py` raises on an
+    unverified set, which is why deriving it costs nothing.
+    """
+    from dataclasses import replace
+
+    golden = load_golden_set()
+    common = {
+        "provenance": a_provenance(),
+        "cells": some_cells(),
+        "arms": SCORED_ARMS,
+    }
+
+    verified = render_report(golden=golden, **common)
+    unverified = render_report(golden=replace(golden, verified_against_edgar=False), **common)
+
+    assert "rows, verified against EDGAR" in verified
+    assert "**not verified against EDGAR**" in unverified
+    assert f"golden set schema | v{golden.schema_version}" in verified

@@ -112,12 +112,34 @@ class Window:
     a re-render describe *the measuring run that produced these cached cells* — which is what
     the artifact is about — and `replayed` is what makes the artifact say so rather than
     implying a fresh timing.
+
+    **`path` is checked, not decoration**, and code review of #11 found it unread. An offset
+    only means something against the file it was taken from, and both readers apply it to
+    whatever `FINBRIEF_LOG_FILE` currently resolves to — so a rotated, recreated or renamed sink
+    would have
+    had the artifact slicing an unrelated stream and labelling it "the measuring run of
+    {recorded_at}'s". That is the pooled-runs attribution failure this class was introduced to
+    eliminate, arriving through the one field meant to prevent it. `describes` is the check, and
+    `scripts/evaluate.py` refuses a mark that fails it rather than applying its offset anyway.
     """
 
     path: str
     offset: int
     recorded_at: str
     replayed: bool = False
+
+    def describes(self, sink: Path | str | None) -> bool:
+        """Whether this mark was taken against `sink`, so its offset means something there.
+
+        Resolved before comparing, because `data/finbrief.jsonl` and an absolute spelling of the
+        same file are one sink and must not read as two.
+        """
+        if sink is None:
+            return False
+        try:
+            return Path(self.path).resolve() == Path(sink).resolve()
+        except OSError:
+            return False
 
 
 def save_window(cache_root: Path | str, window: Window) -> Path:
@@ -222,19 +244,47 @@ class TranslationCost:
         return self.added_p50_ms <= self.budget_ms
 
 
-def _planner_caps(log: EventLog) -> dict[str, int]:
-    """`turn_id` -> the `max_sub_queries` that turn's translation ran under.
+@dataclass(frozen=True, slots=True)
+class _Plan:
+    """What one turn's `query_translation` line says about the round it made."""
+
+    cap: int
+    sub_queries: int | None
+
+    @property
+    def disabled(self) -> bool:
+        return self.cap == PLANNER_DISABLED_CAP
+
+    @property
+    def refused(self) -> bool:
+        """The planner ran and produced no sub-query. Still paid for a chat round."""
+        return not self.disabled and self.sub_queries == 0
+
+
+def _planner_caps(log: EventLog) -> dict[str, _Plan]:
+    """`turn_id` -> what that turn's translation was configured to do, and what it returned.
 
     The join the exclusion needs: `max_sub_queries` is on the `query_translation` line and the
     latency is on the `retrieval` line, and the harness scopes each cell with
     `logging_setup.turn` so the two can be paired by identity rather than by position — which
     would be correct only for a serial harness and this one runs six cells at once.
+
+    `sub_queries` rides along for the refusal count, and reading it here is the fix for a
+    literal
+    (code review of #11): the count was `(retrieval.variants or 0) < 3`, a hardcoded copy of
+    `arms.SHIPPED_MAX_SUB_QUERIES` inferring a refusal from the *retrieval*'s variant total —
+    which also counts the deterministic ticker form and is wrong for any other cap.
+    `query_translation.sub_queries` is the emitter's own count of what the planner returned.
     """
-    caps: dict[str, int] = {}
+    caps: dict[str, _Plan] = {}
     for event in log.of("query_translation"):
         cap = event.field("max_sub_queries")
         if event.turn_id is not None and cap is not None:
-            caps[str(event.turn_id)] = int(cap)
+            sub_queries = event.field("sub_queries")
+            caps[str(event.turn_id)] = _Plan(
+                cap=int(cap),
+                sub_queries=None if sub_queries is None else int(sub_queries),
+            )
     return caps
 
 
@@ -272,15 +322,15 @@ def translation_cost(
         if not event.field("translation"):
             untranslated.append(latency)
             continue
-        cap = caps.get(str(event.turn_id)) if event.turn_id is not None else None
-        if cap == PLANNER_DISABLED_CAP:
+        plan = caps.get(str(event.turn_id)) if event.turn_id is not None else None
+        if plan is not None and plan.disabled:
             planner_disabled += 1
             continue
         translated.append(latency)
         # A planning arm that returned no sub-query refused, and a refusal cost a chat round.
         # Counted so the pool's composition is visible rather than assumed: these are the
         # turns the old variant-count floor dropped.
-        if cap is not None and (event.field("variants") or 0) < 3:
+        if plan is not None and plan.refused:
             refusals_kept += 1
     return TranslationCost(
         planner_p50_ms=p50(planner, what="query_translation lines with token counts"),
@@ -317,8 +367,8 @@ class TokenSpend:
 
     @property
     def unmetered_lines(self) -> int:
-        """Lines that reported no input count at all — a call whose cost is unknown, not "
-        "free."""
+        """Lines that reported no input count at all — a call whose cost is
+        unknown, not free."""
         return self.lines - self.input_calls
 
 

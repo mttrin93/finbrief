@@ -314,3 +314,56 @@ def test_the_recorder_returns_what_the_inner_model_returned():
 
     assert reply.text == "- one\n- two\n"
     assert recorder.reply == "- one\n- two\n"
+
+
+def test_a_plan_resolved_for_a_different_wording_is_refused_at_load():
+    """`verify_replay` re-parses against the persisted wording, so it cannot see an edited row.
+
+    The gap (code review of #11): `verify_replay` compares a reply against `plan.question` — the
+    text stored beside it — and `covers` is an equality on *ids*, so nothing bound a plan to the
+    row it is replayed for. Edit a golden row and re-run against a warm cache, and both
+    `+translation` arms replay a reply produced for the previous question.
+    """
+    from dataclasses import replace
+
+    from finbrief.evaluation.loader import load_golden_set
+    from finbrief.evaluation.variants import ReplayMismatch, verify_questions
+
+    golden = load_golden_set()
+    row = golden.questions[0]
+    variant_set = VariantSet(
+        plans={
+            row.id: ResolvedPlan(
+                question_id=row.id,
+                question=row.question,
+                reply="a reply",
+                variants=(row.question,),
+                planner_model="openai/gpt-4o-mini",
+                max_sub_queries=3,
+            )
+        },
+        planner_model="openai/gpt-4o-mini",
+        max_sub_queries=3,
+        golden_set_schema_version=1,
+    )
+
+    verify_questions(variant_set, (row,))
+
+    with pytest.raises(ReplayMismatch, match="now asks"):
+        verify_questions(variant_set, (replace(row, question=row.question + " Why?"),))
+
+
+def test_a_row_with_no_plan_is_left_to_the_missing_plan_error():
+    """This check is about *drift*, not about coverage — `VariantSet.plan` owns the absence."""
+    from finbrief.evaluation.loader import load_golden_set
+    from finbrief.evaluation.variants import verify_questions
+
+    row = load_golden_set().questions[0]
+    empty = VariantSet(
+        plans={},
+        planner_model="openai/gpt-4o-mini",
+        max_sub_queries=3,
+        golden_set_schema_version=1,
+    )
+
+    verify_questions(empty, (row,))

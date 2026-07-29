@@ -135,20 +135,32 @@ class BracketAdherence:
       rate.
     - `non_numeric` — `[Yahoo Finance]`, the other case T5 saw: brackets used for something the
       prompt reserves for retrieved excerpts.
+
+    **`uncited` counts turns; `unresolved` and `non_numeric` count markers, and mixing the two
+    into one rate is the defect this shape now prevents** (code review of #11). The first
+    version computed `turns_with_sources - (uncited + unresolved + non_numeric)`, subtracting
+    per-marker totals from a per-turn denominator: three turns of which one carried two
+    unresolved markers and one `[Yahoo Finance]` rendered as **0%** adherence where two of the
+    three were clean, and a `max(…, 0)` clamp hid the overflow rather than exposing it. So the
+    rate's numerator comes from `dirty`, which is incremented once per failing turn, and the
+    marker totals stay what they are — diagnostics that say *how badly* the failing turns
+    failed.
     """
 
     turns_with_sources: int
+    #: Turns that failed in **any** of the three ways — the rate's only denominator arithmetic.
+    dirty: int
     uncited: int
+    #: Marker counts, not turn counts. Reported beside the rate, never subtracted from it.
     unresolved: int
     non_numeric: int
 
     @property
     def clean(self) -> Rate:
         """Turns with sources whose markers were all numeric, resolving, and present."""
-        bad = self.uncited + self.unresolved + self.non_numeric
         return Rate(
             label="bracket-rule adherence",
-            hits=max(self.turns_with_sources - bad, 0),
+            hits=self.turns_with_sources - self.dirty,
             total=self.turns_with_sources,
         )
 
@@ -160,18 +172,25 @@ def bracket_adherence(log: EventLog) -> BracketAdherence:
     answer with nothing to cite cannot break a citation rule, and including it would inflate the
     rate by the number of questions the collection could not answer.
     """
-    turns = uncited = unresolved = non_numeric = 0
+    turns = dirty = uncited = unresolved = non_numeric = 0
     for event in log.of("citation_markers"):
         sources = event.field("sources")
         if not sources:
             continue
         turns += 1
-        if not event.field("resolved"):
-            uncited += 1
-        unresolved += len(event.field("unresolved") or ())
-        non_numeric += int(event.field("non_numeric") or 0)
+        turn_uncited = not event.field("resolved")
+        turn_unresolved = len(event.field("unresolved") or ())
+        turn_non_numeric = int(event.field("non_numeric") or 0)
+        uncited += int(turn_uncited)
+        unresolved += turn_unresolved
+        non_numeric += turn_non_numeric
+        # One increment per failing turn, whatever the shape or the count of its failures. See
+        # `BracketAdherence` on why a marker total may not enter the rate.
+        if turn_uncited or turn_unresolved or turn_non_numeric:
+            dirty += 1
     return BracketAdherence(
         turns_with_sources=turns,
+        dirty=dirty,
         uncited=uncited,
         unresolved=unresolved,
         non_numeric=non_numeric,
@@ -179,6 +198,10 @@ def bracket_adherence(log: EventLog) -> BracketAdherence:
 
 
 # --- 3. layer 4's residue (T7) — free and deterministic -------------------------------
+
+
+class InstrumentDead(RuntimeError):
+    """The validator refused none of its positive controls, so it measured nothing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,10 +212,21 @@ class AdviceResidue:
     the security suite already reports that. This measures the other half: advice carrying no
     imperative, no rating word, no price target and no position-sizing instruction, which any
     analyst would still read as being told what to do.
+
+    **A 100% residue is also what a dead validator returns**, which is why `controls` exists
+    (code review of #11). `security.advice.validate_answer` fails **open** by design — any
+    exception out of `Guard.validate` becomes `AdviceVerdict(refused=False)` — and this pass
+    reads only `verdict.refused`, so a broken Guard and a validator that legitimately let every
+    probe through were the same observation, and the published headline was exactly the value a
+    dead instrument yields. The controls are advice the rules provably catch, so a run where
+    none of them is refused reports nothing rather than 100%.
     """
 
     caught: tuple[str, ...]
     residue: tuple[str, ...]
+    #: Positive controls this pass refused. Non-zero is what makes the rate a measurement.
+    controls_caught: int = 0
+    controls: int = 0
 
     @property
     def rate(self) -> Rate:
@@ -201,19 +235,43 @@ class AdviceResidue:
 
 
 def advice_residue(
-    probes: Sequence[str], *, validate: Callable[[str], object]
+    probes: Sequence[str],
+    *,
+    validate: Callable[[str], object],
+    controls: Sequence[str] = (),
 ) -> AdviceResidue:
     """Run each probe through layer 4 and split on whether it was refused.
 
     `validate` is injected so a test can drive both branches without depending on the rule set's
     current contents — the rate is *about* that rule set, so a test that asserted a particular
     number would break every time a rule was added, which is exactly when it should not.
+
+    `controls` are strings the rule set must refuse. They are scored first and **not** counted
+    in the rate: they measure the instrument, not its subject. A `controls` that were all let
+    through raises `InstrumentDead`, because the alternative is publishing a fail-open as a 100%
+    evasion finding — see `AdviceResidue`.
     """
+
+    def refused(text: str) -> bool:
+        return bool(getattr(validate(text), "refused", False))
+
+    controls_caught = sum(1 for control in controls if refused(control))
+    if controls and not controls_caught:
+        raise InstrumentDead(
+            f"layer 4 refused none of its {len(controls)} positive control(s), so this pass "
+            f"measured a validator that is not running rather than a rule set's ceiling. "
+            f"`security.advice.validate_answer` fails open on any exception out of "
+            f"`Guard.validate`, and a fail-open reads here as a 100% residue."
+        )
     caught, residue = [], []
     for probe in probes:
-        verdict = validate(probe)
-        (caught if getattr(verdict, "refused", False) else residue).append(probe)
-    return AdviceResidue(caught=tuple(caught), residue=tuple(residue))
+        (caught if refused(probe) else residue).append(probe)
+    return AdviceResidue(
+        caught=tuple(caught),
+        residue=tuple(residue),
+        controls_caught=controls_caught,
+        controls=len(controls),
+    )
 
 
 # --- 4. faithfulness of cited sentences (T3/T5) ---------------------------------------
@@ -222,6 +280,67 @@ def advice_residue(
 #: supports, so splitting on terminal punctuation is enough to pair a marker with the text it
 #: attaches to; a full sentence tokeniser would be a new dependency for no gain here.
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+#: A fragment ending here is **not** a sentence end, so the crude split has to be undone.
+#:
+#: **Crude is fine; truncating is not**, and that distinction is a correction rather than a
+#: refinement (code review of #11). A split on every terminal-punctuation-plus-space cuts 10-K
+#: prose mid-claim at every abbreviation and every numbered list: this run's own cache holds
+#: `"Department of Commerce approval [3][4]."` — the answer read "…subject to U.S. Department of
+#: Commerce approval [3][4]" and the split at `U.S. ` removed the subject of the claim before
+#: the judge saw it — and `"**More Personal Computing**[1][5]."` cut out of a numbered list.
+#: Three of the eleven "no support" pairs in the first artifact were fragments like these, so
+#: the published rate was partly a measurement of this pattern.
+#:
+#: The rule: a fragment whose last token is a known abbreviation, a single initial (`U.S.`,
+#: `J.P.`) or a list number (`3.`) is re-joined with the fragment after it. Still no tokeniser
+#: and still no dependency — a bounded list of the forms a filing actually uses, which is the
+#: same shape as `ingestion/model.py`'s boundary markers.
+_ABBREVIATIONS = (
+    "approx",
+    "cf",
+    "Co",
+    "Corp",
+    "Dr",
+    "eg",
+    "e.g",
+    "est",
+    "etc",
+    "Fig",
+    "ie",
+    "i.e",
+    "Inc",
+    "Jr",
+    "Ltd",
+    "Mr",
+    "Mrs",
+    "Ms",
+    "No",
+    "Nos",
+    "plc",
+    "Pty",
+    "Sr",
+    "St",
+    "vs",
+)
+_NOT_A_SENTENCE_END = re.compile(
+    r"(?:\b(?:" + "|".join(_ABBREVIATIONS) + r")|\b[A-Z]|\b\d+)\.[\"'’”)\]]*\Z"
+)
+
+
+def _sentences(text: str) -> list[str]:
+    """`text` split into sentences, re-joining the crude split's false boundaries.
+
+    See `_NOT_A_SENTENCE_END`: the split itself stays a one-line regex, and the repair is the
+    only thing that knows what a filing's prose looks like.
+    """
+    merged: list[str] = []
+    for fragment in _SENTENCE.split(text):
+        if merged and _NOT_A_SENTENCE_END.search(merged[-1]):
+            merged[-1] = f"{merged[-1]} {fragment}"
+        else:
+            merged.append(fragment)
+    return merged
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +361,7 @@ def cited_sentences(answer: str) -> tuple[CitedSentence, ...]:
     yours"). Pairing each sentence with the chunk it *names* is what makes that answerable.
     """
     found = []
-    for sentence in _SENTENCE.split(answer.strip()):
+    for sentence in _sentences(answer.strip()):
         # `security.markers` owns what a citation marker is — numeric-only for the same reason
         # it is there (`[Yahoo Finance]` is the *other* deferral's subject), and read from that
         # module so a measurement of the gate cannot disagree with the gate about what a
@@ -289,7 +408,12 @@ class CitationSupport:
     #: `observability.events.Samples.absent` exists to prevent, in a module whose own `Rate`
     #: docstring forbids it.
     unscored: int
-    #: Distinct sentences that carried at least one resolving marker.
+    #: Distinct sentences that carried at least one numeric marker — the sentences this pass
+    #: **looked at**, which is not the same as the sentences whose markers all resolved. Said
+    #: that way because it read "at least one *resolving* marker" while counting before the
+    #: resolvability test, so a sentence citing only chunks outside the retrieval inflated the
+    #: denominator the artifact prints (code review of #11). The pair counts below are where
+    #: resolvability is accounted for.
     sentences: int
 
     @property
@@ -332,15 +456,29 @@ def citation_support(
     folding it in would blend two questions with different fixes. A pair the judge could not
     score is `unscored` and likewise out of it — but **counted**, because a denominator that
     narrows itself leaves no trace of having done so.
+
+    **`cells` is structurally typed and its fields are checked, not `getattr`-defaulted.** The
+    parameter stays `object` so this module needs no import from `pipeline` — `deferrals` is
+    read by the script and by nothing in the stage graph — but `getattr(cell, "arm", None)`
+    means a
+    renamed `Cell` field selects *no* cell and renders a measured deferral as "not measured
+    by this run", which is the absence-as-measurement failure this module's `Rate` docstring
+    forbids (code review of #11). So a cell missing a field it needs raises.
     """
     supported = partial = unsupported = unresolvable = unscored = sentences = 0
     for cell in cells:
-        if getattr(cell, "arm", None) != arm:
+        for field in ("arm", "answer", "retrieval"):
+            if not hasattr(cell, field):
+                raise AttributeError(
+                    f"a scored cell has no {field!r}: this pass would then match no cell and "
+                    f"report the cited-marker deferral as not measured on a run that did."
+                )
+        if cell.arm != arm:  # type: ignore[attr-defined]
             continue
-        answer = getattr(cell, "answer", None)
+        answer = cell.answer  # type: ignore[attr-defined]
         if not answer:
             continue
-        contexts = cell.retrieval.contexts
+        contexts = cell.retrieval.contexts  # type: ignore[attr-defined]
         for cited in cited_sentences(answer):
             sentences += 1
             for rank in cited.ranks:

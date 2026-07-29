@@ -37,6 +37,9 @@ from typing import Any
 from finbrief.evaluation.arms import (
     HYBRID_ONLY,
     HYBRID_TRANSLATED,
+    SHIPPING_DEFAULT,
+    STRATEGY_CONTRAST,
+    TRANSLATION_CONTRAST,
     VECTOR_ONLY,
     VECTOR_TRANSLATED,
     Arm,
@@ -366,19 +369,56 @@ class FalsificationClause:
         return self.precision.pairs.detectable and self.recall.pairs.detectable
 
 
+def _contrast_ending_at_default(
+    contrast: tuple[tuple[Any, Any], ...], *, axis: str
+) -> tuple[Any, Any]:
+    """The pair in `contrast` whose second arm is the shipping default.
+
+    **This is how `arms.TRANSLATION_CONTRAST` and `arms.STRATEGY_CONTRAST` come to be read**,
+    and reading them is the point (code review of #11). `arms.py` declares both "as data because
+    `hypotheses.py` reads them: a clause whose operands are written out in prose is one that can
+    be applied to the wrong pair" — and this module wrote all five pairs out by hand, so nothing
+    consulted them and `tests/test_eval_arms.py`'s axis-constancy assertions were about data no
+    verdict depended on. A claim in a comment cannot fail; this makes the constants
+    load-bearing.
+
+    Selected by predicate and not by index, because "the pair whose translated (or hybrid) side
+    is what we ship" is the thing ADR-0005 means, and a `[1]` would silently follow a
+    reordering.
+    """
+    for pair in contrast:
+        if pair[1] is SHIPPING_DEFAULT:
+            return pair
+    raise LookupError(
+        f"no {axis} contrast in arms.py ends at the shipping default "
+        f"({SHIPPING_DEFAULT.name}), so ADR-0005's comparison has no operands. Either the "
+        f"default moved or the contrast pairs did."
+    )
+
+
+#: ADR-0005's clause is about *translation*, held at the shipping strategy on both sides —
+#: comparing across strategies would let a strategy effect drop the default for translation's
+#: supposed sin. That is `TRANSLATION_CONTRAST`'s hybrid pair, named by derivation.
+CLAUSE_CONTRAST = _contrast_ending_at_default(TRANSLATION_CONTRAST, axis="translation")
+
+#: ADR-0005 §4's trigger is `hybrid − vector` **at equal translation**, which is
+#: `STRATEGY_CONTRAST`'s translated pair.
+TRIGGER_CONTRAST = _contrast_ending_at_default(STRATEGY_CONTRAST, axis="strategy")
+
+
 def falsification_clause(cells: Sequence[Cell]) -> tuple[FalsificationClause, ...]:
     """ADR-0005's clause evaluated per bucket, at the shipping strategy.
 
     Held at `hybrid` on both sides, because the clause is about *translation*: comparing across
-    strategies would let a strategy effect drop the default for translation's supposed sin.
+    strategies would let a strategy effect drop the default for translation's supposed sin. The
+    two arms come from `CLAUSE_CONTRAST`, so `arms.py`'s axis-constancy tests bind them.
     """
+    baseline, translated = CLAUSE_CONTRAST
     return tuple(
         FalsificationClause(
             bucket=bucket,
-            precision=_compare(
-                cells, HYBRID_ONLY, HYBRID_TRANSLATED, bucket, CONTEXT_PRECISION
-            ),
-            recall=_compare(cells, HYBRID_ONLY, HYBRID_TRANSLATED, bucket, CONTEXT_RECALL),
+            precision=_compare(cells, baseline, translated, bucket, CONTEXT_PRECISION),
+            recall=_compare(cells, baseline, translated, bucket, CONTEXT_RECALL),
         )
         for bucket in Bucket
     )
@@ -419,6 +459,23 @@ class ReexaminationTrigger:
         return all(verdict is Verdict.NOT_DETECTED for verdict in evidence)
 
     @property
+    def resolving(self) -> int:
+        """How many buckets carried the power to resolve a gain — the `fires` denominator.
+
+        Printed by `report.decisions_section` because it is the gap between ADR-0005 §4 as
+        *registered* ("within per-question spread on **every** bucket") and as it can be
+        applied: a bucket with no power is excluded rather than counted as an absence of gain,
+        so "every" is every bucket that could have spoken. Firing on 1 of 4 and firing on 4 of 4
+        are different strengths of evidence and the artifact has to say which (code review of
+        #11).
+        """
+        return sum(
+            1
+            for comparison in self.per_bucket.values()
+            if comparison.verdict not in (Verdict.UNDETERMINED, Verdict.UNDETECTABLE)
+        )
+
+    @property
     def evaluable(self) -> bool:
         """Whether any bucket carried enough power for the trigger to mean anything."""
         return any(comparison.pairs.detectable for comparison in self.per_bucket.values())
@@ -443,12 +500,15 @@ class ReexaminationTrigger:
 
 
 def reexamination_trigger(cells: Sequence[Cell]) -> ReexaminationTrigger:
-    """ADR-0005 §4, on context precision at equal translation (both `+translation`)."""
+    """ADR-0005 §4, on context precision at equal translation (both `+translation`).
+
+    The two arms come from `TRIGGER_CONTRAST`, which is `arms.STRATEGY_CONTRAST`'s translated
+    pair.
+    """
+    vector, hybrid = TRIGGER_CONTRAST
     return ReexaminationTrigger(
         per_bucket={
-            bucket: _compare(
-                cells, VECTOR_TRANSLATED, HYBRID_TRANSLATED, bucket, CONTEXT_PRECISION
-            )
+            bucket: _compare(cells, vector, hybrid, bucket, CONTEXT_PRECISION)
             for bucket in Bucket
         }
     )

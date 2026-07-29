@@ -44,16 +44,23 @@ def cached_map(
     key_of: Callable[[Any], Mapping[str, Any]],
     produce: Callable[[Any], Any],
     workers: int = 1,
+    replay_only: bool = False,
 ) -> tuple[Any, ...]:
     """`produce` over `items`, skipping every item the store already holds a value for.
 
     Ordered like `items`, so a caller may zip the results back against the rows that made them.
     An exception propagates: a stage that cannot finish must not report a partial result as a
     whole one, and the cells that did finish are already durable.
+
+    `replay_only` never calls `produce`: an item the store does not hold comes back as
+    `cache.MISSING`, which is how `--stage` skips a stage without pretending it never existed.
+    See `Cache.replay`.
     """
     collected = list(items)
 
     def resolve(item: Any) -> Any:
+        if replay_only:
+            return cache.replay(kind, key_of(item))
         return cache.resolve(kind, key_of(item), lambda item=item: produce(item))
 
     if workers <= 1:

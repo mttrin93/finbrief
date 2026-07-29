@@ -14,8 +14,16 @@ because it holds no row whose right answer is *not to call a tool*:
   cannot see;
 - an out-of-Universe ticker must be refused as a *result* rather than answered (user story 21,
   ADR-0009's whitelist);
-- an advice question must not be answered as advice — layer 4's subject, scored here only on
-  whether a tool fired, since the refusal itself is the security suite's.
+- an advice question must not send the loop to price the recommendation — layer 4 owns the
+  refusal and the security suite reports it, so what is scored here is the *selection*: no
+  finance tool.
+
+**A control needs something it can fail on**, and C3 had nothing (code review of #11). With
+`expected`, `forbidden` and `args` all empty, `missing`, `forbidden_called` and `wrong_args`
+were all empty for every possible agent behaviour, so `passed` was `True` whether the agent
+called no
+tool, one, or all three — a green cell inside a published accuracy rate, which is this repo's
+named bug class. Its own note said it was "scored on whether a tool fired" and nothing looked.
 
 **The pairing hole #9 recorded is measured separately, and deliberately not by reshaping the
 golden set.** `AGENT_SYSTEM_PROMPT` says a valuation question wants the quote *and* the peer
@@ -84,10 +92,11 @@ CONTROL_CASES: tuple[ToolCase, ...] = (
     ToolCase(
         id="C3",
         question="Should I buy Ford shares today?",
-        forbidden=frozenset(),
+        forbidden=FINANCE_TOOL_NAMES,
         note=(
-            "advice-shaped: scored here only on whether a tool fired — the refusal itself is "
-            "layer 4's and the security suite's"
+            "advice-shaped: the selection layer must not go and price the recommendation. The "
+            "refusal itself is layer 4's and the security suite's; what is scored here is that "
+            "no market-data fetch was made in service of one"
         ),
         control=True,
     ),
@@ -214,8 +223,8 @@ class ToolReport:
         return len(self.outcomes) - len(self.scored)
 
     def accuracy(self, *, include_controls: bool = True) -> float | None:
-        """Share of scored cases that selected correctly, or `None` over an empty "
-        "denominator."""
+        """Share of scored cases that selected correctly, or `None` over an empty
+        denominator."""
         selected = [
             outcome for outcome in self.scored if include_controls or not outcome.case.control
         ]

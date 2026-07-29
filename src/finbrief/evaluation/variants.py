@@ -288,6 +288,30 @@ def verify_replay(plans: Sequence[ResolvedPlan]) -> None:
             )
 
 
+def verify_questions(variant_set: VariantSet, rows: Sequence[Any]) -> None:
+    """Raise unless every scored row's persisted plan was resolved for its *current* wording.
+
+    **The other half of `verify_replay`, and it was missing** (code review of #11).
+    `verify_replay` re-parses each reply against `plan.question` — the wording persisted beside
+    it — so it cannot see a golden row whose text has changed, and `covers` is an equality on
+    *ids* so it cannot either. Nothing bound a plan to the row it is replayed for.
+
+    What that allowed: edit a golden row (a typo fix, an ADR-0002 revision) and re-run against a
+    warm cache, and both `+translation` arms replay a planner reply produced for the old
+    question while the row is scored against the new reference — with the arms' own
+    `ContextDrift` firing on the judged arms and blaming the collection.
+    """
+    for row in rows:
+        plan = variant_set.plans.get(row.id)
+        if plan is None or plan.question == row.question:
+            continue
+        raise ReplayMismatch(
+            f"{row.id}: the persisted plan was resolved for {plan.question!r}, and the golden "
+            f"set now asks {row.question!r}. Replaying it would score this run's answer to a "
+            f"question nobody asked. Re-run `scripts/evaluate.py --stage resolve`."
+        )
+
+
 def load_variants(path: Path | str | None = None, *, verify: bool = True) -> VariantSet:
     """Read the persisted variants, checking each reply still parses to what is stored."""
     path = Path(path) if path is not None else VARIANTS_PATH

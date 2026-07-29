@@ -197,9 +197,28 @@ def test_the_cases_come_from_the_golden_set_rather_than_being_retyped():
 
 
 def test_the_controls_forbid_the_finance_tools_they_are_controls_for():
-    assert CONTROL_CASES[0].forbidden == FINANCE_TOOL_NAMES
-    assert CONTROL_CASES[1].forbidden == FINANCE_TOOL_NAMES
+    # **Every** control, indexed by nothing: this asserted `[0]` and `[1]` while `[2]` — C3, the
+    # advice case — forbade nothing, expected nothing and constrained no argument, so `passed`
+    # was `True` for any possible agent behaviour and the case sat inside a published 100%
+    # accuracy (code review of #11).
+    assert all(case.forbidden == FINANCE_TOOL_NAMES for case in CONTROL_CASES)
     assert all(case.control for case in CONTROL_CASES)
+
+
+@pytest.mark.parametrize("control", CONTROL_CASES, ids=lambda case: case.id)
+def test_every_control_can_fail(control):
+    """A control that cannot fail is this repo's named bug class, inside a headline rate.
+
+    Driven rather than inspected: each control is scored against an agent that calls every
+    finance tool, and a control whose `passed` stays `True` under that is a control measuring
+    nothing.
+    """
+    every_tool = {control.question: [(name, "F") for name in sorted(FINANCE_TOOL_NAMES)]}
+
+    outcome = run_case(control, ask=asker(every_tool))
+
+    assert outcome.passed is False, f"{control.id} cannot fail"
+    assert outcome.forbidden_called == FINANCE_TOOL_NAMES
 
 
 def test_the_rendered_section_states_both_denominators_and_the_pairing():

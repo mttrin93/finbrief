@@ -29,7 +29,7 @@ from langchain_chroma import Chroma
 from finbrief.config import Settings
 from finbrief.evaluation import judge as judging
 from finbrief.evaluation.arms import Arm
-from finbrief.evaluation.cache import Cache
+from finbrief.evaluation.cache import MISSING, Cache
 from finbrief.evaluation.loader import Bucket, GoldenQuestion
 from finbrief.evaluation.metrics import RowScore, score_row
 from finbrief.evaluation.run import cached_map
@@ -120,10 +120,19 @@ def retrieval_key(
 
     `variants` is in the key rather than inferred from the arm: on a `+translation` arm they are
     the *replayed* ones, so a re-resolve has to invalidate the retrieval that used the old ones.
+
+    **The question's text is in the key and the row id is not enough**, which is a correction
+    (code review of #11). `variants` is the only other place the wording could have entered, and
+    it is `()` on four of the six arms — both baselines and both ablations — so an edited golden
+    row re-used the previous wording's contexts on those four and scored them against the new
+    reference. `answer_key` had carried the question all along, which made the failure louder on
+    the judged arms and no less wrong on the others: the chain re-retrieved, the ids differed,
+    and `ContextDrift` fired blaming the collection.
     """
     return {
         "harness": HARNESS_VERSION,
         "row": row.id,
+        "question": row.question,
         "arm": arm.name,
         "strategy": arm.strategy.value,
         "translate": arm.translate,
@@ -251,6 +260,7 @@ def answer_cells(
     cache: Cache,
     k: int,
     workers: int = 1,
+    replay_only: bool = False,
 ) -> tuple[str | None, ...]:
     """One answer per row through `rag.answer_question` — the measured chain, unmodified.
 
@@ -271,7 +281,9 @@ def answer_cells(
     scored retrieval never surfaced, so `ContextDrift` stops the run instead.
 
     An arm whose generation metrics do not run returns `None` per row — absent, which is not the
-    same as an answer that came back empty.
+    same as an answer that came back empty. `replay_only` returns that same absence for a cell
+    the cache does not hold, which is what `--stage` means when it skips this stage: the numbers
+    a cached answer supports are reported and nothing is paid for.
     """
     if not arm.judged:
         return tuple(None for _ in rows)
@@ -314,8 +326,9 @@ def answer_cells(
         key_of=lambda item: answer_key(item[0], item[1], arm, settings=settings),
         produce=produce,
         workers=workers,
+        replay_only=replay_only,
     )
-    return tuple(str(payload["answer"]) for payload in payloads)
+    return tuple(None if payload is MISSING else str(payload["answer"]) for payload in payloads)
 
 
 def judge_cells(
@@ -329,11 +342,17 @@ def judge_cells(
     judge: Any,
     embeddings: Any,
     workers: int = 1,
+    replay_only: bool = False,
 ) -> tuple[Mapping[str, float | None], ...]:
     """Score every row on every metric, one cached cell per `(row, metric)`.
 
     Per `(row, metric)` and not per row: that is the granularity a resumed run needs, and it is
     what lets a metric be added to a finished run for the price of that metric alone.
+
+    `replay_only` scores nothing and pays nothing: a cell the cache holds comes back, a cell it
+    does not stays `None`. That is the same absence a skipped metric already produces, which is
+    why `--stage report` can now re-render an artifact from 560 cached judge cells instead of an
+    empty table (code review of #11).
     """
     version = judging.ragas_version()
     samples = [
@@ -369,16 +388,19 @@ def judge_cells(
             item[1],
             samples[item[0]],
             judge_model=settings.judge_model,
+            embedding_model=settings.embedding_model,
             ragas_version=version,
         ),
         produce=produce,
         workers=workers,
+        replay_only=replay_only,
     )
     # `None` for a metric that was skipped — absent, not zero: this arm does not generate, so
     # there is no answer to score, and 0.0 would read as an unfaithful answer rather than none.
     scored: list[dict[str, float | None]] = [dict.fromkeys(metrics) for _ in samples]
     for (index, metric), payload in zip(work, payloads, strict=True):
-        scored[index][metric] = payload["score"]
+        if payload is not MISSING:
+            scored[index][metric] = payload["score"]
     return tuple(scored)
 
 

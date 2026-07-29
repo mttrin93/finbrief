@@ -22,14 +22,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from finbrief.config import (
+    DEFAULT_MAX_SUB_QUERIES,
     DEFAULT_STRATEGY,
     DEFAULT_TRANSLATION_ENABLED,
     RetrievalStrategy,
 )
 
 #: The sub-query cap the shipping default runs at (`Settings.max_sub_queries`' own default, and
-#: ADR-0004's latency-driven ceiling). Named here so the arms below cannot drift from it.
-SHIPPED_MAX_SUB_QUERIES = 3
+#: ADR-0004's latency-driven ceiling). Named here so the arms below cannot drift from it — and
+#: read from `config.py` rather than retyped, because it was a hardcoded `3` that
+#: `shipping_default_matches_config` did not check (code review of #11).
+SHIPPED_MAX_SUB_QUERIES = DEFAULT_MAX_SUB_QUERIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +146,13 @@ SHIPPING_DEFAULT = HYBRID_TRANSLATED
 #: The two arms ADR-0005's falsification clause differences, and the two its §4 re-examination
 #: trigger differences. Named as data because `hypotheses.py` reads them: a clause whose
 #: operands are written out in prose is one that can be applied to the wrong pair.
+#:
+#: **It reads them now.** That sentence was here while `hypotheses.py` wrote all five pairs out
+#: by hand and consulted neither constant, so `tests/test_eval_arms.py`'s axis-constancy
+#: assertions guarded data no verdict depended on (code review of #11).
+#: `hypotheses.CLAUSE_CONTRAST` and `TRIGGER_CONTRAST` now select from these by predicate — the
+#: pair whose second arm is `SHIPPING_DEFAULT` — which is what makes those tests bind the
+#: operands they are about.
 TRANSLATION_CONTRAST: tuple[tuple[Arm, Arm], ...] = (
     (VECTOR_ONLY, VECTOR_TRANSLATED),
     (HYBRID_ONLY, HYBRID_TRANSLATED),
@@ -151,14 +161,6 @@ STRATEGY_CONTRAST: tuple[tuple[Arm, Arm], ...] = (
     (VECTOR_ONLY, HYBRID_ONLY),
     (VECTOR_TRANSLATED, HYBRID_TRANSLATED),
 )
-
-
-def arm(name: str) -> Arm:
-    """The arm called `name`, or `KeyError` listing the ones there are."""
-    for candidate in ALL_ARMS:
-        if candidate.name == name:
-            return candidate
-    raise KeyError(f"no arm named {name!r}. Valid: {', '.join(a.name for a in ALL_ARMS)}")
 
 
 def shipping_default_matches_config() -> bool:
@@ -171,4 +173,12 @@ def shipping_default_matches_config() -> bool:
     return (
         SHIPPING_DEFAULT.strategy is DEFAULT_STRATEGY
         and SHIPPING_DEFAULT.translate is DEFAULT_TRANSLATION_ENABLED
+        # **The cap too, and it was the one axis this did not check** (code review of #11).
+        # `settings_for` forces every arm to its own `max_sub_queries`, so with
+        # `FINBRIEF_MAX_SUB_QUERIES` set to anything but 3 the resolve pass records plans at the
+        # env's cap while the arms retrieve at this one — the persisted `variants` then do not
+        # describe the cell keyed on them. At 0 it is worse: the planner is never invoked, the
+        # empty reply is persisted, and both `+translation` arms retrieve identically to their
+        # own ablations while the artifact labels one "the shipping default".
+        and SHIPPED_MAX_SUB_QUERIES == DEFAULT_MAX_SUB_QUERIES
     )

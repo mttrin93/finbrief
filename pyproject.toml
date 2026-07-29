@@ -18,8 +18,9 @@ dependencies = [
     "yfinance",
     "feedparser",
     "pypdf",
-    # NOTE: eval / guardrails / mcp deps intentionally deferred until the
-    # grilling + spec settle which of them earn their place. See PLAN.md §2.
+    # NOTE: mcp deps intentionally deferred until the grilling + spec settle whether they earn
+    # their place (PLAN.md §2, Phase 8). The guardrails dep arrived with T7 and the eval dep with
+    # T10, so the note no longer covers them — it covered all three while two sat below it.
     "edgartools>=5.43.0",
     "langchain-chroma>=1.1.0",
     "langchain-text-splitters>=1.1.2",
@@ -27,6 +28,12 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.0",
     "guardrails-ai>=0.10.2",
     "ragas>=0.4.3",
+    # `ragas` requires `langchain-community` and nothing here imports it. The **only** ceiling in
+    # this file, and it is theirs rather than ours: the 0.4 line has not shipped, and the 0.3 line
+    # declares `langchain-core<2.0.0,>=0.3.78`, which the installed core 1.x satisfies. Drop the
+    # ceiling when `ragas` either stops depending on it or pins it itself — and re-run
+    # `scripts/evaluate.py --stage judge` if it moves, because a metric's prompt is part of the
+    # measurement (`judge.judge_cache_key` keys on `ragas_version` for exactly this reason).
     "langchain-community<0.4",
 ]
 

@@ -218,11 +218,13 @@ def test_the_cost_table_matches_what_ragas_actually_calls(scripted, metric, need
         embeddings=FakeEmbeddings() if needs_embeddings else None,
     )
 
-    # `batches_completions=True`: this fake is not a `ChatOpenAI`, so ragas cannot ask it for
-    # n completions in one request and sends n prompts instead. The shipped judge *is* one,
-    # which is the branch the default covers — see the next test.
+    # `separate_completion_requests=True`: this fake is not a `ChatOpenAI`, so ragas cannot ask
+    # it for n completions in one request and sends n prompts instead. The shipped judge *is*
+    # one, which is the branch the default covers — see the next test. The flag used to be
+    # called `batches_completions` while selecting exactly this, the *un*batched branch (review
+    # of #11).
     assert len(model.calls) == calls_per_row(
-        metric, k=len(SAMPLE.contexts), batches_completions=True
+        metric, k=len(SAMPLE.contexts), separate_completion_requests=True
     )
 
 
@@ -239,7 +241,7 @@ def test_the_shipped_judge_costs_one_relevancy_call_and_a_scripted_one_costs_thr
         ChatOpenAI(api_key="test-key", model="openai/gpt-4.1-mini")
     )
     assert calls_per_row(ANSWER_RELEVANCY, k=5) == 1
-    assert calls_per_row(ANSWER_RELEVANCY, k=5, batches_completions=True) == 3
+    assert calls_per_row(ANSWER_RELEVANCY, k=5, separate_completion_requests=True) == 3
 
 
 def test_context_precision_scales_with_k_and_the_others_do_not():
@@ -265,7 +267,7 @@ def test_the_full_six_arm_bill_is_the_number_the_artifact_quotes():
 
     assert scored == 1008
     assert ablations == 336
-    assert expected_calls(METRICS, rows=28 * 4, k=5, batches_completions=True) == 1232
+    assert expected_calls(METRICS, rows=28 * 4, k=5, separate_completion_requests=True) == 1232
 
 
 def test_an_unknown_metric_raises_rather_than_costing_nothing_silently():
@@ -347,3 +349,34 @@ def test_the_fenced_metric_is_not_one_the_ablation_arms_rest_on():
     # touch it or both decisions become unanswerable.
     assert not EXCLUDED_FROM_HYPOTHESES & set(RETRIEVAL_METRICS)
     assert set(METRICS) > EXCLUDED_FROM_HYPOTHESES
+
+
+def test_response_relevancy_is_keyed_on_the_embedding_model_and_the_others_are_not():
+    """A cosine in the embedding model's space, cached under a key that did not name it.
+
+    Change `FINBRIEF_EMBEDDING_MODEL` and `retrieval_key` re-pays (it carries the model) while
+    every relevancy cell replayed a similarity computed in the *old* vector space, under a
+    provenance table printing the new model (code review of #11). Conditional rather than
+    uniform because the other three metrics never touch an embedding, and widening their key
+    would re-pay ~1,300 judge calls to record something that cannot move them.
+    """
+    sample = JudgeSample(question="q", contexts=("c",), answer="a", reference="r")
+
+    def key(metric, embedding_model):
+        return judge_cache_key(
+            metric,
+            sample,
+            judge_model="openai/gpt-4.1-mini",
+            ragas_version="0.4.3",
+            embedding_model=embedding_model,
+        )
+
+    small = key(ANSWER_RELEVANCY, "openai/text-embedding-3-small")
+    large = key(ANSWER_RELEVANCY, "openai/text-embedding-3-large")
+
+    assert small != large
+    assert small["embedding_model"] == "openai/text-embedding-3-small"
+
+    for metric in (FAITHFULNESS, CONTEXT_PRECISION, CONTEXT_RECALL):
+        assert "embedding_model" not in key(metric, "openai/text-embedding-3-small")
+        assert key(metric, "small") == key(metric, "large")

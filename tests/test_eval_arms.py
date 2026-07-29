@@ -26,7 +26,6 @@ from finbrief.evaluation.arms import (
     SHIPPING_DEFAULT,
     STRATEGY_CONTRAST,
     TRANSLATION_CONTRAST,
-    arm,
     shipping_default_matches_config,
 )
 from finbrief.evaluation.loader import (
@@ -135,16 +134,6 @@ def test_the_strategy_contrast_holds_translation_fixed():
         assert hybrid.strategy is RetrievalStrategy.HYBRID
 
 
-def test_an_unknown_arm_name_raises_and_lists_the_real_ones():
-    with pytest.raises(KeyError) as caught:
-        arm("hybrid+reranking")
-
-    assert "vector+translation" in str(caught.value)
-
-
-# --- the typed reader ----------------------------------------------------------------
-
-
 def test_the_committed_set_loads_with_twenty_eight_rows(golden):
     assert len(golden) == 28
     assert golden.verified_against_edgar is True
@@ -245,3 +234,34 @@ def test_an_unverified_set_is_refused(tmp_path, golden):
 
     # And loadable on purpose, for a set actually under authoring.
     assert len(load_golden_set(draft, require_verified=False)) == 28
+
+
+def test_the_contrast_constants_are_what_the_clauses_actually_compare():
+    """The axis-constancy assertions above are only load-bearing if something reads the pairs.
+
+    `arms.py` declares both contrasts "as data because `hypotheses.py` reads them: a clause
+    whose operands are written out in prose is one that can be applied to the wrong pair" — and
+    `hypotheses.py` wrote all five pairs out by hand, so those assertions guarded data no
+    verdict depended on (code review of #11). This is the binding.
+    """
+    from finbrief.evaluation.hypotheses import CLAUSE_CONTRAST, TRIGGER_CONTRAST
+
+    assert CLAUSE_CONTRAST in TRANSLATION_CONTRAST
+    assert TRIGGER_CONTRAST in STRATEGY_CONTRAST
+    assert CLAUSE_CONTRAST[1] is SHIPPING_DEFAULT
+    assert TRIGGER_CONTRAST[1] is SHIPPING_DEFAULT
+
+
+def test_the_shipping_default_check_covers_the_sub_query_cap_too():
+    """`settings_for` forces every arm to its own cap, so a drifting default is a silent one.
+
+    The check compared `strategy` and `translate` only, and `SHIPPED_MAX_SUB_QUERIES` was a
+    hardcoded `3` (code review of #11). At `FINBRIEF_MAX_SUB_QUERIES=0` the planner is never
+    invoked, the empty reply is persisted, and both `+translation` arms retrieve identically to
+    their own ablations while the artifact labels one "the shipping default".
+    """
+    from finbrief.config import DEFAULT_MAX_SUB_QUERIES
+
+    assert SHIPPED_MAX_SUB_QUERIES == DEFAULT_MAX_SUB_QUERIES == 3
+    assert SHIPPING_DEFAULT.max_sub_queries == DEFAULT_MAX_SUB_QUERIES
+    assert shipping_default_matches_config()

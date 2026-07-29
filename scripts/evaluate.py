@@ -56,7 +56,7 @@ from finbrief.evaluation import (
 )
 from finbrief.evaluation import judge as judging
 from finbrief.evaluation.arms import ABLATION_ARMS, SCORED_ARMS, SHIPPING_DEFAULT, Arm
-from finbrief.evaluation.cache import Cache
+from finbrief.evaluation.cache import MISSING, Cache
 from finbrief.evaluation.loader import GoldenQuestion, GoldenSet, load_golden_set
 from finbrief.evaluation.pipeline import Cell
 from finbrief.observability.events import sink_offset
@@ -162,6 +162,22 @@ def _log_window(
             "run that produced the cached cells, and the artifact will say so.",
             cache_dir,
         )
+        return None
+    # **A mark only means something against the file it was taken from.** The offset is applied
+    # to whatever `FINBRIEF_LOG_FILE` resolves to now, so a rotated, recreated or renamed sink
+    # would have this artifact slicing an unrelated stream and captioning it "the measuring run
+    # of {recorded_at}'s" — the pooled-runs attribution failure `Window` exists to stop,
+    # arriving through the field that was persisted and never read (code review of #11).
+    if not recorded.describes(sink):
+        logger.warning(
+            "the recorded log window under %s was taken against %s, and this run reads %s. "
+            "Its offset does not describe this file, so latency is reported as not measured "
+            "rather than sliced out of the wrong stream.",
+            cache_dir,
+            recorded.path,
+            sink,
+        )
+        return None
     return recorded
 
 
@@ -232,8 +248,15 @@ def run(args: argparse.Namespace) -> str:
 
     variant_set = _resolve(rows, settings=settings, cache=cache, run_stage="resolve" in stages)
     arms: tuple[Arm, ...] = SCORED_ARMS + (ABLATION_ARMS if args.ablations else ())
-    judge = judging.build_judge(settings) if "judge" in stages else None
-    embeddings = judging.build_judge_embeddings(settings) if "judge" in stages else None
+    # **Built whichever stages were asked for, because building is free and skipping is not.**
+    # `--stage` is documented as "skipped stages replay from the cache", and gating the *judge*
+    # on the flag implemented it as "skipped stages never happened": `--stage judge` filled
+    # every answer with `None`, and `--stage report` — documented as free and therefore always
+    # re-runnable — rendered the whole RAGAs table empty over 560 cached judge cells (code
+    # review of #11). The cache decides what costs anything; `replay_only` is what says a stage
+    # may not pay.
+    judge = judging.build_judge(settings)
+    embeddings = judging.build_judge_embeddings(settings)
 
     cells: list[Cell] = []
     for arm in arms:
@@ -249,36 +272,30 @@ def run(args: argparse.Namespace) -> str:
             fingerprint=fingerprint,
             workers=args.workers,
         )
-        answers = (
-            pipeline.answer_cells(
-                rows,
-                retrievals,
-                arm,
-                store=store,
-                settings=settings,
-                variants=variant_set,
-                cache=cache,
-                k=k,
-                workers=args.workers,
-            )
-            if "answer" in stages
-            else tuple(None for _ in rows)
+        answers = pipeline.answer_cells(
+            rows,
+            retrievals,
+            arm,
+            store=store,
+            settings=settings,
+            variants=variant_set,
+            cache=cache,
+            k=k,
+            workers=args.workers,
+            replay_only="answer" not in stages,
         )
         metrics = judging.METRICS if arm.judged else judging.RETRIEVAL_METRICS
-        judged = (
-            pipeline.judge_cells(
-                rows,
-                retrievals,
-                answers,
-                metrics=metrics,
-                settings=settings,
-                cache=cache,
-                judge=judge,
-                embeddings=embeddings,
-                workers=args.workers,
-            )
-            if judge is not None
-            else tuple({} for _ in rows)
+        judged = pipeline.judge_cells(
+            rows,
+            retrievals,
+            answers,
+            metrics=metrics,
+            settings=settings,
+            cache=cache,
+            judge=judge,
+            embeddings=embeddings,
+            workers=args.workers,
+            replay_only="judge" not in stages,
         )
         cells.extend(pipeline.build_cells(rows, arm, retrievals, answers, judged, k=k))
 
@@ -298,10 +315,12 @@ def run(args: argparse.Namespace) -> str:
     sections = list(_findings_sections(cells, sink=sink, log_window=window))
     sections.append(_leakage(cells, golden))
     sections.extend(emitted)
-    support = (
-        _citation_support(cells, settings=settings, cache=cache, judge=judge)
-        if judge is not None
-        else None
+    support = _citation_support(
+        cells,
+        settings=settings,
+        cache=cache,
+        judge=judge,
+        replay_only="judge" not in stages,
     )
     sections.append(_deferrals_block(sink, support, log_window=window))
     sections.append(_headline(cells, cache))
@@ -514,7 +533,12 @@ def _planner_variance(
 
 
 def _citation_support(
-    cells: Sequence[Cell], *, settings: Settings, cache: Cache, judge: object
+    cells: Sequence[Cell],
+    *,
+    settings: Settings,
+    cache: Cache,
+    judge: object,
+    replay_only: bool = False,
 ) -> object:
     """The T3/T5 deferral: does a resolving marker's own chunk support its sentence?
 
@@ -522,6 +546,10 @@ def _citation_support(
     — the same tested metric, asked a narrower question. Cached per `(sentence, chunk)` so a
     re-run costs nothing, and keyed through `judge.judge_cache_key` so the key carries the
     judge model and the ragas version like every other judged cell.
+
+    `replay_only` follows the judge stage: a pair the cache does not hold scores `None`, which
+    `CitationSupport` counts as `unscored` rather than dropping — so a `--stage report`
+    re-render reports what the measuring run scored and pays for nothing.
     """
     version = judging.ragas_version()
 
@@ -532,14 +560,19 @@ def _citation_support(
             answer=sentence,
             reference="",
         )
+        key = judging.judge_cache_key(
+            judging.FAITHFULNESS,
+            sample,
+            judge_model=settings.judge_model,
+            embedding_model=settings.embedding_model,
+            ragas_version=version,
+        )
+        if replay_only:
+            payload = cache.replay("cited_sentence", key)
+            return None if payload is MISSING else payload["score"]
         payload = cache.resolve(
             "cited_sentence",
-            judging.judge_cache_key(
-                judging.FAITHFULNESS,
-                sample,
-                judge_model=settings.judge_model,
-                ragas_version=version,
-            ),
+            key,
             lambda: {"score": judging.score(judging.FAITHFULNESS, sample, judge=judge)},
         )
         return payload["score"]
@@ -562,13 +595,24 @@ def _deferrals_block(
     lines are absent the rate renders as **not measured** rather than as a flattering zero.
     """
     from finbrief.security.advice import validate_answer
-    from finbrief.security.corpus import ADVICE_RESIDUE_PROBES
+    from finbrief.security.corpus import ADVICE_ANSWERS, ADVICE_RESIDUE_PROBES
 
-    residue = deferrals.advice_residue(ADVICE_RESIDUE_PROBES, validate=validate_answer)
+    # **`ADVICE_ANSWERS` as positive controls, because `validate_answer` fails open.** Any
+    # exception out of `Guard.validate` becomes `AdviceVerdict(refused=False)`, and this pass
+    # reads only `refused` — so a dead Guard and a rule set that legitimately missed every probe
+    # produced the same observation, and the published headline was the value a dead instrument
+    # yields (code review of #11). The controls are the advice the rules provably catch; if none
+    # is refused, `advice_residue` raises rather than reporting 100%.
+    residue = deferrals.advice_residue(
+        ADVICE_RESIDUE_PROBES, validate=validate_answer, controls=ADVICE_ANSWERS
+    )
     measured = {
         report.DEFERRAL_ADVICE_RESIDUE: (
             f"{residue.rate.render()} — {len(residue.residue)} of "
-            f"{residue.rate.total} hand-labelled recommendations were **not** refused"
+            f"{residue.rate.total} hand-labelled recommendations were **not** refused, with "
+            f"the "
+            f"validator's own liveness shown by {residue.controls_caught}/{residue.controls} "
+            f"positive control(s) refused"
         )
     }
     try:
@@ -681,16 +725,26 @@ def _resolve(
 
     Loaded rather than re-resolved by default: they are a *fixed input* (ADR-0004 §9), so a
     scoring run reads the committed file and only `--stage resolve` rewrites it.
+
+    **A missing file raises rather than warning**, which is a correction (code review of #11).
+    It used to log "the +translation arms cannot be replayed" and return `None` — and the run
+    then scored those arms anyway, off *live sampled* planner calls, cached under a key
+    recording `"variants": []` because `planned_variants` had nothing to report. That is the
+    shape `HARNESS_VERSION = 2` was bumped for — wrong values under right addresses — reached
+    through a different door, and this run's own planner-variance pass (0 of 8 questions stable)
+    is what makes it consequential rather than theoretical.
     """
     if not run_stage:
         try:
-            return variants.load_variants()
-        except FileNotFoundError:
-            logger.warning(
-                "no %s: the +translation arms cannot be replayed. Run --stage resolve first.",
-                variants.VARIANTS_PATH,
-            )
-            return None
+            loaded = variants.load_variants()
+        except FileNotFoundError as exc:
+            raise SystemExit(
+                f"no {variants.VARIANTS_PATH}: the +translation arms have no reply to replay, "
+                f"and scoring them off live planner calls would cache sampled variants under a "
+                f"key saying there were none. Run `--stage resolve` first."
+            ) from exc
+        variants.verify_questions(loaded, rows)
+        return loaded
 
     from finbrief.llm import build_chat_model
 

@@ -267,7 +267,8 @@ retrieval chain and landed with it — ticket T3, #5)
 - Smoke test: top-k retrieval sanity checks for 5 hand-written queries — **done in Phase 2**
   (ticket T3, #5) as `scripts/retrieval_smoke.py`, evidence in
   `docs/verification/retrieval-smoke.md`. A wiring check on `retrieve()`, explicitly not an
-  evaluation: ADR-0002's golden set (T9, #4) remains the measurement artifact of record.
+  evaluation: `docs/verification/evaluation.md` — ADR-0002's golden set (T9, #4) scored by T10's
+  harness (#11) — is the measurement artifact of record.
 - The committed evidence under `docs/verification/` is the last full run's, regenerated
   *after* the post-run extractor, chunker and checklist-format fixes: 60/60 gated, 60/60
   ticked, nothing flagged `CHANGED`. Re-running ingestion re-renders the two files it owns
@@ -296,9 +297,10 @@ retrieval chain and landed with it — ticket T3, #5)
   (`test_app_state.py`). `search_filings` wraps `retrieve()`, so the measured chain and the
   shipped path stay one code path (ADR-0003); its description carries the verbatim-query
   contract, which is **measured rather than enforced** — the agent's issued query is logged
-  against the original and T10 (#11) reports the rate, because nothing in the code prevents a
-  rephrasing and the alternative that would (overwriting the model's argument) breaks every
-  follow-up. Citation numbering continues across a conversation, assigned in one pass at the
+  against the original and T10 (#11) **measured the rate at 100% divergence, 8 of 8 searches** —
+  all of them first searches in a thread, so none is the one rewrite the description permits —
+  because nothing in the code prevents a rephrasing and the alternative that would (overwriting the
+  model's argument) breaks every follow-up. Citation numbering continues across a conversation, assigned in one pass at the
   agent seam (`agent/citations.py`), because a second search that reused `[1]` would make every
   marker above it unresolvable — and a tool cannot do it, since LangGraph runs a step's calls
   concurrently against identical state (#7 review).
@@ -465,7 +467,17 @@ retrieval chain and landed with it — ticket T3, #5)
   consumer is Phase 7, whose own artifact is the evidence); and **log rotation** (a rotating
   file renames mid-run and a globbing reader double-counts or misses).
 
-**Phase 7 — Evaluation (Tier-1, ~4 h)** *(see ADR-0002)*
+**Phase 7 — Evaluation (Tier-1, ~4 h)** — ✅ **done** (`t10-evaluation`, #11) *(see ADR-0002)*
+
+> **What it found, stated as the honest headline rather than as a pass.** The pre-registered
+> shipping default is **retained, not validated**: only 4 of 18 pre-registered comparisons carried
+> a measurement at all, and the paired exact test at ADR-0002's ≥6-per-bucket sizing can resolve
+> only a near-unanimous effect — a finding about the *experiment*, found after the fact and printed
+> in the artifact's power audit. The translation latency budget was **missed** (3138 ms p50 against
+> ≤1500 ms) and is recorded as missed rather than amended. Three of the four deferred measurements
+> came back with findings: cited-marker support at 31% (22/70 pairs), agent-vs-original query
+> divergence at 100% (8/8, all first searches), and layer 4's residue at 6/6. Evidence:
+> `docs/verification/evaluation.md`.
 - Golden set: ~24–28 Q/A in four stratified buckets (semantic, exact-identifier,
   tool-augmented, multi-hop), ≥6 each. Ground truth authored from the filings directly
   with section citations; candidate Q/A drafted by a *different* model than the answering
@@ -490,7 +502,10 @@ retrieval chain and landed with it — ticket T3, #5)
   spread on *every* bucket, the dominance argument is re-argued rather than defended and
   `vector + translation` becomes a live candidate. Dominance judged within ≤1.5s p50 added
   latency from translation (measured from Phase-6 logs).
-- Tool-calling evaluation (Part 4 pattern); results tables → README.
+- Tool-calling evaluation (Part 4 pattern); results tables → README. **Done**: 100% over 10 scored
+  cases (7 golden `tool-augmented` rows plus 3 negative controls the set cannot express), with the
+  valuation quote-plus-peers pairing measured at 1 of 2 rather than enforced. Reported in the
+  artifact and summarised in the README's *Running the evaluation*.
 
 > **── Tier-1 gate ──** Everything above must be finished, evaluated, and
 > review-defensible before any Phase-8 work begins.
@@ -611,8 +626,9 @@ pointing at no entry — silently, with no error and no log line. **Half of this
 (#8)** and half did not, and the split is the point: marker *resolution* is now enforced in code
 — every `[n]` is checked against the numbers the conversation has issued, and unresolvable ones
 are named beside the answer and logged — but whether a resolving marker's chunk *supports* the
-sentence it is attached to is faithfulness, needs a judge model and ground truth, and remains
-T10's RAGAs run over T9's golden set (#11, #4). The inverse gap is deliberate: a
+sentence it is attached to is faithfulness, needs a judge model and ground truth, and **T10
+measured it** (#11, #4): 31% of `(sentence, marker)` pairs fully supported, 22 of 70 across 50 cited
+sentences — see `docs/verification/evaluation.md`. The inverse gap is deliberate: a
 retrieved-but-uncited context still appears in the panel, because the panel's contract is "what
 grounded this turn", which is also why the log field is `retrieved_sections` and not
 `cited_sections`.

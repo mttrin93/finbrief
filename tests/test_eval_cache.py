@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from finbrief.evaluation.cache import Cache, CacheDisabled
+from finbrief.evaluation.cache import MISSING, Cache, CacheDisabled
 
 
 def a_cache(tmp_path, **kwargs) -> Cache:
@@ -174,3 +174,64 @@ def test_a_disabled_cache_refuses_rather_than_silently_recomputing(tmp_path):
 
     with pytest.raises(CacheDisabled):
         cache.resolve("judge", {"row": "S1"}, lambda: {"score": 0.5})
+
+
+# --- replay-only lookups: what `--stage` skipping a stage actually means -----------------
+
+
+def test_a_replay_only_lookup_never_calls_a_producer_and_reports_absence(tmp_path):
+    """`--stage` documented skipped stages as replaying, and skipped them entirely.
+
+    The defect (code review of #11): `--stage judge` filled every answer with `None` and
+    `--stage report` — documented as free and therefore always re-runnable — rendered the whole
+    RAGAs table empty over 560 cached judge cells. `Cache.replay` is what makes the documented
+    contract true: a cell the store holds comes back, one it does not is `MISSING`, and neither
+    path can spend.
+    """
+    cache = a_cache(tmp_path)
+
+    assert cache.replay("judge", {"row": "S1"}) is MISSING
+    assert cache.stats("judge").absent == 1
+    assert cache.stats("judge").misses == 0, "an unasked-for cell is not spend"
+
+    cache.resolve("judge", {"row": "S1"}, lambda: {"score": 0.5})
+
+    assert cache.replay("judge", {"row": "S1"}) == {"score": 0.5}
+    assert cache.stats("judge").hits == 1
+
+
+def test_a_cached_none_is_a_value_and_not_an_absence(tmp_path):
+    """Which is why `MISSING` is a sentinel and not `None`.
+
+    `judge.score` returns `None` for a row ragas could not score, and that `None` is stored. If
+    replay signalled absence with `None`, a run would re-pay for every row the judge failed on
+    and the artifact could not tell the two apart.
+    """
+    cache = a_cache(tmp_path)
+    cache.resolve("judge", {"row": "S1"}, lambda: {"score": None})
+
+    replayed = cache.replay("judge", {"row": "S1"})
+
+    assert replayed is not MISSING
+    assert replayed == {"score": None}
+
+
+def test_an_undecodable_entry_is_a_miss_rather_than_the_end_of_the_run(tmp_path):
+    """`UnicodeDecodeError` is not a `JSONDecodeError`, and it was outside the tolerant block.
+
+    Cached values here are full of `§`, em dashes and curly quotes, so a truncation landing
+    mid-codepoint raises in `read_text` — which killed the run this module's docstring promises
+    to keep ("losing one cell is better than losing the run"). The existing truncation test only
+    cut ASCII, so it could not see it (code review of #11).
+    """
+    cache = a_cache(tmp_path)
+    cache.resolve("judge", {"row": "S1"}, lambda: {"note": "Item 1A — §2 “risk”"})
+    (entry,) = (tmp_path / "eval-cache" / "judge").glob("*.json")
+    raw = entry.read_bytes()
+    cut = raw.index("§".encode()) + 1
+    entry.write_bytes(raw[:cut])
+
+    value = cache.resolve("judge", {"row": "S1"}, lambda: {"note": "recomputed"})
+
+    assert value == {"note": "recomputed"}
+    assert cache.stats("judge").malformed == 1

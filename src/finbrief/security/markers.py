@@ -76,7 +76,13 @@ _NUMERIC = re.compile(r"\A\d+\Z")
 
 
 def numeric_markers(text: str) -> tuple[int, ...]:
-    """Every resolving `[n]` in `text`, in order — the one definition of that shape.
+    r"""Every resolving `[n]` in `text`, in order — the one definition of that shape.
+
+    **The `r` prefix is load-bearing**, and its absence was a defect rather than a style slip:
+    this docstring quotes a pattern, so without it `\[` and `\d` are invalid escape sequences
+    and importing this module — which the app does — emitted `SyntaxWarning: invalid escape
+    sequence '\['`, a future `SyntaxError`. Ruff's `W605` is not in this repo's `select`, so the
+    lint gate could not see it (code review of #11).
 
     Exported because `evaluation/deferrals.py` had its own `re.compile(r"\[(\d+)\]")` for the
     same job (code review of #11), and a second copy of a shape lets the gate and a

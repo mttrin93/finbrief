@@ -49,7 +49,20 @@ business overview, risk factors, current valuation, and recent news — in minut
 > is [`docs/verification/security-gate.md`](./docs/verification/security-gate.md). One
 > pre-registered number did not survive the measurement — see *What the gate does not do* below.
 >
-> The four files under
+> **And the whole thing has now been measured** (T10, [#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)):
+> six configurations over ADR-0002's 28-question golden set, all four RAGAs metrics, the two
+> pre-registered decisions evaluated against the numbers rather than argued, and the tool-calling
+> eval user story 29 asks for. The evidence is
+> [`docs/verification/evaluation.md`](./docs/verification/evaluation.md), and it leads with what the
+> run could **not** resolve, because that is the honest headline: only 4 of 18 pre-registered
+> comparisons carried a measurement at all, so the shipping default is **retained, not validated**.
+> Tool-selection accuracy was 100% over 10 scored cases — 3 of them negative controls the golden set
+> cannot express — with the valuation quote-plus-peers pairing measured at 1 of 2 rather than
+> enforced. The translation latency budget was **missed and left unamended**, and three deferred
+> measurements came back with findings rather than clean bills. Details in *Running the evaluation*
+> below.
+>
+> The five files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
 > hand-authored. The plan lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
@@ -209,8 +222,11 @@ prompt.
   against the numbers this conversation has issued, and unresolvable ones are named beside the
   answer rather than silently stripped — a reader losing that evidence is worse than seeing it.
   But a marker that *resolves* can still sit on a claim its chunk does not support. That is
-  faithfulness, it needs a judge model and ground truth, and it stays with T10's RAGAs run over
-  T9's golden set.
+  faithfulness, it needed a judge model and ground truth, and **T10 measured it**: of 70
+  `(sentence, marker)` pairs across 50 cited sentences on the shipping default, only 31% (22/70)
+  were fully supported by the chunk they name — 11 with no support at all, the rest partly. See
+  [`docs/verification/evaluation.md`](./docs/verification/evaluation.md). Marker resolution is
+  enforced in code; marker support is measured, and low.
 - **The homoglyph map is not the Unicode confusables table.** A lookalike outside it survives
   normalisation and reaches layer 3 — which is the layer that exists for what layers 1 and 2 miss.
 - **The Universe whitelist is an incidental extra**, not part of the argument: it happens to stop
@@ -251,10 +267,12 @@ stale.
   debt"* names no company. That instruction is a **prompt, and nothing in the code enforces
   it**: the tool pre-processes nothing on our side, and what the model actually passes is then
   recorded rather than corrected. Whether each search ran your words is logged as a verdict
-  (never the text of either query), and T10 reports the rate. On the first live two-turn run the
-  model rephrased **both** queries, so the rate so far is 0 of 2. That is a finding for the
-  evaluation phase, not something to tune the prompt against — and not a criterion this project
-  claims to have met.
+  (never the text of either query), and T10 measured the rate: **100% divergence, 8 of 8
+  searches** — and all 8 are *first* searches in their thread, which cannot be reference
+  resolutions, so none of them is the one rewrite the description permits. Quoted from
+  [`docs/verification/evaluation.md`](./docs/verification/evaluation.md), over that run's own
+  window of the log. That is a finding, not something to tune the prompt against — and not a
+  criterion this project claims to have met.
 - **One `[n]` means one chunk for the whole conversation.** A second search continues the
   numbering rather than restarting at `[1]`, so a marker in an answer three turns up still
   resolves to the source you were shown beside it. The numbers are assigned in a single pass
@@ -295,16 +313,24 @@ the environment, so the app and the evaluation harness read the same switches (A
   worst case inside a latency budget, and the gate fails open onto three other layers.
   There is deliberately **no switch to turn the gate off**: a security control with an off switch is
   a security control that is off somewhere.
+- `FINBRIEF_JUDGE_MODEL` (default `openai/gpt-4.1-mini`) is what RAGAs scores with, read only by
+  `scripts/evaluate.py`. Its own field for the same reason the classifier's is, reaching the
+  opposite conclusion: it defaults **stronger** than the answering model rather than cheaper,
+  because the gate pays for one YES/NO per turn while a judge that misreads a filing passage moves
+  every number in the report. And deliberately not `FINBRIEF_CHAT_MODEL` — a judge that is the
+  answering model grades its own output, which is the circularity ADR-0002's source-separated
+  golden set exists to avoid. Measured cost of the difference over a full six-arm run: about $1.28
+  against $0.57.
 - `finbrief.*` logs one JSON object per line to stderr at `LOG_LEVEL` (default `INFO`);
-  the Phase-7 A/B and security-gate analyses read those lines back. **One field is user-derived and
+  the Phase-7 A/B reads those lines back. (The security suite does **not** — it computes its results
+  in process and renders its own artifact from them.) **One field is user-derived and
   it is the only one**: a blocked turn's gate-trigger line carries the *normalised* input, truncated
   to 500 characters, because a denylist you cannot audit is a denylist you cannot tune. An allowed
   turn logs counts and verdicts only.
 - `FINBRIEF_LOG_FILE` (**unset by default**, i.e. nowhere) appends those same lines to a file.
   Unset, they exist only in the terminal that started the app and nothing survives the process —
-  so **turn it on for any run whose numbers you intend to report**: latency samples, token counts,
-  the agent-vs-original divergence rate and gate-trigger metadata are read back out of this file
-  and out of nothing else. `.env.example` carries the recommended path, `data/events.jsonl`,
+  so **turn it on for any run whose numbers you intend to report**: latency samples, token counts
+  and the agent-vs-original divergence rate are read back out of this file and out of nothing else. `.env.example` carries the recommended path, `data/events.jsonl`,
   **commented out** — so a copied `.env` leaves the sink off, and recording a run means
   uncommenting that one line. The file is gitignored, append-only and never rotated. Enabling it
   means keeping the one user-derived field above on disk, which is the trade the bullet before
@@ -465,19 +491,28 @@ The fifth non-hermetic entry point, and the most expensive:
 uv run python scripts/evaluate.py                   # every stage, every arm, 28 rows
 uv run python scripts/evaluate.py --rows S1,T2      # a two-question smoke over all six arms
 uv run python scripts/evaluate.py --stage judge     # re-judge only; replay everything else
+uv run python scripts/evaluate.py --no-write        # print the artifact, do not commit it
+uv run python scripts/evaluate.py --no-ablations    # skip the two planner-off cells
+uv run python scripts/evaluate.py --workers 1       # serial; the default is 6
+uv run python scripts/evaluate.py --cache-dir DIR   # paid cells (default data/eval-cache)
 ```
+
+`--workers` exists because it was measured: the judge stage ran at 4.7 cells/min serially, which
+is 99 minutes of wall clock for a six-arm run's 560 independent, network-bound cells.
 
 The results are in [`docs/verification/evaluation.md`](docs/verification/evaluation.md), which
 that command rewrites. **Quote its numbers from there, not from prose** — a figure retyped into a
 README is a figure that will disagree with its source.
 
-Three properties are worth knowing before running it.
+Four properties are worth knowing before running it.
 
 **It refuses to start with `FINBRIEF_LOG_FILE` unset.** The sink is off unless named and
 `.env.example` ships it commented out, so an evaluation run with no log is the *likely* state
 rather than an unlucky one — and the latency half of ADR-0005's dominance test is measured from
 that log. Discovering it afterwards would mean re-running the whole thing, so the check is at the
-door, before anything is spent.
+door, before anything is spent. `--allow-missing-sink` proceeds anyway — the latency half of the
+dominance test is then unmeasurable and the artifact prints "**Not measured, and therefore not
+met**" in place of a number.
 
 **It is resumable, and that is the design rather than a retrofit.** Every paid cell is addressed
 by a hash of the inputs that determine it, under `data/eval-cache/`, so a 429, a closed laptop or
@@ -485,7 +520,32 @@ a `^C` costs the cell it died inside and nothing else; a second full run costs n
 full run here died twice — once on `openai.APIConnectionError` — and lost two cells between them.
 
 **A staged run says so in the artifact.** `--stage` renders a **PARTIAL RUN** banner naming the
-stages that did not execute, above the tables, for the same reason `--gate-only` does.
+stages that did not execute, above the tables, for the same reason `--gate-only` does — and so do
+`--rows` and `--no-ablations`, because a two-question smoke and a run missing ADR-0005 §2's
+falsification channel are both partial runs. A skipped stage *replays* from the cache rather than
+vanishing: `--stage judge` re-judges over the cached answers, and `--stage report` re-renders the
+whole artifact from cached cells and pays nothing.
+
+**A warm run has nothing to time.** Latency is read from *this run's own window* of the sink
+(`events.sink_offset`), because the file is append-only across every run and app session that ever
+named it — reading the whole of it reports a median over all of them, which the first committed
+artifact did. The consequence is worth expecting rather than discovering: a run that replays every
+cell appends no lines, so its window is empty and the artifact says "not measured, and therefore
+not met" instead of serving the previous run's median. Clear the `retrieval` cache to re-time, or
+re-render with `--stage report`, which reads the mark the last measuring run persisted beside the
+cache and says in the section that the figures are that run's.
+
+**The tool-calling eval is reported beside those tables, never inside them.** It measures the
+agent's *selection* layer — a nondeterministic instrument — while every per-bucket table measures
+the chain (ADR-0003's split). Ten scored cases: the seven `tool-augmented` golden rows built from
+their own `tool_expectation` field, plus three negative controls the golden set cannot express,
+because it holds no row whose right answer is *not to call a tool* — a retrieval-only question that
+must not fetch a quote, an out-of-Universe ticker that must be refused as a result, and an
+advice-shaped question that must not send the loop off to price the recommendation. Accuracy was
+100% over those ten. The pairing hole issue #9 recorded — `AGENT_SYSTEM_PROMPT` asks a valuation
+question for the quote *and* the peer comparison, while `tool_expectation` records one tool per row
+— is measured as its own rate rather than by reshaping the reference data: **1 of 2**. Measured,
+not enforced, and the artifact says so.
 
 ### Recording a run
 
@@ -506,9 +566,14 @@ FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py
 
 Unset, `finbrief.*` events go to stderr only and vanish with the process. The evaluation
 harness ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)) reads
-four things back out of this file and out of nothing else: latency samples against ADR-0005's
-≤1.5 s p50 translation budget and ADR-0006's ≤1 s gate budget, token counts, the
-agent-issued-vs-original query divergence rate, and gate-trigger metadata. Read them with
+three things back out of this file and out of nothing else: latency samples against ADR-0005's
+≤1.5 s p50 translation budget, token counts, and the agent-issued-vs-original query divergence
+rate — each over *this run's* window of the file (`events.sink_offset`) rather than the whole of it,
+because the file is append-only across every run that ever named it. It also looks for
+`citation_markers` and finds none: that line is emitted by `app/Home.py` and by nothing else, so a
+harness driving the agent directly produces the turns and none of the lines (ADR-0011's T10
+amendment defers the instrument to its own ticket). Gate-trigger records are **not** read by the
+harness — they are there to make the denylist auditable, which is a different job. Read them with
 `observability.events.read_events`, which returns samples and a count of the lines that carried
 nothing — never a statistic, so a median is computed once, by whoever quotes it. Events emitted
 inside one turn share a `turn_id`, which is what lets a `retrieval` line's per-chunk provenance
@@ -556,8 +621,10 @@ someone needs to read. The out-of-KB control query is recorded, never scored.
 Needs `OPENROUTER_API_KEY` — it embeds each query with the same paid model the ingest used,
 because a query embedded by a different model retrieves noise with no error. It is a **smoke
 check, not an evaluation**: five hand-written queries, no buckets, no ground truth, no
-baseline, so no number it prints may be cited as a retrieval-quality claim. ADR-0002's
-stratified golden set with per-bucket RAGAs (ticket T9) is the measurement artifact of record.
+baseline, so no number it prints may be cited as a retrieval-quality claim.
+[`docs/verification/evaluation.md`](docs/verification/evaluation.md) — ADR-0002's stratified
+golden set with per-bucket RAGAs (T9), scored by T10's harness — is the measurement artifact of
+record.
 
 It runs plain `vector` with translation **off** — deliberately *not* the shipping default, and
 the report names both switches so nobody reads its distances as `hybrid + translation`'s. The
@@ -571,7 +638,7 @@ golden set and the T10 A/B
 ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this
 script.
 
-Four committed evidence files, all generated:
+Five committed evidence files, all generated:
 
 - `docs/verification/ingest-report.md` — the gate table plus what the collection holds.
   Rewritten by a **full-Universe** run, pass or fail. A `--tickers` or `--dry-run` run
@@ -593,3 +660,9 @@ Four committed evidence files, all generated:
   same reason the smoke report does, and it prints the **pre-registered** latency figure beside the
   revised one: an artifact showing only the budget now being met would turn a revised
   pre-registration into a number that had always held.
+- `docs/verification/evaluation.md` — **the measurement artifact of record.** The per-bucket A/B
+  over six arms, all four RAGAs metrics, both pre-registered decisions with their verdicts, the
+  power audit, latency and token spend, the tool-calling eval and the four deferred measurements.
+  Rewritten by every `scripts/evaluate.py` run. It leads with what the run could **not** resolve,
+  and a `--stage`, `--rows` or `--no-ablations` run carries a **PARTIAL RUN** banner for the same
+  reason `--gate-only` does. Quote a quality number from here and from nowhere else.

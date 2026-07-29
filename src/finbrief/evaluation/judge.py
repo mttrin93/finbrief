@@ -199,6 +199,7 @@ def judge_cache_key(
     *,
     judge_model: str,
     ragas_version: str,
+    embedding_model: str | None = None,
 ) -> dict[str, Any]:
     """Everything that determines this cell's score, and nothing that does not.
 
@@ -207,16 +208,31 @@ def judge_cache_key(
     per-rank verdicts), so ids alone would let one arm's score be served to another. The ragas
     version is in the key because a metric's prompt is part of the measurement — an upgrade that
     reworded the NLI prompt would otherwise serve the old model's verdicts under the new one.
+
+    **`embedding_model` for response relevancy, and only for it**, which the docstring's own
+    argument about `ragas_version` required all along (code review of #11). `ResponseRelevancy`
+    is a cosine between the question and a model-generated one *in the embedding model's space*
+    (`build_judge_embeddings`), so a changed `FINBRIEF_EMBEDDING_MODEL` re-paid every retrieval
+    cell — `retrieval_key` carries it — while every relevancy cell replayed a similarity
+    computed in the old space, under a provenance table printing the new model. Conditional
+    rather than uniform because the other three metrics never touch an embedding, and widening
+    their key would re-pay ~1,300 judge calls to record something that cannot move them.
     """
-    return {
+    key: dict[str, Any] = {
         "metric": name,
         "judge_model": judge_model,
         "ragas_version": ragas_version,
         "question": sample.question,
         "contexts": list(sample.contexts),
+        # Over-keyed on purpose for the reference-based metrics, which score contexts against
+        # the reference and never read the response: a prompt edit re-pays them. Over-keying
+        # serves a stale value to nobody, which is the direction a cache may err in.
         "answer": sample.answer,
         "reference": sample.reference,
     }
+    if name == ANSWER_RELEVANCY:
+        key["embedding_model"] = embedding_model
+    return key
 
 
 def ragas_version() -> str:
@@ -226,7 +242,7 @@ def ragas_version() -> str:
     return version("ragas")
 
 
-def calls_per_row(name: str, *, k: int, batches_completions: bool = False) -> int:
+def calls_per_row(name: str, *, k: int, separate_completion_requests: bool = False) -> int:
     """How many judge calls one row costs on `name` — read off ragas 0.4.3, not estimated.
 
     - **faithfulness: 2.** Statement generation, then one NLI pass over all the statements. -
@@ -236,12 +252,17 @@ def calls_per_row(name: str, *, k: int, batches_completions: bool = False) -> in
       bill, and why this is a function of `k` rather than the constant it was first written as.
     - **context recall: 1.** `generate_multiple` at its default `n=1`.
 
-    **`batches_completions` is not a detail, and the smoke run is why it exists.** ragas asks
-    for
-    `n=strictness` completions, then splits on whether the model serves them in one request:
-    `ChatOpenAI` is in `ragas.llms.base.MULTIPLE_COMPLETION_SUPPORTED`, so the shipped judge
-    sends **one** request with `n=3`; any other chat model gets `n` separate prompts. The
-    default is therefore the shipped path, and the flag is what a scripted test model passes.
+    **`separate_completion_requests` is not a detail, and the smoke run is why it exists.**
+    ragas asks for `n=strictness` completions, then splits on whether the model serves them in
+    one request: `ChatOpenAI` is in `ragas.llms.base.MULTIPLE_COMPLETION_SUPPORTED`, so the
+    shipped judge sends **one** request with `n=3`, while any other chat model gets `n` separate
+    prompts. The default is therefore the shipped path, and the flag is what a scripted test
+    model passes.
+
+    It is named for the branch it selects, which is a correction: it was `batches_completions`,
+    and `batches_completions=True` returned the **un**batched count of 3 — a flag asserting the
+    opposite of what it did, with its own tests and docstring passing `True` to mean "does *not*
+    batch" (code review of #11). The name now matches the arithmetic.
 
     Measured live on 2026-07-29, and it changes the metric as well as the bill: OpenRouter
     answered that one request with **one** completion, logging `LLM returned 1 generations
@@ -260,7 +281,7 @@ def calls_per_row(name: str, *, k: int, batches_completions: bool = False) -> in
     if name == FAITHFULNESS:
         return 2
     if name == ANSWER_RELEVANCY:
-        return RELEVANCY_STRICTNESS if batches_completions else 1
+        return RELEVANCY_STRICTNESS if separate_completion_requests else 1
     if name == CONTEXT_PRECISION:
         return k
     if name == CONTEXT_RECALL:
@@ -269,9 +290,10 @@ def calls_per_row(name: str, *, k: int, batches_completions: bool = False) -> in
 
 
 def expected_calls(
-    metrics: Sequence[str], rows: int, *, k: int, batches_completions: bool = False
+    metrics: Sequence[str], rows: int, *, k: int, separate_completion_requests: bool = False
 ) -> int:
     """How many judge calls `rows` rows over `metrics` will cost at this `k`."""
     return rows * sum(
-        calls_per_row(name, k=k, batches_completions=batches_completions) for name in metrics
+        calls_per_row(name, k=k, separate_completion_requests=separate_completion_requests)
+        for name in metrics
     )

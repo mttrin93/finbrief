@@ -290,3 +290,55 @@ def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
     assert f"{GATE_LOGGED_INPUT_MAX_CHARS} characters" in readme
     # And exactly once, so the copy that drifts cannot be reintroduced quietly.
     assert readme.count(f"{GATE_LOGGED_INPUT_MAX_CHARS} characters") == 1
+
+
+EVALUATION = Path(__file__).parents[1] / "docs" / "verification" / "evaluation.md"
+
+
+def _figures(text: str) -> str:
+    """`text` with the spellings a number can legitimately differ by folded away.
+
+    The README writes `−0.087` with a typographic minus and `8 of 8`; the artifact writes
+    `-0.087` and `100% (8/8)`. Those are the same measurement in two registers, so the binding
+    normalises rather than demanding one — which would be a style rule dressed as a check.
+    """
+    return text.replace("−", "-").replace("–", "-").replace(" of ", "/")
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [
+        "-0.087",  # H1's paired delta, the bucket hybrid exists to win
+        "3138",  # the p50 translation adds
+        "1500",  # ADR-0005's pre-registered budget
+        "4/18",  # comparisons that carried a measurement
+        "8/8",  # the agent-vs-original divergence rate
+    ],
+)
+def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
+    """A figure retyped into prose is a figure that will disagree with its source.
+
+    `report.headline_section`'s own docstring says exactly that, and `test_grounding_scope.py`
+    exists to bind README prose to derived values and committed evidence — yet the README's
+    whole evaluation section was retyped from `evaluation.md` with nothing binding it (code
+    review of #11). The next run moves these numbers and the README would keep asserting the old
+    ones, in the section that states the project's headline conclusion.
+    """
+    readme = _figures(README.read_text(encoding="utf-8"))
+    artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
+
+    assert figure in readme, f"the README no longer quotes {figure}; update this list too"
+    assert figure in artifact, (
+        f"the README quotes {figure} and the committed artifact does not. Re-run "
+        f"`scripts/evaluate.py` and requote from the file it writes."
+    )
+
+
+def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
+    """Its twin `GATE_LATENCY_BUDGET_MS` is bound by equalities in two places, which is the
+    reason `config.py` cites for the move. This one's only coverage was `within_budget is True`
+    at 1300 and `False` at 2200 — satisfied by any budget in [1300, 2200) (review of #11)."""
+    from finbrief.config import TRANSLATION_LATENCY_BUDGET_MS
+
+    assert TRANSLATION_LATENCY_BUDGET_MS == 1500.0
+    assert f"{TRANSLATION_LATENCY_BUDGET_MS:.0f} ms" in README.read_text(encoding="utf-8")

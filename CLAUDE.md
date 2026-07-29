@@ -6,8 +6,12 @@ spec (user stories and the six testing seams) in `docs/spec/finbrief.md`; domain
 file there is **generated**, never hand-authored. `ingest-report.md` is rewritten by every
 full-Universe `scripts/ingest_filings.py` run; `retrieval-smoke.md` by every
 `scripts/retrieval_smoke.py` run (a wiring check on `retrieve()` — *not* an evaluation, and
-nothing in it may be cited as a quality claim; the measurement artifact of record is ADR-0002's
-golden set, ticket T9/#4); `security-gate.md` by every `scripts/security_suite.py` run
+nothing in it may be cited as a quality claim; the measurement artifact of record is
+`evaluation.md`); `evaluation.md` by every `scripts/evaluate.py` run — **the measurement artifact
+of record**: ADR-0002's golden set (T9/#4) scored by T10's harness (#11), and the only file a
+quality number may be quoted from. Like `--gate-only`, a `--stage`, `--rows` or `--no-ablations`
+run carries a **PARTIAL RUN** banner and must never be committed as a whole one. `security-gate.md`
+by every `scripts/security_suite.py` run
 (pass/fail, likewise not an evaluation — and it prints the **pre-registered** latency budget
 beside the revised one on purpose, so a reader cannot mistake a revised pre-registration for one
 that always held); and `section-starts.md` is ADR-0007's hand-verification checklist —
@@ -25,8 +29,8 @@ uv run streamlit run app/Home.py
 
 CI runs exactly the lint and test commands above (`.github/workflows/ci.yml`).
 
-The non-hermetic entry points — the only commands that reach the network, and three of the
-four spend money. Run them from the repo root; their report paths are relative to the
+The non-hermetic entry points — the only commands that reach the network, and four of the
+five spend money. Run them from the repo root; their report paths are relative to the
 working directory. `retrieval_smoke.py` reads the collection ingest built and embeds its five
 queries with the same paid model, so it needs a key too: a query embedded by a different
 model retrieves noise with no error.
@@ -37,9 +41,25 @@ uv run python scripts/ingest_filings.py --dry-run   # fetch + gate only; no key,
 uv run python scripts/retrieval_smoke.py            # 5 sanity queries over the ingested KB
 uv run python scripts/security_suite.py             # the gate against the committed corpus
 uv run python scripts/security_suite.py --gate-only # layers 1-4 only: no embeddings, no agent
+uv run python scripts/evaluate.py                   # every stage, every arm, 28 golden rows
+uv run python scripts/evaluate.py --stage judge     # re-judge only; replay the rest
 ```
 
-`security_suite.py` is the cheapest of the three that spend money (~35 one-word
+`evaluate.py` is the most expensive of the five (~1,600 judge calls, 112 generations, ~450
+embedding requests) and the only one that is **resumable**: every paid cell is content-addressed
+under `data/eval-cache` (gitignored), so a run killed by a 429 pays for the cell it died inside
+and nothing else. `--stage` means *replay the rest from that cache* and not *skip it* — a
+distinction the first version got wrong in both directions, so `--stage report` rendered an empty
+RAGAs table over 560 cached cells and a cold `retrieve` cache was paid for under a flag that said
+not to (code review of #11). It **refuses to start with `FINBRIEF_LOG_FILE` unset**, because
+ADR-0005's latency half is measured from that log and discovering the sink was off after a
+30-minute paid run means re-running the whole thing; `--allow-missing-sink` proceeds and the
+artifact then reports those figures as absent. A **warm run has nothing to time**: latency comes
+from this run's own window of the sink (`events.sink_offset`), so a fully replayed run's window is
+empty and the artifact says "not measured, and therefore not met" rather than serving the previous
+run's median.
+
+`security_suite.py` is the cheapest of the four that spend money (~35 one-word
 completions — every case the denylist does not catch, plus the whole benign set — plus a handful of
 agent turns) and exists because three of ADR-0006's claims cannot be met by a test: whether a
 real model recognises a *novel* payload, whether a real model *obeys* a planted one, and the
@@ -78,13 +98,15 @@ patching `getaddrinfo` alone left `gethostbyname` returning real addresses (issu
 
 **The guard is a denylist over the backends this repo can reach, not a proof**, and it is
 described that way deliberately: a new HTTP dependency is a new path, and a guard advertised as
-total is how the claim came to be false **six** times (twice through tiktoken's cache, twice
+total is how the claim came to be false **seven** times (twice through tiktoken's cache, twice
 through this guard's own prose, twice through T7's single new dependency — `guardrails-ai`,
-which posts validation telemetry to its own endpoint *and* reaches uvloop).
+which posts validation telemetry to its own endpoint *and* reaches uvloop — and once through
+T10's, `ragas`, whose `_analytics.track` POSTs every metric completion to
+`t.explodinggradients.com`).
 `tests/test_hermetic_suite.py` carries **one test per backend** for that reason — an uncovered
 path shows up there as a live call, which is where the `curl_cffi` hole was found. Add a
 networking dependency, add a test there. And **a claim in a comment cannot fail**: three of the
-six false claims were prose asserting coverage the code lacked, so every test in that file
+seven false claims were prose asserting coverage the code lacked, so every test in that file
 exercises the call it is about — the DNS case calls each of the four resolvers rather than
 asserting that three route through the fourth, which is precisely the sentence that was wrong.
 **Raising is only half the guard**, because a raised exception is loud only if the caller
@@ -94,9 +116,16 @@ normal verdict and the test asserting only that verdict passed while the POST wa
 (issue #8 review). `conftest.EGRESS_ATTEMPTS` records every refused target inside `_blocked`
 itself, so an attempt a library swallows is still visible; a test about a backend that might
 swallow one compares that list's length across the call rather than trusting `pytest.raises`.
-Four more mechanisms keep it true *without* leaning on the guard: tiktoken's cl100k_base table
+Five more mechanisms keep it true *without* leaning on the guard: tiktoken's cl100k_base table
 is vendored under `tests/fixtures/tiktoken/` (conftest points `TIKTOKEN_CACHE_DIR` at it —
-without that, `get_encoding` silently downloads it); the EDGAR fixtures under
+without that, `get_encoding` silently downloads it); `RAGAS_DO_NOT_TRACK` is set at conftest
+**import** time and *assigned* rather than `setdefault`ed — import time because
+`ragas._analytics.do_not_track` is `lru_cache`d, so a switch flipped after the first metric did
+nothing, and assigned because a developer with `RAGAS_DO_NOT_TRACK=false` exported is exactly the
+case worth overriding (`evaluation/judge.py` sets it a second time for the script, on the
+`security/advice.py` principle that a hole is a hole whether today's code walks through it). That
+`track` is decorated `@silent` and flushes from a background thread and at `atexit`, so
+`EGRESS_ATTEMPTS` is the only detector — the third time that has been true. The EDGAR fixtures under
 `tests/fixtures/edgar/` are recorded, never fetched — refresh them by hand with
 `scripts/record_edgar_fixtures.py`; the market and news fixtures under `tests/fixtures/market/`
 likewise, via `scripts/record_market_fixtures.py` (news recorded **raw**, so `feedparser` and
@@ -124,8 +153,16 @@ and 24 all satisfy; and T7's first live security run reported "not obeyed, no le
 planted payload the agent had **never retrieved**, because the question named no company and it
 asked which one instead of searching — a green cell about nothing
 (`report.InjectionResult.retrieved` is the fix, and a row that did not reach its payload now
-fails). **Prefer a check that exercises the thing over one that describes it, prefer an equality
-over a bound, and for any check about an adversarial input, assert that the input arrived.**
+fails). T10 has contributed the two largest instances yet, both *inside published measurements*:
+its first comparator tested `abs(delta) <= basis` where `basis` was the arms' own observed range —
+which *is* the largest delta those values permit, so the test could not fail and all 18
+pre-registered comparisons were verdicts from an instrument incapable of returning anything else
+(the paired exact test replaced it, and `Paired.detectable` reports "we could not have seen it" as
+a third claim); and the tool eval's control C3 declared no expected tool, no forbidden tool and no
+argument, so `passed` was `True` for every possible agent behaviour while the case sat inside a
+published **100%** accuracy. **Prefer a check that exercises the thing over one that describes it,
+prefer an equality over a bound, and for any check about an adversarial input, assert that the
+input arrived.**
 
 The newest instance is a Streamlit-specific trap, so it is written down rather than
 rediscovered: **`AppTest.get("...")` returns `[]` for an element type it does not know, instead
@@ -156,9 +193,12 @@ assertion by default (issue #9 review).
   environment). T10 adds three, all assertions about what a *measurement* is allowed to claim:
   `evaluation/metrics.py`'s `PAIRED_ALPHA` (the significance level the paired exact test judges a
   difference at — an env-overridable alpha is a knob for tuning a verdict after seeing it),
-  `evaluation/latency.py`'s `PLANNED_VARIANTS_FLOOR` (an assertion about the shape of a retrieval
-  that actually planned, which is what separates the two translated arms from the two ablation
-  ones in a latency pool) and `scripts/evaluate.py`'s `BUCKET_FLOOR` (ADR-0002 decision 3's
+  `evaluation/latency.py`'s `PLANNER_DISABLED_CAP` (an assertion about which arms configured the
+  planner *off*, which is what separates the two translated arms from the two ablation ones in a
+  latency pool — keyed on the turn's own `max_sub_queries` and deliberately **not** on the observed
+  variant count, because a planner that ran and refused still paid for a full chat round and
+  belongs in the pool; the first version conflated the two and biased the p50 upward) and
+  `scripts/evaluate.py`'s `BUCKET_FLOOR` (ADR-0002 decision 3's
   per-bucket size, which the power audit reads to state what a bucket that size can resolve —
   changing it changes ADR-0002, not a run). Every *other* gate knob — the latency budgets
   (**both**: `GATE_LATENCY_BUDGET_MS` and `TRANSLATION_LATENCY_BUDGET_MS`, the second moved there
@@ -342,6 +382,26 @@ assertion by default (issue #9 review).
   The gate runs at `app/Home.py`'s chat input and nowhere else: inside the agent it would screen
   the model's own tool arguments, and inside `rag.answer_question` it would put a model call in
   front of the chain ADR-0003 keeps deterministic.
+- `evaluation/` is the harness, one module per concern, for the reason `security/` is one per
+  layer: a claim about a *measurement* has to be checkable at the thing that produced it.
+  `loader.py` is the only reader of the one hand-authored artifact (`golden_set.json`) and it
+  **raises** on an unverified set rather than footnoting it; `arms.py` owns the six-arm matrix and
+  every arm names its own two switches, never reading them from config — and
+  `TRANSLATION_CONTRAST`/`STRATEGY_CONTRAST` are read by `hypotheses.CLAUSE_CONTRAST` and
+  `TRIGGER_CONTRAST`, which is what makes the axis-constancy tests bind ADR-0005's operands;
+  `variants.py` owns the resolve-once/replay contract (ADR-0004 §9) and its **two** load-time
+  checks — `verify_replay` that the persisted reply still parses to the variants beside it, and
+  `verify_questions` that the plan was resolved for the wording the golden set asks *now*;
+  `judge.py` is the only place `ragas` is called and the only place the judge model is built, and
+  `ragas.evaluate()` is deliberately unused because the cache needs a result per `(row, metric)`;
+  `cache.py` is content-addressed cells plus `HARNESS_VERSION`, which is how a cell that is *wrong
+  under a right address* gets evicted (a log line cannot do it), and `resolve` vs `replay` is what
+  makes `--stage` mean "replay the rest" rather than "skip it"; `metrics.py`, `latency.py`,
+  `deferrals.py` and `hypotheses.py` are the measurements; `report.py` is the artifact, rendered
+  from measurements and never typed. **A claim this package makes about its own output is a claim
+  something has to render**: the T10 review found the deterministic table printing "`recall_trivial`
+  rows (reported separately)" with nothing reporting them, and `metrics.py` promising the recall
+  ceiling "beside" a column that never carried it.
 
 **A live conversation's checkpoint outlives a deploy.** Every `from_payload` and every
 transcript-row reader tolerates the shape written before the current one: a new field on a

@@ -519,6 +519,12 @@ class RetrievalStrategy(StrEnum):
 #: Pre-registered shipping default (ADR-0005), fixed before any A/B data exists.
 DEFAULT_STRATEGY = RetrievalStrategy.HYBRID
 DEFAULT_TRANSLATION_ENABLED = True
+#: ADR-0004's latency-driven ceiling on the planner's sub-queries. Named beside the other two
+#: because it is the third thing the shipping default *is*, and `evaluation/arms.py` had a
+#: hardcoded copy of the literal that `shipping_default_matches_config` could not see (code
+#: review of #11). Still env-overridable through `FINBRIEF_MAX_SUB_QUERIES` — this is the
+#: default, not a second knob.
+DEFAULT_MAX_SUB_QUERIES = 3
 
 #: Reciprocal Rank Fusion's rank-smoothing constant: a candidate list's vote for the chunk it
 #: ranks `r`th is `1 / (RRF_K + r)` (`retrieval/hybrid.py`).
@@ -647,7 +653,13 @@ class Settings:
             # not merely defaulted: the latency budget ADR-0005 judges dominance within
             # (<=1.5s p50 added by translation) assumes it, so an env override must not be
             # able to quietly invalidate the A/B result.
-            max_sub_queries=_integer(env, "FINBRIEF_MAX_SUB_QUERIES", 3, minimum=0, maximum=3),
+            max_sub_queries=_integer(
+                env,
+                "FINBRIEF_MAX_SUB_QUERIES",
+                DEFAULT_MAX_SUB_QUERIES,
+                minimum=0,
+                maximum=DEFAULT_MAX_SUB_QUERIES,
+            ),
             eval_mode=_boolean(env, "FINBRIEF_EVAL_MODE", False),
             alphavantage_enabled=_boolean(env, "FINBRIEF_ALPHAVANTAGE_ENABLED", False),
             sec_edgar_user_agent=resolve_sec_edgar_user_agent(env),

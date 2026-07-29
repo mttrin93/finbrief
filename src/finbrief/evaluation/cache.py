@@ -52,6 +52,13 @@ class CacheDisabled(RuntimeError):
     """
 
 
+#: What a replay-only lookup returns when the store holds nothing for the key.
+#:
+#: A sentinel and not `None`: `None` is a legitimate cached value (a judge that could not score
+#: a row stores exactly that), so "absent" and "scored as absent" have to be different objects.
+MISSING = object()
+
+
 @dataclass(frozen=True, slots=True)
 class CacheStats:
     """What a kind's directory did during this process: the report quotes these.
@@ -61,11 +68,17 @@ class CacheStats:
     replayed rather than letting a reader assume a cold run. `malformed` is here for the reason
     `EventLog.malformed` is: a half-unreadable store presenting as a complete one is how a
     re-run quietly costs more than the report says.
+
+    `absent` is the replay-only miss: a cell `--stage` was told not to run and the store did not
+    hold. **Its own counter rather than a miss**, because a miss is spend and this one is the
+    opposite — it is the cell the artifact will report as absent, and a reader has to be able to
+    tell "not measured because not asked for" from "not measured because it failed".
     """
 
     hits: int = 0
     misses: int = 0
     malformed: int = 0
+    absent: int = 0
 
     @property
     def total(self) -> int:
@@ -131,6 +144,29 @@ class Cache:
         self._write(path, key=key, value=value)
         return value
 
+    def replay(self, kind: str, key: Mapping[str, Any]) -> Any:
+        """The stored value for `key`, or `MISSING` — never a paid call.
+
+        **What `--stage` actually means.** `scripts/evaluate.py` documents skipped stages as
+        replaying from the cache, and it implemented them as *not happening at all*: `--stage
+        judge` filled every answer with `None` and `--stage report` — documented as free and
+        therefore always re-runnable — rendered the whole RAGAs table empty over 560 cached
+        judge cells (code review of #11). Gating on what the store holds rather than on the flag
+        is what makes the documented contract true, and a stage that *is* asked for still pays
+        through `resolve`.
+        """
+        if self._root is None:
+            raise CacheDisabled(
+                f"the {kind!r} stage asked to replay a cached value and no cache directory is "
+                f"configured. Pass one (scripts/evaluate.py --cache-dir)."
+            )
+        cached = self._read(self._path(kind, key))
+        if cached is None:
+            self._count(kind, absent=1)
+            return MISSING
+        self._count(kind, hits=1)
+        return cached["value"]
+
     def _path(self, kind: str, key: Mapping[str, Any]) -> Path:
         assert self._root is not None
         return self._root / kind / f"{digest(key)}.json"
@@ -140,6 +176,14 @@ class Cache:
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
+            return None
+        # `UnicodeDecodeError` is inside the tolerant path and not outside it: these values are
+        # full of `§`, em dashes and curly quotes, so a truncation landing mid-codepoint raises
+        # here rather than in `json.loads` — and it is not a `JSONDecodeError`, so it killed the
+        # run the module docstring promises to keep (code review of #11).
+        except UnicodeDecodeError:
+            self._count(path.parent.name, malformed=1)
+            logger.warning("undecodable cache entry, recomputing: %s", path)
             return None
         try:
             entry = json.loads(raw)
@@ -163,16 +207,25 @@ class Cache:
         )
         os.replace(temporary, path)
 
-    def _count(self, kind: str, *, hits: int = 0, misses: int = 0, malformed: int = 0) -> None:
+    def _count(
+        self,
+        kind: str,
+        *,
+        hits: int = 0,
+        misses: int = 0,
+        malformed: int = 0,
+        absent: int = 0,
+    ) -> None:
         with self._lock:
-            self._bump(kind, hits=hits, misses=misses, malformed=malformed)
+            self._bump(kind, hits=hits, misses=misses, malformed=malformed, absent=absent)
 
-    def _bump(self, kind: str, *, hits: int, misses: int, malformed: int) -> None:
+    def _bump(self, kind: str, *, hits: int, misses: int, malformed: int, absent: int) -> None:
         current = self._stats.get(kind, CacheStats())
         self._stats[kind] = CacheStats(
             hits=current.hits + hits,
             misses=current.misses + misses,
             malformed=current.malformed + malformed,
+            absent=current.absent + absent,
         )
 
 

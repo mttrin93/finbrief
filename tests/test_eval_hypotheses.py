@@ -27,10 +27,14 @@ from finbrief.evaluation.judge import (
     EXCLUDED_FROM_HYPOTHESES,
 )
 from finbrief.evaluation.latency import (
+    WINDOW_FILE,
     NoSamples,
     SinkMissing,
+    Window,
     load_log,
+    load_window,
     p50,
+    save_window,
     token_spend,
     translation_cost,
 )
@@ -197,17 +201,28 @@ def test_a_null_result_does_not_refute_a_better_prediction():
     `Verdict`'s docstring said the arms may genuinely differ, and `Outcome.confirmed` collapsed
     that into `False` one line later. A prediction the sample cannot settle is `None` —
     neither confirmed nor refuted — and the verdict column has to say which.
+
+    **The fixture is what makes this test about a null result.** It used to be a unanimous
+    +0.004 shift over seven questions — `signed_rank_p` returns 2/128 on that, so the verdict
+    was always `BETTER` and the branch the test is named for was never reached; the assertions
+    were an `or` followed by a conditional, so the whole thing could only fail on a `WORSE`
+    verdict (code review of #11). These differences straddle zero at n=7, which is what a null
+    result looks like.
     """
-    flat = {"vector": series(), "hybrid": series(shift=0.004)}
-    cells = cells_for(Bucket.EXACT_IDENTIFIER, flat, CONTEXT_PRECISION)
+    cells = cells_for(
+        Bucket.EXACT_IDENTIFIER,
+        {
+            "vector": [0.30, 0.42, 0.51, 0.60, 0.68, 0.79, 0.88],
+            "hybrid": [0.34, 0.38, 0.55, 0.56, 0.72, 0.75, 0.92],
+        },
+        CONTEXT_PRECISION,
+    )
 
     result = next(o for o in outcomes(cells) if o.prediction.id == "H1")
 
-    assert result.measured is Verdict.BETTER or result.confirmed is None
-    # The shift is unanimous, so this fixture pins the *wording* rather than the direction:
-    # whatever the verdict, it is never the word "refuted" without a resolved loss.
-    if result.measured is not Verdict.WORSE:
-        assert result.verdict_text != "refuted"
+    assert result.measured is Verdict.NOT_DETECTED
+    assert result.confirmed is None, "neither confirmed nor refuted"
+    assert result.verdict_text != "refuted"
 
 
 def test_an_undetectable_comparison_is_not_a_refutation_and_names_its_n():
@@ -636,3 +651,123 @@ def test_token_spend_counts_each_field_against_its_own_denominator(tmp_path):
     assert spend.output_calls == 1
     assert spend.lines == 3
     assert spend.unmetered_lines == 1
+
+
+def test_a_refusal_is_read_from_the_planner_line_and_not_from_the_variant_count(tmp_path):
+    """The count was `(retrieval.variants or 0) < 3` — a hardcoded copy of the shipped cap.
+
+    Two things wrong with it (code review of #11): `variants` also counts the deterministic
+    ticker form, and `3` is `arms.SHIPPED_MAX_SUB_QUERIES` retyped, so at any other cap the
+    count was simply wrong. `query_translation.sub_queries` is the emitter's own count of what
+    the planner returned. Here the planner returned two sub-queries — not a refusal — and the
+    retrieval carried two variants, which the old literal would have called one.
+    """
+    path = a_log(
+        tmp_path,
+        ("query_translation", {"latency_ms": 900, "input_tokens": 260}),
+        (
+            "query_translation",
+            {"max_sub_queries": 3, "sub_queries": 2, "turn_id": "hybrid+translation/S1"},
+        ),
+        (
+            "retrieval",
+            {
+                "latency_ms": 1400,
+                "translation": True,
+                "variants": 2,
+                "turn_id": "hybrid+translation/S1",
+            },
+        ),
+        ("retrieval", {"latency_ms": 1000, "translation": False}),
+    )
+
+    cost = translation_cost(read_events(path))
+
+    assert cost.refusal_lines_kept == 0, "two sub-queries came back; nothing refused"
+    assert cost.translated_samples == 1
+
+
+# --- the window: an offset only means something against the file it was taken from ---------
+
+
+def test_a_window_round_trips_through_the_cache_and_comes_back_flagged_replayed(tmp_path):
+    window = Window(path=str(tmp_path / "events.jsonl"), offset=4096, recorded_at="now")
+
+    save_window(tmp_path, window)
+    loaded = load_window(tmp_path)
+
+    assert (loaded.path, loaded.offset, loaded.recorded_at) == (window.path, 4096, "now")
+    assert loaded.replayed is True, "a re-render must say its figures are the measuring run's"
+    assert window.replayed is False
+
+
+def test_no_recorded_window_is_an_absence_and_not_offset_zero(tmp_path):
+    # Offset 0 means "the whole file", which is the pooled-runs reading the mark exists to stop.
+    assert load_window(tmp_path) is None
+
+
+def test_a_corrupt_window_file_is_an_absence_rather_than_a_crash(tmp_path):
+    (tmp_path / WINDOW_FILE).write_text("{not json", encoding="utf-8")
+    assert load_window(tmp_path) is None
+
+    (tmp_path / WINDOW_FILE).write_text('{"offset": 1}', encoding="utf-8")
+    assert load_window(tmp_path) is None, "a payload missing `path` describes no sink"
+
+
+def test_a_window_describes_only_the_sink_it_was_taken_against(tmp_path):
+    """`path` was persisted, loaded, and never compared — so the offset was applied blind.
+
+    Both readers slice whatever `FINBRIEF_LOG_FILE` resolves to now, so a rotated, recreated or
+    renamed sink had the artifact reporting an unrelated stream as "the measuring run of
+    {recorded_at}'s" — the attribution failure `Window` exists to eliminate, arriving through
+    the one field meant to prevent it (code review of #11).
+    """
+    sink = tmp_path / "events.jsonl"
+    sink.write_text("", encoding="utf-8")
+    other = tmp_path / "rotated.jsonl"
+    other.write_text("", encoding="utf-8")
+    window = Window(path=str(sink), offset=10, recorded_at="now")
+
+    assert window.describes(sink)
+    assert not window.describes(other)
+    assert not window.describes(None)
+
+
+def test_a_relative_and_an_absolute_spelling_of_one_sink_are_one_sink(tmp_path, monkeypatch):
+    sink = tmp_path / "events.jsonl"
+    sink.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert Window(path="events.jsonl", offset=0, recorded_at="now").describes(sink)
+
+
+def test_the_trigger_reports_how_many_buckets_had_the_power_to_speak():
+    """ADR-0005 §4 says *every* bucket, and only the powered ones can be counted.
+
+    Firing on 1 of 4 and firing on 4 of 4 are different strengths of evidence, and the artifact
+    has to say which — the ADR's own code-review amendment records the "every bucket" wording as
+    too strong (code review of #11).
+    """
+    powered = series()
+    thin = [0.1, 0.2, 0.3]
+    cells = cells_for(
+        Bucket.EXACT_IDENTIFIER,
+        {
+            "vector+translation": powered,
+            "hybrid+translation": series(shift=0.004),
+        },
+        CONTEXT_PRECISION,
+    ) + cells_for(
+        Bucket.SEMANTIC,
+        {
+            "vector+translation": thin,
+            "hybrid+translation": [0.2, 0.3, 0.4],
+        },
+        CONTEXT_PRECISION,
+    )
+
+    trigger = reexamination_trigger(cells)
+
+    assert trigger.resolving == 1, "one bucket had enough differing pairs; the other did not"
+    assert Bucket.SEMANTIC in trigger.undetectable
+    assert trigger.resolving < len(trigger.per_bucket)

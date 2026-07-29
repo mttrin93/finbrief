@@ -17,9 +17,11 @@ import pytest
 from finbrief.evaluation.deferrals import (
     AdviceResidue,
     BracketAdherence,
+    InstrumentDead,
     Rate,
     advice_residue,
     bracket_adherence,
+    citation_support,
     cited_sentences,
     divergence,
 )
@@ -141,20 +143,55 @@ def test_non_numeric_and_unresolved_markers_are_counted_apart(tmp_path):
     assert result.uncited == 0
 
 
-def test_adherence_never_goes_negative_when_one_turn_fails_several_ways(tmp_path):
+def test_one_turn_failing_several_ways_costs_the_rate_exactly_one_turn(tmp_path):
+    """The unit of the rate is a turn, and the marker totals may not enter its arithmetic.
+
+    This replaces a test that asserted `clean.hits == 0` over a single failing turn — satisfied
+    by the `max(…, 0)` clamp *and* by the bug the clamp was hiding, since one turn's denominator
+    cannot go negative anyway (code review of #11). Three turns is the smallest fixture that
+    tells the two apart: `uncited` counts turns while `unresolved` and `non_numeric` count
+    markers, so the old `turns - (uncited + unresolved + non_numeric)` gave `3 - (1 + 2 + 2) =
+    -2 → 0` and published **0%** where two of the three turns were clean.
+    """
     log = a_log(
         tmp_path,
         (
             "citation_markers",
             {"sources": 5, "resolved": 0, "unresolved": [9, 10], "non_numeric": 2},
         ),
+        ("citation_markers", {"sources": 5, "resolved": 3, "unresolved": [], "non_numeric": 0}),
+        ("citation_markers", {"sources": 4, "resolved": 1, "unresolved": [], "non_numeric": 0}),
     )
 
-    assert bracket_adherence(log).clean.hits == 0
+    result = bracket_adherence(log)
+
+    assert result.turns_with_sources == 3
+    assert result.dirty == 1, "one failing turn, however many ways it failed"
+    assert (result.unresolved, result.non_numeric) == (2, 2), "marker totals stay marker totals"
+    assert result.clean.hits == 2
+    assert result.clean.rate == pytest.approx(2 / 3)
+
+
+def test_a_turn_failing_two_ways_at_once_is_still_one_dirty_turn(tmp_path):
+    """`uncited` and a bad marker on the same turn must not double-count."""
+    log = a_log(
+        tmp_path,
+        (
+            "citation_markers",
+            {"sources": 5, "resolved": 0, "unresolved": [9], "non_numeric": 0},
+        ),
+        ("citation_markers", {"sources": 5, "resolved": 2, "unresolved": [], "non_numeric": 0}),
+    )
+
+    result = bracket_adherence(log)
+
+    assert (result.uncited, result.unresolved) == (1, 1)
+    assert result.dirty == 1
+    assert result.clean.rate == pytest.approx(0.5)
 
 
 def test_adherence_over_no_turns_is_absent():
-    assert BracketAdherence(0, 0, 0, 0).clean.rate is None
+    assert BracketAdherence(0, 0, 0, 0, 0).clean.rate is None
 
 
 # --- 3. layer 4's residue ------------------------------------------------------------
@@ -430,3 +467,103 @@ def test_the_unit_is_one_sentence_marker_pair_not_one_sentence():
     assert result.rate.total == 2, "two markers on one sentence are two observations"
     assert (result.supported, result.unsupported) == (1, 1)
     assert result.rate.label == "cited-marker support"
+
+
+# --- the cited-sentence splitter: crude is fine, truncating is not -----------------------
+
+
+def test_a_sentence_is_not_cut_at_an_abbreviation_before_its_citation():
+    """The split at `U.S. ` removed the subject of the claim before the judge saw it.
+
+    Measured on this run's own cache (code review of #11): the M3 answer read "…subject to U.S.
+    Department of Commerce approval [3][4]" and the pair the judge scored was the fragment
+    `"Department of Commerce approval [3][4]."`, which scored 0.0 and 0.5 — three of the eleven
+    "no support" pairs in the first artifact were fragments like this, so the published 31% was
+    partly a measurement of the splitter.
+    """
+    answer = "Exports are subject to U.S. Department of Commerce approval [3][4]."
+
+    (cited,) = cited_sentences(answer)
+
+    assert cited.sentence == answer
+    assert cited.ranks == (3, 4)
+
+
+def test_a_numbered_list_item_is_not_cut_off_from_its_own_claim():
+    answer = "Revenue rose in two segments. 1. **More Personal Computing** grew 3% [1][5]."
+
+    sentences = [cited.sentence for cited in cited_sentences(answer)]
+
+    assert sentences == ["1. **More Personal Computing** grew 3% [1][5]."]
+
+
+def test_real_sentence_boundaries_still_split():
+    """The repair must not turn the splitter off — a two-claim answer is still two claims."""
+    answer = "Tesla lists supply concentration [1]. Ford lists warranty costs [2]."
+
+    assert [c.ranks for c in cited_sentences(answer)] == [(1,), (2,)]
+
+
+@pytest.mark.parametrize(
+    "abbreviation", ["Inc.", "Corp.", "No.", "Ltd.", "e.g.", "vs.", "J.P."]
+)
+def test_the_abbreviation_list_covers_the_forms_a_filing_uses(abbreviation):
+    answer = f"The filer, Acme {abbreviation} Widgets, reports a loss [1]."
+
+    (cited,) = cited_sentences(answer)
+
+    assert cited.sentence == answer
+
+
+# --- layer 4's residue needs a live instrument to be a measurement -----------------------
+
+
+def test_a_validator_that_refuses_none_of_its_controls_is_reported_as_dead():
+    """A 100% residue is also what a fail-open returns, and the two were one observation.
+
+    `security.advice.validate_answer` fails open by design — any exception out of
+    `Guard.validate` becomes `AdviceVerdict(refused=False)` — and this pass reads only
+    `verdict.refused`, so a broken Guard published as "layer-4 residue: 100%" (code review of
+    #11). The controls are advice the rules provably catch.
+    """
+    with pytest.raises(InstrumentDead):
+        advice_residue(
+            ["the risk/reward looks asymmetric"],
+            validate=lambda _: Verdict(refused=False),
+            controls=["You should buy Tesla."],
+        )
+
+
+def test_a_live_validator_records_how_many_controls_it_caught():
+    caught = {"You should buy Tesla."}
+
+    result = advice_residue(
+        ["the risk/reward looks asymmetric"],
+        validate=lambda text: Verdict(refused=text in caught),
+        controls=sorted(caught),
+    )
+
+    assert (result.controls, result.controls_caught) == (1, 1)
+    assert result.rate.total == 1, "a control is not in the rate it validates"
+    assert result.rate.rate == pytest.approx(1.0)
+
+
+def test_no_controls_at_all_still_measures_what_it_is_given():
+    """The check is opt-in per caller, so every existing test keeps its meaning."""
+    result = advice_residue(["probe"], validate=lambda _: Verdict(refused=False))
+
+    assert result.residue == ("probe",)
+    assert result.controls == 0
+
+
+def test_a_cell_missing_a_field_raises_rather_than_matching_nothing():
+    """A `getattr(..., None)` here reports a measured deferral as not measured.
+
+    `citation_support` selected cells with `getattr(cell, "arm", None) != arm`, so a renamed
+    `Cell` field matched no cell, the rate's denominator was zero, and the artifact printed
+    "**not measured** (0 observations)" on a run that had measured it (code review of #11).
+    """
+    incomplete = SimpleNamespace(answer="A claim [1].", retrieval=SimpleNamespace(contexts=()))
+
+    with pytest.raises(AttributeError, match="not measured"):
+        citation_support([incomplete], arm="hybrid+translation", judge_sentence=lambda *_: 1.0)
