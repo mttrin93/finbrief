@@ -280,6 +280,9 @@ def _findings_sections(
         ),
     ]
     sections.append(("## Latency and token spend", _latency_body(sink)))
+    sections.append(
+        ("## Deferred measurements — reported, or named as not run", report.deferrals_section())
+    )
     return tuple(sections)
 
 

@@ -226,3 +226,29 @@ def test_the_headline_block_omits_the_fenced_metric():
     assert "context precision" in block
     assert "1344" in block
     assert "deliberately absent" in block
+
+
+def test_an_unmeasured_deferral_says_so_rather_than_being_omitted():
+    # "An unscored criterion reads as a passed one" — #9's comment on the AC-1 pairing names
+    # this exactly. All four are listed whether they ran or not, and an absent one is words
+    # rather than a gap a reader has to notice.
+    from finbrief.evaluation.report import DEFERRALS, deferrals_section
+
+    rendered = deferrals_section()
+
+    assert len(DEFERRALS) == 4
+    for name, _, _ in DEFERRALS:
+        assert name in rendered
+    assert rendered.count("**not measured by this run**") == 4
+    assert "too small to publish" in rendered
+
+
+def test_a_measured_deferral_replaces_the_not_measured_wording():
+    from finbrief.evaluation.report import DEFERRALS, deferrals_section
+
+    name = DEFERRALS[0][0]
+
+    rendered = deferrals_section({name: "0 verbatim of 14 searches"})
+
+    assert "0 verbatim of 14 searches" in rendered
+    assert rendered.count("**not measured by this run**") == 3

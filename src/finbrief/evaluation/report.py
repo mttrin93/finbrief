@@ -514,3 +514,72 @@ def headline_section(
         "as a headline number would be quoting a figure that moves between runs.",
     ]
     return "\n".join(lines)
+
+
+#: The four measurements earlier tickets deferred to T10, and what each needs.
+#:
+#: Rendered into the artifact **whether or not they ran**, because an unscored criterion reads
+#: as a passed one — the failure #9's comment on the AC-1 pairing names explicitly ("what must
+#: not happen is the third option *without* the sentence"). Three of the four need live agent
+#: turns, which is a different and nondeterministic instrument from the chain these tables
+#: measure.
+DEFERRALS: tuple[tuple[str, str, str], ...] = (
+    (
+        "agent-vs-original query divergence rate",
+        "T4 (ADR-0003 amendment §2)",
+        "`agent_query.verbatim` over live agent turns",
+    ),
+    (
+        "square-bracket rule adherence rate",
+        "T5 (ADR-0006 T7 amendment §4)",
+        "`citation_markers` over live agent turns",
+    ),
+    (
+        "layer 4's residue — advice phrased so no rule matches",
+        "T7 (ADR-0006 T7 amendment §4)",
+        "advice probes through the live agent and `security.advice.validate_answer`",
+    ),
+    (
+        "faithfulness on markers that resolve but sit on unsupported claims",
+        "T3/T5",
+        "per-sentence NLI against the *cited* chunk, not the whole context set",
+    ),
+)
+
+
+def deferrals_section(measured: Mapping[str, str] | None = None) -> str:
+    """The deferred measurements, each either reported or explicitly named as not run.
+
+    `measured` maps a deferral's name to its result. Anything absent renders as **not measured
+    by this run**, which is the honest form of "we did not get to it" — a row in a table
+    rather than an omission a reader has to notice.
+    """
+    measured = measured or {}
+    lines = [
+        "Four measurements were deferred to this ticket by earlier ones. They are listed here "
+        "whether or not they ran, because an unscored criterion reads as a passed one. Three "
+        "of "
+        "the four need **live agent turns**, which is a different and nondeterministic "
+        "instrument "
+        "from the chain every table above measures — so they belong beside the RAGAs tables "
+        "and "
+        "never inside them.",
+        "",
+        "| deferred measurement | from | instrument | result |",
+        "|---|---|---|---|",
+    ]
+    for name, source, instrument in DEFERRALS:
+        result = measured.get(name, "**not measured by this run**")
+        lines.append(f"| {name} | {source} | {instrument} | {result} |")
+    if not measured:
+        lines += [
+            "",
+            "None of the four ran. The events they read are emitted and their readers exist "
+            "(`observability/events.py`, `evaluation/latency.py`); what is missing is a "
+            "live-run "
+            "sample large enough to publish a rate from. The only sample that exists is the "
+            "one "
+            "ADR-0003's T4 amendment already records — 0 verbatim of 2 searches across two "
+            "conversations — and that amendment says itself that it is too small to publish.",
+        ]
+    return "\n".join(lines)

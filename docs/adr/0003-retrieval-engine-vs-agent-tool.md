@@ -186,3 +186,48 @@ upstreams, and whether a given one honours it is not something we can assert. Th
 the second line and not the first. §3's register is what makes the failure impossible; this only
 makes it rare, which is worth having for the measurement but is not what the correctness rests
 on.
+
+---
+
+## Amendment (ticket T10, issue #11) — what the harness measures, and the four deferrals' status
+
+**The validity gap this ADR commits to stating is stated, and it is now stated with a mechanism
+behind it.** The headline RAGAs and A/B numbers come from `rag.answer_question` and `retrieve()`
+driven directly, question by question, exactly as §1 requires. Two details are worth recording
+because they are the seam holding.
+
+**1. The harness drives the chain unmodified, and checks that it did.** Scoring faithfulness over
+an arm's contexts needs an answer generated over *those* contexts, and `answer_question` owns its
+own retrieval — so the obvious shortcut is to call the generation half directly over the contexts
+the arm was scored on. That was written and then rejected: it is a second code path through the
+thing being measured, which is exactly what keeping `rag.answer_question` callable exists to
+avoid. Instead the chain runs with the arm's own configuration and its replayed planner, and the
+contexts it returns are compared against the ones the arm was scored on; a mismatch raises
+`ContextDrift` and stops the run rather than scoring an answer against contexts the scored
+retrieval never surfaced. The cost is one extra embedding round per cell, accepted and recorded.
+
+**2. The `tool-augmented` bucket is scoreable on faithfulness *because* of this split.** A chain
+answer carries no tool-derived sentence — the chain calls no tools — so ADR-0002's amendment's
+worry about a depressed number does not arise at this seam. The full reasoning is in that
+amendment's T10 entry; what belongs here is that it is a consequence of §1's separation rather
+than a special case bolted onto it.
+
+**The four deferrals earlier tickets handed T10, and their honest status.** Three of the four need
+live *agent* turns rather than chain runs, which is a different (and nondeterministic) instrument
+from the one this ADR's numbers come from — so they are reported beside the RAGAs table, never
+inside it, and an unrun measurement is named as unrun rather than left to be assumed:
+
+| deferral | from | instrument | status |
+|---|---|---|---|
+| agent-vs-original query divergence rate | T4, §2 above | `agent_query.verbatim` in a live log | **not measured by this ticket** |
+| bracket-rule adherence rate | T5 | `citation_markers` in a live log | **not measured by this ticket** |
+| layer 4's residue — advice no rule matches | T7 | probes through the live agent + `validate_answer` | **not measured by this ticket** |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **not measured by this ticket** |
+
+All four remain **instrumented and unmeasured**, which is the same distinction §2 draws about the
+verbatim rule itself: the events are emitted, the readers exist
+(`observability/events.py`, `evaluation/latency.py`), and nothing has yet run the agent often
+enough to publish a rate. The sample that does exist is the one §2 already records — 0 verbatim of
+2 searches across two conversations — and it is too small to publish as a rate, which is what that
+amendment says about it too. Saying so is the point: an unscored criterion reads as a passed one,
+and the honest form of "we did not get to it" is a row in a table rather than an omission.
