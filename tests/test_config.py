@@ -5,6 +5,8 @@ environment or a local `.env`.
 """
 
 import logging
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -269,6 +271,78 @@ def test_the_log_file_is_off_unless_a_path_is_named():
 def test_a_named_log_file_resolves_to_that_path():
     assert resolve_log_file({"FINBRIEF_LOG_FILE": "data/events.jsonl"}) == Path(
         "data/events.jsonl"
+    )
+
+
+# --- `.env.example`'s recommendation, bound to `.gitignore` ----------------------------
+#
+# One fact in two files with nothing between them: `.env.example` recommends a path and
+# `.gitignore` has to already ignore it. The rules there cover `data/` wholesale *and*
+# `events.jsonl` by name, which looks like belt and braces — but the braces only hold for a
+# changed *directory*. A changed **filename** (`logs/run.jsonl`, measured) is matched by
+# neither, and the run log it makes committable carries blocked questions' normalised text
+# (issue #10 review). So the two files are bound here, through git's own matcher rather than
+# through a description of it.
+
+REPO_ROOT = Path(__file__).parents[1]
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+#: Matches the recommendation whether it is commented out (which it is, and must be — see
+#: `resolve_log_file`) or live, so commenting it in or out cannot silently unbind this test.
+_LOG_FILE_LINE = re.compile(r"^\s*#?\s*FINBRIEF_LOG_FILE\s*=\s*(\S+)\s*$", re.MULTILINE)
+
+
+def recommended_log_path() -> str:
+    (path,) = _LOG_FILE_LINE.findall(ENV_EXAMPLE.read_text(encoding="utf-8"))
+    return path
+
+
+def test_the_env_example_recommendation_is_commented_out():
+    # The default-off half of the same fact: `cp .env.example .env` is the documented setup
+    # step, so a live line here is a sink every reader enables without deciding to.
+    body = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert re.search(r"^\s*#\s*FINBRIEF_LOG_FILE\s*=", body, re.MULTILINE), (
+        "shipping this uncommented makes 'off by default' false for anyone following the README"
+    )
+    assert not re.search(r"^FINBRIEF_LOG_FILE\s*=", body, re.MULTILINE)
+
+
+def test_the_recommended_sink_path_is_already_gitignored():
+    """Git's own matcher, not a substring search of `.gitignore`.
+
+    A run log is an artifact and carries the one user-derived field in the whole log. Asserting
+    that `.gitignore` *mentions* something would be a claim about prose; `git check-ignore` is
+    the thing that actually decides, and it is what fails here if the recommendation moves to a
+    filename the rules do not cover.
+    """
+    path = recommended_log_path()
+    result = subprocess.run(  # noqa: S603 — fixed argv, no shell, repo-local
+        ["git", "check-ignore", "--quiet", path],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode > 1:
+        pytest.skip(f"git could not answer for {path!r}: {result.stderr.decode().strip()}")
+    assert result.returncode == 0, (
+        f".env.example recommends {path!r} and .gitignore does not ignore it, so a recorded "
+        "run — including blocked questions' normalised text — is committable"
+    )
+
+
+def test_the_binding_notices_a_recommendation_git_would_not_ignore():
+    # The check that the check works, because a `check-ignore` wrapper that always returned 0
+    # would pass the test above forever. `logs/run.jsonl` is the concrete counter-example from
+    # the review: it matches neither `data/` nor `events.jsonl`.
+    result = subprocess.run(  # noqa: S603 — fixed argv, no shell, repo-local
+        ["git", "check-ignore", "--quiet", "logs/run.jsonl"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode > 1:
+        pytest.skip("git could not answer")
+    assert result.returncode == 1, (
+        "if this is ignored too, the test above cannot distinguish a covered path from any path"
     )
 
 
