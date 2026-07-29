@@ -21,6 +21,9 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -59,6 +62,12 @@ class JsonLinesFormatter(logging.Formatter):
             "logger": record.name,
             "event": getattr(record, "event", record.getMessage()),
         }
+        # Omitted rather than written as `null` when there is no turn in scope: an ingest run
+        # has no turns at all, and a key that is present-and-empty on every one of ~5,800
+        # ingest lines says nothing a missing key does not.
+        turn_id = getattr(record, "turn_id", None)
+        if turn_id is not None:
+            payload["turn_id"] = turn_id
         fields = getattr(record, "fields", None)
         if fields:
             payload["fields"] = fields
@@ -144,6 +153,44 @@ def configure_logging(
     return logger
 
 
+#: The turn every event on this thread belongs to, or `None` outside one. A `ContextVar`
+#: rather than a parameter threaded through `screen` → `answer` → the tool → `retrieve` →
+#: `fuse`, because that chain is eight signatures long and the value is the same at every
+#: step. `log_event` reads it; `turn` is the only writer.
+_TURN_ID: ContextVar[str | None] = ContextVar("finbrief_turn_id", default=None)
+
+
+@contextmanager
+def turn(turn_id: str) -> Iterator[str]:
+    """Tag every event emitted inside this block with `turn_id`.
+
+    **The join T10 (#11) needs, and the reason it is not line order.** A `retrieval` line
+    carries per-chunk provenance and — deliberately, since a variant is user-derived — no
+    question. Without an identifier the provenance can be aggregated but never *attributed*,
+    and the only other correlation available is position in the file: correct for a serial
+    harness, wrong the moment the agent issues two searches in one step, and asserted by
+    nothing either way. That is the check-that-cannot-fail class CLAUDE.md names.
+
+    The identifier is the caller's, not generated here, because a meaningful one is worth
+    more than a unique one: an evaluation harness names the golden-set row and the arm it is
+    running, so a surprising per-bucket number leads back to its own retrieval lines.
+    It must be **derived from nothing the analyst typed** — it lands in a kept log.
+
+    Nesting is the `ContextVar` semantics: an inner block wins and the outer value is
+    restored on exit.
+    """
+    token = _TURN_ID.set(turn_id)
+    try:
+        yield turn_id
+    finally:
+        _TURN_ID.reset(token)
+
+
+def current_turn() -> str | None:
+    """The turn in scope, or `None`. For a caller that has to *pass* the id somewhere."""
+    return _TURN_ID.get()
+
+
 def log_event(
     logger: logging.Logger, event: str, /, *, level: int = logging.INFO, **fields: Any
 ) -> None:
@@ -152,6 +199,14 @@ def log_event(
     `logger` and `event` are positional-only so that almost any field name is usable.
     `level` is the one reserved word: it selects the log level, so a payload cannot use it
     as a field key — give the datum a different name. The envelope's own `level` is
-    unreachable from `fields` either way, since fields are nested rather than flattened.
+    unreachable from `fields` either way, since fields are nested rather than flattened —
+    and so is `turn_id`, which is read from the context here rather than taken as a field.
+
+    The turn is read **at the call site**, not in the handler: the value belongs to the
+    context that emitted the event, and a handler is free to run somewhere else.
     """
-    logger.log(level, event, extra={"event": event, "fields": fields})
+    logger.log(
+        level,
+        event,
+        extra={"event": event, "fields": fields, "turn_id": _TURN_ID.get()},
+    )
