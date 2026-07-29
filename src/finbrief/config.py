@@ -566,6 +566,23 @@ class Settings:
     #: answering model is what the analyst's brief is worth. Raising one must not raise the
     #: other — which is exactly what a single field would do.
     classifier_model: str
+    #: The model RAGAs scores with (T10, #11) — the **judge**, and deliberately not
+    #: `chat_model`.
+    #:
+    #: ADR-0002 decision 1 separates the ground truth from the answering pipeline: candidate Q/A
+    #: pairs were drafted by a different model and hand-verified, so the references cannot be
+    #: circular. A judge that *is* the answering model puts the circularity back at the other
+    #: end of the same measurement — the pipeline grading its own output — and the whole reason
+    #: the golden set cost a day of reading filings is to avoid that. Its own field for the
+    #: reason `classifier_model` has one: three roles, three prices, and raising one must not
+    #: raise the others.
+    #:
+    #: The default is a *stronger* model than the answerer rather than a cheaper one, which is
+    #: the opposite of the gate's choice and for the opposite reason: the gate pays for one
+    #: YES/NO per turn, while a judge that misreads a filing passage silently moves every number
+    #: in the report. Measured cost of the difference over a full six-arm run: about $1.28
+    #: against $0.57 (docs/verification/evaluation.md records the arithmetic).
+    judge_model: str
     embedding_model: str
     retrieval_strategy: RetrievalStrategy
     query_translation_enabled: bool
@@ -601,6 +618,7 @@ class Settings:
             ),
             chat_model=_string(env, "FINBRIEF_CHAT_MODEL", "openai/gpt-4o-mini"),
             classifier_model=_string(env, "FINBRIEF_CLASSIFIER_MODEL", "openai/gpt-4o-mini"),
+            judge_model=_string(env, "FINBRIEF_JUDGE_MODEL", "openai/gpt-4.1-mini"),
             # Served by OpenRouter's /v1/embeddings, so it needs no key or base URL of
             # its own. One model for ingest and query — see retrieval/embeddings.py.
             embedding_model=_string(

@@ -26,6 +26,8 @@ dependencies = [
     "tiktoken>=0.13.0",
     "langgraph-checkpoint-sqlite>=3.1.0",
     "guardrails-ai>=0.10.2",
+    "ragas>=0.4.3",
+    "langchain-community<0.4",
 ]
 
 [dependency-groups]

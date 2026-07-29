@@ -302,9 +302,31 @@ def _block_uvloop_resolution() -> None:
     uvloop.Loop.create_connection = guarded_create_connection
 
 
+def _silence_ragas_telemetry() -> None:
+    """Turn off `ragas`' analytics POST for the whole session, before anything imports it.
+
+    The **seventh** egress path (T10, #11), and the second one that a dependency added *for*
+    measurement opens by default: `ragas._analytics.track` POSTs every metric completion to
+    `t.explodinggradients.com`. Measured with this guard installed and the switch absent — a
+    single `track()` call attempted `t.explodinggradients.com`, raised nothing, logged nothing,
+    and appeared in `EGRESS_ATTEMPTS`; `track` is decorated `@silent`.
+
+    Set here **as well as** in `finbrief.evaluation.judge`, which is what covers the script, for
+    the reason `security/advice.py` gives about the guardrails switch: two mechanisms that fail
+    independently, and neither is allowed to be the only one. Note the switch has to be in
+    place before the first read, because `ragas._analytics.do_not_track` is `lru_cache`d — which
+    is why this is a module-level call at conftest import and not a fixture.
+
+    Assigned rather than `setdefault`: a developer with `RAGAS_DO_NOT_TRACK=false` exported
+    would otherwise run the suite with tracking live.
+    """
+    os.environ["RAGAS_DO_NOT_TRACK"] = "true"
+
+
 _install_egress_guard()
 _block_curl_cffi()
 _block_uvloop_resolution()
+_silence_ragas_telemetry()
 
 #: Real EDGAR extractions, recorded by `scripts/record_edgar_fixtures.py`. Recorded rather
 #: than fetched because the suite is hermetic by contract (CLAUDE.md) — and recorded rather
