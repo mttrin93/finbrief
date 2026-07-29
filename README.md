@@ -300,6 +300,14 @@ the environment, so the app and the evaluation harness read the same switches (A
   it is the only one**: a blocked turn's gate-trigger line carries the *normalised* input, truncated
   to 500 characters, because a denylist you cannot audit is a denylist you cannot tune. An allowed
   turn logs counts and verdicts only.
+- `FINBRIEF_LOG_FILE` (**unset by default**, i.e. nowhere) appends those same lines to a file.
+  Unset, they exist only in the terminal that started the app and nothing survives the process —
+  so **turn it on for any run whose numbers you intend to report**: latency samples, token counts,
+  the agent-vs-original divergence rate and gate-trigger metadata are read back out of this file
+  and out of nothing else. `.env.example` recommends `data/events.jsonl`; the file is gitignored,
+  append-only and never rotated. Enabling it means keeping the one user-derived field above on
+  disk, which is the trade the bullet before this one describes. See ADR-0011 for the log's shape
+  and for what it deliberately does not carry.
 
 ## Development
 
@@ -347,6 +355,29 @@ It exists because three of the gate's claims cannot be met by a test — whether
 recognises a *novel* payload, whether a real model *obeys* a planted one, and the latency p50,
 which is a measurement. It exits non-zero on a failing suite, so it is usable as a gate and not
 only as a generator.
+
+### Recording a run
+
+Before any run whose numbers will be reported — an evaluation pass, a demo, a live session
+you intend to quote — **enable the event sink**:
+
+```bash
+FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py   # or in .env
+```
+
+Unset, `finbrief.*` events go to stderr only and vanish with the process. The evaluation
+harness ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)) reads
+four things back out of this file and out of nothing else: latency samples against ADR-0005's
+≤1.5 s p50 translation budget and ADR-0006's ≤1 s gate budget, token counts, the
+agent-issued-vs-original query divergence rate, and gate-trigger metadata. Read them with
+`observability.events.read_events`, which returns samples and a count of the lines that carried
+nothing — never a statistic, so a median is computed once, by whoever quotes it. Events emitted
+inside one turn share a `turn_id`, which is what lets a `retrieval` line's per-chunk provenance
+be attributed to the question that caused it.
+
+The file is gitignored, append-only and never rotated. Enabling it keeps a *blocked* question's
+normalised text on disk — the one documented exception to the no-user-content rule, capped at
+500 characters. ADR-0011 records the log's shape and what it deliberately omits.
 
 ### Building the knowledge base
 

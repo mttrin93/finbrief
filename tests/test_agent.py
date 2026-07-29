@@ -908,3 +908,46 @@ def test_a_turn_id_is_absent_rather_than_null_outside_a_turn(tmp_path, filings_s
     lines = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert lines, "the turn emitted something"
     assert all("turn_id" not in line for line in lines)
+
+
+def test_the_turn_line_totals_the_loops_own_calls(tmp_path, filings_store):
+    """A tool-using turn is several paid completions, and no single reply is its cost.
+
+    Scoped to *this* turn, which is the half a sum could get wrong invisibly: the checkpointer
+    replays every earlier turn's `AIMessage`, so an unscoped total bills the newest question for
+    the whole conversation and grows with it.
+    """
+    stream = io.StringIO()
+    configure_logging(logging.DEBUG, stream=stream)
+    metered = AIMessage(
+        "Tesla flags concentration [1].",
+        usage_metadata={"input_tokens": 900, "output_tokens": 40, "total_tokens": 940},
+    )
+    unmetered = AIMessage("Its debt is in the MD&A [4].")
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_search("Tesla risk factors", "call-1"),
+            metered,
+            a_search("Tesla debt", "call-2"),
+            unmetered,
+        ],
+    )
+
+    answer(TESLA_QUESTION, thread_id="t-1", agent=agent)
+    answer(FOLLOW_UP, thread_id="t-1", agent=agent)
+    logging.getLogger("finbrief").handlers.clear()
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    first, second = [line["fields"] for line in lines if line["event"] == "agent_turn"]
+    # The scripted `a_search` messages report no usage either, so turn 1 metered exactly one
+    # of its two calls — which is the denominator `metered_calls` exists to state.
+    assert (first["input_tokens"], first["output_tokens"], first["metered_calls"]) == (
+        900,
+        40,
+        1,
+    )
+    # Turn 2's own calls reported nothing, so its spend is absent — *not* turn 1's total
+    # carried forward, which is what an unscoped sum would have reported here.
+    assert "input_tokens" not in second

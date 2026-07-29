@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from finbrief.config import RetrievalStrategy, Settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
+from finbrief.observability.tokens import usage_fields
 from finbrief.prompts import NO_CONTEXT_FALLBACK, SYSTEM_PROMPT, user_message
 from finbrief.retrieval.retrieve import Context, retrieve
 
@@ -106,6 +107,9 @@ def answer_question(
         # evidence on purpose; see `prompts.NO_CONTEXT_FALLBACK` for why, and
         # `docs/verification/retrieval-smoke.md` for the distances it would be chosen from.
         text = NO_CONTEXT_FALLBACK
+        # No model was called, so there is no spend to report — and `{}` says that, where a
+        # zeroed pair would claim a free generation happened (`observability/tokens.py`).
+        usage: dict[str, int] = {}
     else:
         # `settings` reaches generation too, not just retrieval: a harness that points an
         # injected `Settings` at a throwaway index would otherwise still generate with the
@@ -118,6 +122,7 @@ def answer_question(
             ]
         )
         text = reply.text
+        usage = usage_fields(reply)
     log_event(
         logger,
         "rag_answer",
@@ -138,5 +143,11 @@ def answer_question(
         retrieved_sections=sorted({context.section.value for context in contexts}),
         tickers=sorted({context.ticker for context in contexts}),
         latency_ms=round((time.perf_counter() - started) * 1000),
+        # The generation half of the measured chain's spend (#10's AC-1). Spread rather than
+        # passed as a pair, so a provider that reported nothing adds no keys — see
+        # `observability/tokens.py` for why an unreported count must not read as zero. The
+        # *retrieval* half is unmetered by construction: embeddings are priced per token too,
+        # but the embeddings API returns no usage this code path can see.
+        **usage,
     )
     return GroundedAnswer(text=text, contexts=contexts)

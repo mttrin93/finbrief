@@ -450,6 +450,20 @@ retrieval chain and landed with it — ticket T3, #5)
   so this is Tier-1 infrastructure, not polish.
 - Scope: log *capture* only (incl. token counts for cost analysis). The cost-*meter*
   sidebar UI is Tier-2 (Phase 8).
+- **What was actually left when this phase started, and what it cut** (T8, #10; ADR-0011).
+  A gap analysis first: every event this bullet list asks for was already emitted by an
+  earlier ticket **except token counts** — `grep usage_metadata` returned nothing across
+  `src/`, and three call sites held a reply that reported its own cost and dropped it. The
+  real remaining work was that events went to stderr and nowhere else, so the ticket is
+  persistence (`FINBRIEF_LOG_FILE`, off unless named), a reader (`observability/events.py`,
+  samples not statistics) and a **join** (`turn_id`, a `ContextVar` measured to cross
+  LangGraph's tool executor) — plus the tokens.
+- Cut, with the reasons recorded rather than inferred: the **gate classifier's tokens**
+  (`classify()` returns a bare `Verdict`, and it is the cheapest call in the system — so the
+  gate's spend is *unmeasured*, said out loud); **dollar cost** (Tier-2, Phase 8); a
+  **`docs/verification/` artifact** (every file there costs a paid run, and this phase's
+  consumer is Phase 7, whose own artifact is the evidence); and **log rotation** (a rotating
+  file renames mid-run and a globbing reader double-counts or misses).
 
 **Phase 7 — Evaluation (Tier-1, ~4 h)** *(see ADR-0002)*
 - Golden set: ~24–28 Q/A in four stratified buckets (semantic, exact-identifier,

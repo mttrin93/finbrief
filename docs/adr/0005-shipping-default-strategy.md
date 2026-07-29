@@ -16,7 +16,10 @@ before any A/B data exists.
   than a clean win). Per-question spread is reported alongside every bucket mean.
 - **Cost is part of dominance.** Dominance is judged within a latency budget of **≤1.5s
   p50 added by translation**, measured from the Phase-6 structured logs. A quality win
-  that breaches the budget does not count as dominant.
+  that breaches the budget does not count as dominant. (Those logs are persisted and
+  readable as of T8 — see ADR-0011 for the log's shape and for why the planner's latency and
+  token spend are on their own `query_translation` line rather than folded into the
+  answering path's: the cost this clause is about is the cost *translation* adds.)
 - **Adaptive per-query routing is rejected for Tier-1** (e.g. detect exact-identifier
   queries → skip translation) and listed as Tier-2 future work — it adds a classifier that
   would itself need evaluation.

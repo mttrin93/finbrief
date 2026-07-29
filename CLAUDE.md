@@ -249,9 +249,25 @@ assertion by default (issue #9 review).
   the same state and then runs them concurrently, so two searches in one step both number from
   `[1]` and nothing raises (issue #7 review). Anything that numbers sources by their position
   in a list, or offsets ranks anywhere else, reintroduces that collision.
-- All structured logging goes through `log_event` — one JSON object per line, and never a
-  secret in `fields`, and **never a question or a query variant**: a variant is derived from
-  user content and these lines are kept. Counts, lengths and verdicts only — which is why the
+- All structured logging goes through `log_event`, and since T8 `observability/events.py` is the
+  only **reader** — one emitter, one parser, because the two drifting apart is silent: a renamed
+  field reads back as `None`, `None` averages as nothing, and the number narrows its own
+  denominator. `Samples` therefore returns `absent` beside `present`, `Event.field` defaults to
+  `None` rather than `0` (an unreported token count is not a free call), and a *missing* sink
+  raises rather than reading as an empty log — "nobody enabled it" is not "this run emitted
+  nothing". `tests/test_event_log.py` round-trips through both halves, including one event whose
+  field is absent; that test is what forbids the drift. The sink itself is
+  `FINBRIEF_LOG_FILE`, **off unless named** (`configure_logging()` takes no arguments at four
+  entry points, and conftest strips `FINBRIEF_`, so a path-shaped default would have the
+  hermetic suite writing files) — which means it has to be *enabled* where the data matters:
+  `.env.example`, the README's "Recording a run", T11's walkthrough. A `turn_id` on the envelope
+  is what makes a `retrieval` line's provenance attributable; it comes from a `ContextVar`
+  (`logging_setup.turn`), which is **measured** to survive LangGraph's tool executor across a
+  thread boundary rather than assumed to. ADR-0011 records why the log is shaped as a run's
+  record rather than as the harness's primary input — T10 gets provenance from
+  `Retrieval.contexts` in-process, and needs the log only for latency, tokens and live-run facts.
+  Never a secret in `fields`, and **never a question or a query variant**: a variant is derived
+  from user content and these lines are kept. Counts, lengths and verdicts only — which is why the
   `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself
   carries the variant text for the RAG-viz panel to render (ADR-0004 amendment).
   **One exception, and it is bounded three ways** (ADR-0006 requires the normalised input in a
