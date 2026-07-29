@@ -784,7 +784,7 @@ def latency_section(cost: Any, spends: Sequence[Any], *, window: Any = None) -> 
         "| | ms | samples |",
         "|---|---:|---:|",
         f"| planner's chat round, p50 | {cost.planner_p50_ms:.0f} | {cost.planner_samples} |",
-        f"| retrieval p50, translation on (planner planning) "
+        f"| retrieval p50, translation on (planner enabled) "
         f"| {cost.retrieval_translated_p50_ms:.0f} | {cost.translated_samples} |",
         f"| retrieval p50, translation off | {cost.retrieval_untranslated_p50_ms:.0f} "
         f"| {cost.untranslated_samples} |",
@@ -807,12 +807,20 @@ def latency_section(cost: Any, spends: Sequence[Any], *, window: Any = None) -> 
         "reconstruction of what the shipped path pays; it is not a single timing of a live "
         "turn.",
         "",
-        f"**The translated pool is the arms that actually plan, not every arm carrying "
-        f"`translation: true`.** Four of the six do; the two ablation arms add only the "
-        f"deterministic ticker form, so averaging them in measures a cheaper operation than "
-        f"the budget is about. {cost.planner_off_lines} retrieval line(s) were excluded on "
-        f"that ground (`latency.PLANNED_VARIANTS_FLOOR`) — which also excludes a turn whose "
-        f"planner refused, so this is translation's cost *when it produces sub-queries*.",
+        f"**The translated pool is the arms whose configuration *enables* the planner, not "
+        f"every arm carrying `translation: true`.** Four of the six carry it and only two "
+        f"plan; the ablation arms add the deterministic ticker form and make no chat round at "
+        f"all, so averaging them in measures a cheaper operation than the budget is about. "
+        f"{cost.planner_disabled_lines} retrieval line(s) excluded on that ground, identified "
+        f"by their turn's own `max_sub_queries` (`latency.PLANNER_DISABLED_CAP`) rather than "
+        f"by how many variants came back.",
+        "",
+        f"**A planner that ran and refused stays in the pool**, and {cost.refusal_lines_kept} "
+        f"line(s) are in it on that basis. An earlier version of this filter keyed on the "
+        f"observed variant count and excluded anything under three, which conflated *disabled "
+        f"by configuration* with *ran and returned less*: a refusal still paid for a full chat "
+        f"round, and dropping refusals removes the cheap retrievals from a median of expensive "
+        f"ones — biasing the p50 **upward** and making this budget miss look worse than it is.",
         "",
         "| metered event | input tokens | output tokens | lines | unmetered lines |",
         "|---|---:|---:|---:|---:|",

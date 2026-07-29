@@ -205,15 +205,15 @@ component still has not been separately measured, and now the reason is known an
 future revision should state the condition over buckets **with the power to resolve a gain** and
 require some minimum count of them, rather than over all four.
 
-**3. The ≤1.5 s budget is missed at 3297 ms, and it is recorded as missed and left unamended.**
+**3. The ≤1.5 s budget is missed at 3138 ms, and it is recorded as missed and left unamended.**
 
 | | ms | samples |
 |---|---:|---:|
-| planner's chat round, p50 | 1760 | 48 |
-| retrieval p50, translation on (planner planning) | 1919 | 61 |
-| retrieval p50, translation off | 382 | 56 |
-| retrieval rounds translation adds, p50 | 1536 | — |
-| **total p50 added by translation** | **3297** | — |
+| planner's chat round, p50 | 1757 | 48 |
+| retrieval p50, translation on (planner enabled) | 1796 | 64 |
+| retrieval p50, translation off | 415 | 56 |
+| retrieval rounds translation adds, p50 | 1381 | — |
+| **total p50 added by translation** | **3138** | — |
 | this ADR's budget | 1500 | — |
 
 **Not amended to the measured value, deliberately.** ADR-0006 revised its gate budget from 800 ms to
@@ -224,12 +224,25 @@ There is no argument that 3.3 s of added latency is acceptable for an analyst's 
 number to wherever the measurement landed is pre-registration in reverse. So the budget stands at
 1500 ms and this ADR records that its shipping default **misses it by more than 2×**.
 
-**The earlier 2766 ms figure should not be quoted.** It was a median over a pooled window of the
-append-only sink — 13 appended runs, including the pre-fix run whose ablation cells made real planner
-calls — and it also averaged the two planner-*off* ablation arms into the "translation on" pool,
-which measures the deterministic ticker form's cost under a budget meant for the planner's. Both are
-fixed (ADR-0011's T10 amendment; `latency.PLANNED_VARIANTS_FLOOR`), and the honest number is worse
-than the pooled one.
+**Neither of the two earlier figures should be quoted, and the reasons differ.** 2766 ms was a
+median over a pooled window of the append-only sink — 13 appended runs, including the pre-fix run
+whose ablation cells made real planner calls — *and* it averaged the two planner-**off** ablation
+arms into the "translation on" pool, measuring the deterministic ticker form's cost under a budget
+meant for the planner's round. Both are fixed (ADR-0011's T10 amendment;
+`latency.PLANNER_DISABLED_CAP`).
+
+3297 ms was the first correction and it over-corrected. It excluded translated retrievals by their
+**observed variant count**, which conflates *disabled by configuration* with *ran and returned
+less*: a planner that **refused** still paid for a full chat round, and dropping refusals removes
+the cheap retrievals from a median of the expensive ones — biasing the p50 upward and making this
+miss look worse than it is. The exclusion now keys on the arm's own `max_sub_queries`, joined to the
+retrieval line through `logging_setup.turn` (a scope that module's docstring had described the
+evaluation harness using and which the harness did not set). 3 lines moved back into the pool — two
+identified refusals and one unattributable agent-stage retrieval, which is kept because absence of
+evidence is not evidence of a disabled planner — and the figure fell 159 ms to 3138.
+
+**The direction of every correction here is worth stating: two made the number worse and one made it
+better, and none was chosen for that.**
 
 **This is the second half of the default's problem, and it compounds the first.** This ADR judges
 dominance *within* the budget. Hybrid earns nothing detectable, and translation costs more than twice

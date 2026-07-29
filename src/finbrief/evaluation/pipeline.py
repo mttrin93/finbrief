@@ -34,6 +34,7 @@ from finbrief.evaluation.loader import Bucket, GoldenQuestion
 from finbrief.evaluation.metrics import RowScore, score_row
 from finbrief.evaluation.run import cached_map
 from finbrief.evaluation.variants import VariantSet
+from finbrief.observability.logging_setup import turn
 from finbrief.rag import answer_question
 from finbrief.retrieval.retrieve import Retrieval
 from finbrief.retrieval.vectorstore import (
@@ -194,15 +195,27 @@ def retrieve_cells(
 
     def produce(row: GoldenQuestion) -> dict[str, Any]:
         model = variants.planner(row.id) if arm.plans and variants is not None else None
-        retrieval = retrieve(
-            row.question,
-            strategy=arm.strategy,
-            translate=arm.translate,
-            k=k,
-            store=store,
-            settings=arm_settings,
-            model=model,
-        )
+        # **The turn scope `logging_setup.turn` was written for**, and the harness was not
+        # using it: its docstring says "an evaluation harness names the golden-set row and the
+        # arm it is running, so a surprising per-bucket number leads back to its own retrieval
+        # lines", and every line this stage emitted carried no `turn_id` at all. A claim in a
+        # docstring cannot fail (issue #11 review).
+        #
+        # It is also the join `latency.translation_cost` needs: `max_sub_queries` is on the
+        # `query_translation` line and the latency is on the `retrieval` line, and pairing them
+        # by position is correct only for a serial harness — this one runs six cells at once.
+        # Set inside `produce` rather than around `cached_map` because a `ContextVar` does not
+        # cross into a worker thread, and this function is what runs there.
+        with turn(f"{arm.name}/{row.id}"):
+            retrieval = retrieve(
+                row.question,
+                strategy=arm.strategy,
+                translate=arm.translate,
+                k=k,
+                store=store,
+                settings=arm_settings,
+                model=model,
+            )
         return retrieval.as_payload()
 
     payloads = cached_map(
@@ -267,17 +280,20 @@ def answer_cells(
 
     def produce(item: tuple[GoldenQuestion, Retrieval]) -> dict[str, Any]:
         row, scored = item
-        grounded = answer_question(
-            row.question,
-            strategy=arm.strategy,
-            translate=arm.translate,
-            k=k,
-            store=store,
-            settings=arm_settings,
-            translation_model=(
-                variants.planner(row.id) if arm.plans and variants is not None else None
-            ),
-        )
+        # Scoped like the retrieval stage: the chain retrieves again, so these lines are
+        # `retrieval` lines too and an unattributable one is what `turn` exists to prevent.
+        with turn(f"answer/{arm.name}/{row.id}"):
+            grounded = answer_question(
+                row.question,
+                strategy=arm.strategy,
+                translate=arm.translate,
+                k=k,
+                store=store,
+                settings=arm_settings,
+                translation_model=(
+                    variants.planner(row.id) if arm.plans and variants is not None else None
+                ),
+            )
         produced = [context.chunk_id for context in grounded.contexts]
         expected = [context.chunk_id for context in scored.contexts]
         if produced != expected:

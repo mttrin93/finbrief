@@ -45,23 +45,21 @@ from pathlib import Path
 from finbrief.config import TRANSLATION_LATENCY_BUDGET_MS
 from finbrief.observability.events import EventLog, read_events
 
-#: The fewest `variants` a retrieval must carry to count as "translation with the planner on".
+#: A `translation: true` retrieval whose turn reported this `max_sub_queries` had the planner
+#: **disabled by configuration** — the two ablation arms, whose only added variant is the
+#: deterministic ticker form and which make no chat round at all (ADR-0004 §6: a cap of 0
+#: removes the `model.invoke`, it does not truncate its output).
 #:
-#: Three: the original question (always variant 0, ADR-0004), the deterministic ticker form,
-#: and at least one planner sub-query. The two ablation arms run with `translation: true` and
-#: the planner off, so they reach two at most — and folding them into the translated pool
-#: measures the ticker form's cost under the budget meant for the planner's, across four arms
-#: where only two plan.
+#: Four of the six arms carry `translation: true` and only two of them plan, so averaging the
+#: ablations in measures the ticker form's cost under a budget meant for the planner's round.
 #:
-#: **The limitation this filter has, stated where the filter is**: a turn where the planner
-#: *refused* also lands under the floor and is excluded, so the reported delta is what
-#: translation costs *when it produces sub-queries* rather than an average over turns where it
-#: sometimes does not. `TranslationCost.planner_off_lines` carries the excluded count, so the
-#: exclusion is visible rather than inferred.
-#:
-#: An assertion about the shape of a retrieval and not a knob, so it lives here rather than in
-#: `config.py` — the same grounds as the ingestion thresholds.
-PLANNED_VARIANTS_FLOOR = 3
+#: **Keyed on the arm's configuration, not on the observed variant count**, and that correction
+#: matters in a direction worth naming. The first version excluded any translated retrieval
+#: returning fewer than three variants, which conflated "disabled by config" with "ran and
+#: returned less": a planner that **refused** still paid for a full chat round and belongs in
+#: the pool, and dropping refusals removes the cheap retrievals from a median of expensive
+#: ones — biasing the p50 *upward* and making the budget miss look worse than it is.
+PLANNER_DISABLED_CAP = 0
 
 
 class NoSamples(RuntimeError):
@@ -194,9 +192,13 @@ class TranslationCost:
     retrieval_untranslated_p50_ms: float
     translated_samples: int
     untranslated_samples: int
-    #: `translation: true` retrievals excluded from the translated pool because the planner was
-    #: off (the ablation arms) or refused. Reported, never silently dropped.
-    planner_off_lines: int
+    #: `translation: true` retrievals excluded because their arm **disabled** the planner by
+    #: configuration. Reported, never silently dropped.
+    planner_disabled_lines: int
+    #: Translated retrievals kept in the pool whose planner ran and returned no sub-query — a
+    #: refusal, which cost a chat round. Reported because the first version's variant-count
+    #: floor dropped exactly these, biasing the p50 upward.
+    refusal_lines_kept: int
     budget_ms: float
 
     @property
@@ -218,6 +220,22 @@ class TranslationCost:
     @property
     def within_budget(self) -> bool:
         return self.added_p50_ms <= self.budget_ms
+
+
+def _planner_caps(log: EventLog) -> dict[str, int]:
+    """`turn_id` -> the `max_sub_queries` that turn's translation ran under.
+
+    The join the exclusion needs: `max_sub_queries` is on the `query_translation` line and the
+    latency is on the `retrieval` line, and the harness scopes each cell with
+    `logging_setup.turn` so the two can be paired by identity rather than by position — which
+    would be correct only for a serial harness and this one runs six cells at once.
+    """
+    caps: dict[str, int] = {}
+    for event in log.of("query_translation"):
+        cap = event.field("max_sub_queries")
+        if event.turn_id is not None and cap is not None:
+            caps[str(event.turn_id)] = int(cap)
+    return caps
 
 
 def translation_cost(
@@ -242,37 +260,41 @@ def translation_cost(
         # docstring, and `query_translation.translate`'s own honest-absence comment).
         if event.field("input_tokens") is not None and event.field("latency_ms") is not None
     ]
+    caps = _planner_caps(log)
     translated: list[float] = []
     untranslated: list[float] = []
-    planner_off = 0
+    planner_disabled = 0
+    refusals_kept = 0
     for event in log.of("retrieval"):
         latency = event.field("latency_ms")
         if latency is None:
             continue
         if not event.field("translation"):
             untranslated.append(latency)
-        elif (event.field("variants") or 0) >= PLANNED_VARIANTS_FLOOR:
-            translated.append(latency)
-        else:
-            # A `translation: true` retrieval that added fewer than two variants had the planner
-            # **off** — the two ablation arms, whose only addition is the deterministic ticker
-            # form. Averaging them into the translated pool measures a cheaper operation than
-            # the one the budget is about and drags the delta down: four of the six arms carry
-            # `translation: true` and only two of them plan. Counted apart rather than dropped
-            # silently.
-            planner_off += 1
+            continue
+        cap = caps.get(str(event.turn_id)) if event.turn_id is not None else None
+        if cap == PLANNER_DISABLED_CAP:
+            planner_disabled += 1
+            continue
+        translated.append(latency)
+        # A planning arm that returned no sub-query refused, and a refusal cost a chat round.
+        # Counted so the pool's composition is visible rather than assumed: these are the
+        # turns the old variant-count floor dropped.
+        if cap is not None and (event.field("variants") or 0) < 3:
+            refusals_kept += 1
     return TranslationCost(
         planner_p50_ms=p50(planner, what="query_translation lines with token counts"),
         planner_samples=len(planner),
         retrieval_translated_p50_ms=p50(
-            translated, what="retrieval lines with translation on and the planner planning"
+            translated, what="retrieval lines with translation on and the planner enabled"
         ),
         retrieval_untranslated_p50_ms=p50(
             untranslated, what="retrieval lines with translation off"
         ),
         translated_samples=len(translated),
         untranslated_samples=len(untranslated),
-        planner_off_lines=planner_off,
+        planner_disabled_lines=planner_disabled,
+        refusal_lines_kept=refusals_kept,
         budget_ms=budget_ms,
     )
 

@@ -441,15 +441,24 @@ def test_an_all_undetermined_trigger_does_not_fire_and_names_the_gaps():
 
 
 def a_log(tmp_path, *events) -> str:
+    """A sink holding `events`, with `turn_id` on the **envelope** where the formatter puts it.
+
+    `JsonLinesFormatter` hoists `turn_id` out of the payload — a field named like an envelope
+    key would otherwise collide silently (`observability/events.py`) — so a fixture leaving it
+    in `fields` would build lines no emitter produces, and `Event.turn_id` would read `None` on
+    every one. That is the shape of double that proves nothing.
+    """
     path = tmp_path / "events.jsonl"
-    path.write_text(
-        "\n".join(
-            json.dumps({"ts": "2026-07-29T10:00:00+00:00", "event": name, "fields": fields})
-            for name, fields in events
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    lines = []
+    for name, fields in events:
+        payload = {"ts": "2026-07-29T10:00:00+00:00", "event": name}
+        body = dict(fields)
+        turn_id = body.pop("turn_id", None)
+        if turn_id is not None:
+            payload["turn_id"] = turn_id
+        payload["fields"] = body
+        lines.append(json.dumps(payload))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path)
 
 
@@ -520,32 +529,93 @@ def test_a_log_with_no_untranslated_retrieval_refuses_rather_than_assuming_zero(
         translation_cost(read_events(path))
 
 
-def test_a_planner_off_retrieval_is_not_counted_as_translations_retrieval_cost(tmp_path):
-    """The ablation arms carry `translation: true` and do not plan.
+def test_a_config_disabled_planner_is_excluded_and_a_refusal_is_not(tmp_path):
+    """The exclusion keys on the arm's configuration, not on how many variants came back.
 
-    Four of the six arms set `translation: true`; only two of them call the planner. The other
-    two add the deterministic ticker form alone, so averaging their retrievals into the
-    translated pool measures a cheaper operation than ADR-0005's budget is about and drags the
-    delta down. The `retrieval` event carries no arm, so the discriminator is the variant count
-    (`latency.PLANNED_VARIANTS_FLOOR`) — and the excluded lines are counted, not dropped.
+    Four of the six arms carry `translation: true` and only two plan, so the ablations' cheaper
+    retrievals must not be averaged under a budget meant for the planner's round. But an
+    earlier version keyed on the *observed* variant count and dropped anything under three,
+    which conflated "disabled by config" with "ran and refused" — and a refusal paid for a full
+    chat round. Dropping refusals removes the cheap retrievals from a median of expensive ones,
+    biasing the p50 **upward**, which makes the budget miss look worse than it is. So the key is
+    the turn's own `max_sub_queries`, joined through `logging_setup.turn`.
     """
     path = a_log(
         tmp_path,
         ("query_translation", {"latency_ms": 900, "input_tokens": 260}),
-        # Planned: original + ticker form + three sub-queries.
-        ("retrieval", {"latency_ms": 1400, "translation": True, "variants": 5}),
-        # Planner off: original + ticker form only. Same `translation: true`.
-        ("retrieval", {"latency_ms": 500, "translation": True, "variants": 2}),
+        # A planning arm: planner enabled, three sub-queries.
+        (
+            "query_translation",
+            {"max_sub_queries": 3, "sub_queries": 3, "turn_id": "hybrid+translation/S1"},
+        ),
+        (
+            "retrieval",
+            {
+                "latency_ms": 1400,
+                "translation": True,
+                "variants": 5,
+                "turn_id": "hybrid+translation/S1",
+            },
+        ),
+        # A planning arm whose planner **refused**: enabled, zero sub-queries, one variant. The
+        # chat round was paid for, so this belongs in the pool even though it looks cheap.
+        (
+            "query_translation",
+            {"max_sub_queries": 3, "sub_queries": 0, "turn_id": "hybrid+translation/S2"},
+        ),
+        (
+            "retrieval",
+            {
+                "latency_ms": 500,
+                "translation": True,
+                "variants": 1,
+                "turn_id": "hybrid+translation/S2",
+            },
+        ),
+        # An ablation arm: planner disabled by configuration, ticker form only.
+        (
+            "query_translation",
+            {"max_sub_queries": 0, "sub_queries": 0, "turn_id": "hybrid+normalisation/S1"},
+        ),
+        (
+            "retrieval",
+            {
+                "latency_ms": 450,
+                "translation": True,
+                "variants": 2,
+                "turn_id": "hybrid+normalisation/S1",
+            },
+        ),
         ("retrieval", {"latency_ms": 1000, "translation": False, "variants": 1}),
     )
 
     cost = translation_cost(read_events(path))
 
-    assert cost.translated_samples == 1, "the planner-off line must not be in the pool"
-    assert cost.planner_off_lines == 1
-    assert cost.retrieval_translated_p50_ms == 1400
-    # Folding the 500ms line in would have given a median of 950 and a delta of −50.
-    assert cost.retrieval_delta_p50_ms == 400
+    # The refusal is in, the config-disabled arm is out.
+    assert cost.translated_samples == 2
+    assert cost.planner_disabled_lines == 1
+    assert cost.refusal_lines_kept == 1
+    # Median of {1400, 500} = 950. Under the old variant-count floor the 500ms refusal was
+    # dropped and the median was 1400 — the upward bias this test pins.
+    assert cost.retrieval_translated_p50_ms == 950
+    assert cost.retrieval_delta_p50_ms == -50
+
+
+def test_an_unattributable_translated_retrieval_stays_in_the_pool(tmp_path):
+    # A `retrieval` line with no turn scope cannot be shown to come from a disabled-planner arm,
+    # and the ablation arms are the only ones that are — so the honest default is to keep it.
+    # Excluding on absence of evidence is what the old floor did.
+    path = a_log(
+        tmp_path,
+        ("query_translation", {"latency_ms": 900, "input_tokens": 260}),
+        ("retrieval", {"latency_ms": 1400, "translation": True, "variants": 1}),
+        ("retrieval", {"latency_ms": 1000, "translation": False}),
+    )
+
+    cost = translation_cost(read_events(path))
+
+    assert cost.translated_samples == 1
+    assert cost.planner_disabled_lines == 0
 
 
 def test_token_spend_counts_each_field_against_its_own_denominator(tmp_path):

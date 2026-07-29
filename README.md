@@ -340,6 +340,34 @@ is a denylist over the backends this repo can reach, not a proof — a new HTTP 
 new path, which is how three of the seven recorded breaches were found, in the two dependencies
 T7 and T10 added.
 
+### What the evaluation established about the shipping default: nothing
+
+The pre-registered default is `hybrid + translation` and **it is retained because the experiment
+could not resolve the question, not because it was validated** (ADR-0005's code-review amendment,
+requoted from [`docs/verification/evaluation.md`](docs/verification/evaluation.md)).
+
+Hybrid earns nothing detectable on any bucket. The point estimate on `exact-identifier` — the bucket
+hybrid exists to win — is **−0.087**. The one root-caused live case favours the simpler arm:
+`vector + normalisation` put the target chunk at rank 1 against `hybrid + translation`'s rank 2.
+Translation costs **3138 ms** p50 against a pre-registered budget of 1500 ms, and the budget is
+recorded as missed and left unamended, because moving a number to wherever the measurement landed
+is pre-registration in reverse. ADR-0005's §4 re-examination trigger fired on **one** bucket of
+four, the other three excluded as too underpowered to resolve a gain at all — and its condition
+says "every bucket", so as written it is not met. The falsification clause that protects the default
+**could not have fired on any bucket**: all eight cells undetectable, effective n as low as 1.
+
+**The default is currently held up by nothing that this run measured.** `vector + translation` is a
+live candidate this run could not rule out. What would settle it is a larger per-bucket `n` and
+nothing else: at ~7 questions per bucket the exact paired test resolves only near-unanimous effects,
+so **4 of 18** pre-registered comparisons carried a measurement at all and the rest are statements
+about the sample. That limit is a property of ADR-0002's bucket size, it was discovered after the
+fact, and it means the per-bucket A/B is a screen for large unanimous effects rather than a test of
+small ones.
+
+None of that is a defect in the pipeline. It is a measurement that came back saying *we cannot tell*,
+reported as that instead of as a result — which is the whole reason the pre-registration and the
+artifact are separate things.
+
 ### What the evaluation actually established: a prompt is an instrument, not a control
 
 The strongest generalisable claim this project's measurements produced is not a retrieval number.

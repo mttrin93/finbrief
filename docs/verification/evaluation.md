@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| generated | 2026-07-29 13:52 UTC |
+| generated | 2026-07-29 14:45 UTC |
 | stages run | resolve, retrieve, answer, judge, agent, report |
 | judge model | `openai/gpt-4.1-mini` (ragas 0.4.3) |
 | answering model | `openai/gpt-4o-mini` |
@@ -160,23 +160,25 @@ Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatc
 
 | | ms | samples |
 |---|---:|---:|
-| planner's chat round, p50 | 1760 | 48 |
-| retrieval p50, translation on (planner planning) | 1919 | 61 |
-| retrieval p50, translation off | 382 | 56 |
-| retrieval rounds translation adds, p50 | 1536 | — |
-| **total p50 added by translation** | **3297** | — |
+| planner's chat round, p50 | 1757 | 48 |
+| retrieval p50, translation on (planner enabled) | 1796 | 64 |
+| retrieval p50, translation off | 415 | 56 |
+| retrieval rounds translation adds, p50 | 1381 | — |
+| **total p50 added by translation** | **3138** | — |
 | ADR-0005's budget | 1500 | — |
 
 **Verdict: **over budget**.**
 
 **The planner's figure comes from the resolve pass, and that is a reconstruction rather than one measurement.** ADR-0004 §9's replay means the scored `+translation` arms serve the planner's reply from a stub, so their own `query_translation` lines record ~1 ms and no token counts — the harness only reads lines that reported spend, since a line with no `input_tokens` called no model. Adding that median to the retrieval delta is the honest reconstruction of what the shipped path pays; it is not a single timing of a live turn.
 
-**The translated pool is the arms that actually plan, not every arm carrying `translation: true`.** Four of the six do; the two ablation arms add only the deterministic ticker form, so averaging them in measures a cheaper operation than the budget is about. 59 retrieval line(s) were excluded on that ground (`latency.PLANNED_VARIANTS_FLOOR`) — which also excludes a turn whose planner refused, so this is translation's cost *when it produces sub-queries*.
+**The translated pool is the arms whose configuration *enables* the planner, not every arm carrying `translation: true`.** Four of the six carry it and only two plan; the ablation arms add the deterministic ticker form and make no chat round at all, so averaging them in measures a cheaper operation than the budget is about. 56 retrieval line(s) excluded on that ground, identified by their turn's own `max_sub_queries` (`latency.PLANNER_DISABLED_CAP`) rather than by how many variants came back.
+
+**A planner that ran and refused stays in the pool**, and 2 line(s) are in it on that basis. An earlier version of this filter keyed on the observed variant count and excluded anything under three, which conflated *disabled by configuration* with *ran and returned less*: a refusal still paid for a full chat round, and dropping refusals removes the cheap retrievals from a median of expensive ones — biasing the p50 **upward** and making this budget miss look worse than it is.
 
 | metered event | input tokens | output tokens | lines | unmetered lines |
 |---|---:|---:|---:|---:|
-| `query_translation` | 12968 (48 calls) | 2778 (48 calls) | 188 | 140 |
-| `agent_turn` | 191110 (10 calls) | 2787 (10 calls) | 10 | 0 |
+| `query_translation` | 12968 (48 calls) | 2879 (48 calls) | 188 | 140 |
+| `agent_turn` | 215357 (10 calls) | 2782 (10 calls) | 10 | 0 |
 
 An unmetered line is a call whose cost is **unknown**, not free (`observability/tokens.py`): each count carries its own denominator because a provider that reports half a pair must not put a fabricated zero on the line. The gate classifier's tokens are unmeasured by decision (ADR-0011), and the embeddings API returns no usage this code path can see.
 
@@ -203,13 +205,13 @@ Reported here and **nowhere else**, per §9: this is the planner's variance, not
 
 | question | identical across repeats | distinct sub-query sets | modal share |
 |---|---|---:|---:|
-| S1 | **no** | 4 | 40% |
+| S1 | **no** | 5 | 20% |
 | S2 | **no** | 3 | 40% |
-| S3 | **no** | 4 | 40% |
-| S4 | **no** | 2 | 80% |
+| S3 | **no** | 3 | 40% |
+| S4 | **no** | 3 | 40% |
 | S5 | **no** | 4 | 40% |
-| S6 | **no** | 3 | 60% |
-| S7 | **no** | 3 | 60% |
+| S6 | **no** | 4 | 40% |
+| S7 | **no** | 3 | 40% |
 | E1 | **no** | 5 | 20% |
 
 **0 of 8 sampled questions returned identical sub-queries on every repeat.** Where a question varies, the replay is load-bearing: without it those arms would report a different number on a re-run with no code change, which is exactly what §9 registered.
