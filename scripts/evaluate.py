@@ -43,7 +43,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from finbrief.config import Settings, get_settings, resolve_log_file
+from finbrief.config import Settings, get_settings, load_env, resolve_log_file
 from finbrief.evaluation import judge as judging
 from finbrief.evaluation import pipeline, report, variants
 from finbrief.evaluation.arms import ABLATION_ARMS, SCORED_ARMS, Arm
@@ -151,6 +151,12 @@ def require_sink(*, allow_missing: bool) -> Path | None:
 def run(args: argparse.Namespace) -> str:
     """Run the requested stages and return the rendered artifact."""
     stages = tuple(args.stage) if args.stage else report.ALL_STAGES
+    # **Before the sink check, not after.** `resolve_log_file` reads a mapping, and until
+    # `load_env()` has run that mapping does not contain anything `.env` sets — so the check
+    # would refuse a run whose sink was configured exactly where `.env.example` tells you to
+    # configure it. `get_settings()` loads it too, and idempotently, but it is called after
+    # this point.
+    load_env()
     sink = require_sink(allow_missing=args.allow_missing_sink)
     configure_logging()
     logger.info("evaluation run starting: stages=%s sink=%s", ",".join(stages), sink)

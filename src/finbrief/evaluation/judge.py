@@ -222,25 +222,41 @@ def ragas_version() -> str:
     return version("ragas")
 
 
-def calls_per_row(name: str, *, k: int) -> int:
+def calls_per_row(name: str, *, k: int, batches_completions: bool = False) -> int:
     """How many judge calls one row costs on `name` — read off ragas 0.4.3, not estimated.
 
-    - **faithfulness: 2.** Statement generation, then one NLI pass over all the statements.
-    - **response relevancy: `RELEVANCY_STRICTNESS`.** `generate_multiple(n=strictness)` batches
-      `n` separate prompts through a LangChain LLM rather than asking for `n` completions.
-    - **context precision: `k`.** One call *per retrieved context* — which is why it is half the
+    - **faithfulness: 2.** Statement generation, then one NLI pass over all the statements. -
+    **response relevancy: 1 on the shipped judge**, `RELEVANCY_STRICTNESS` otherwise. See
+    below. - **context precision: `k`.** One call *per retrieved context* — which is why it is
+    half the
       bill, and why this is a function of `k` rather than the constant it was first written as.
     - **context recall: 1.** `generate_multiple` at its default `n=1`.
 
+    **`batches_completions` is not a detail, and the smoke run is why it exists.** ragas asks
+    for
+    `n=strictness` completions, then splits on whether the model serves them in one request:
+    `ChatOpenAI` is in `ragas.llms.base.MULTIPLE_COMPLETION_SUPPORTED`, so the shipped judge
+    sends **one** request with `n=3`; any other chat model gets `n` separate prompts. The
+    default is therefore the shipped path, and the flag is what a scripted test model passes.
+
+    Measured live on 2026-07-29, and it changes the metric as well as the bill: OpenRouter
+    answered that one request with **one** completion, logging `LLM returned 1 generations
+    instead of requested 3. Proceeding with 1 generations.` eight times over eight judged
+    cells. So response relevancy is computed over a single generated question rather than
+    three — a *third* reason it is fenced off from every pre-registered decision
+    (`EXCLUDED_FROM_HYPOTHESES`), after the forced temperature of 0.3 and the sampling that
+    follows from it.
+
     A cost table nobody checked is a cost table that is wrong, so
     `tests/test_eval_judge.py::test_the_cost_table_matches_what_ragas_actually_calls` counts a
-    fake judge's invocations against these numbers. A ragas upgrade that reshapes a metric then
-    fails a test instead of quietly repricing the run.
+    fake judge's invocations against these numbers. That test passed against the 3-call figure
+    while the real run cost 1, because the fake takes the batching path — which is exactly why
+    the flag is now explicit rather than implied.
     """
     if name == FAITHFULNESS:
         return 2
     if name == ANSWER_RELEVANCY:
-        return RELEVANCY_STRICTNESS
+        return RELEVANCY_STRICTNESS if batches_completions else 1
     if name == CONTEXT_PRECISION:
         return k
     if name == CONTEXT_RECALL:
@@ -248,6 +264,10 @@ def calls_per_row(name: str, *, k: int) -> int:
     raise KeyError(f"unknown metric {name!r}. Valid: {', '.join(METRICS)}")
 
 
-def expected_calls(metrics: Sequence[str], rows: int, *, k: int) -> int:
+def expected_calls(
+    metrics: Sequence[str], rows: int, *, k: int, batches_completions: bool = False
+) -> int:
     """How many judge calls `rows` rows over `metrics` will cost at this `k`."""
-    return rows * sum(calls_per_row(name, k=k) for name in metrics)
+    return rows * sum(
+        calls_per_row(name, k=k, batches_completions=batches_completions) for name in metrics
+    )

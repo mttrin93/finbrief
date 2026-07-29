@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from langchain_chroma import Chroma
@@ -39,6 +39,16 @@ from finbrief.retrieval.retrieve import Retrieval
 from finbrief.retrieval.vectorstore import all_chunks
 
 logger = logging.getLogger(__name__)
+
+#: Bumped when a harness change alters what a cached cell *means* without changing its key.
+#:
+#: **At 2 because of a real poisoning, not defensively.** The `max_sub_queries` bug
+#: `settings_for` fixes produced ablation retrievals with the planner *on* while their key
+#: already said `max_sub_queries: 0` — so the cache held wrong values under right addresses,
+#: and a re-run after the fix would have served them back and reported a refutation channel
+#: that never ran. A content key cannot see a bug in the producer; this is the one thing in
+#: the key that a human bumps.
+HARNESS_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +74,25 @@ class Cell:
     @property
     def contexts(self) -> tuple[str, ...]:
         return tuple(context.body for context in self.retrieval.contexts)
+
+
+def settings_for(arm: Arm, settings: Settings) -> Settings:
+    """`settings` with this arm's sub-query cap — the one knob `retrieve()` reads from config.
+
+    **Found by the two-question smoke run, not by a test** (#11). `retrieve()` takes
+    `strategy` and `translate` as arguments precisely so no number is reported against a
+    configuration nobody selected, but `max_sub_queries` it reads from `Settings` — because
+    the cap is enforced configuration (ADR-0005's latency budget assumes it). So an `Arm`
+    carrying
+    `max_sub_queries=0` did nothing at all: both ablation cells ran at the app's cap of 3
+    and made a **real, unreplayed planner call**, which the smoke's log showed as four
+    `query_translation` lines carrying token counts where there should have been none.
+
+    Those two cells are ADR-0005 §2's falsification channel and ADR-0004 §7's ablation, so
+    silently running them with the planner *on* would have made both refutation tests answer a
+    question they were not asked — while looking exactly like a completed run.
+    """
+    return replace(settings, max_sub_queries=arm.max_sub_queries)
 
 
 def collection_fingerprint(store: Chroma) -> str:
@@ -96,6 +125,7 @@ def retrieval_key(
     the *replayed* ones, so a re-resolve has to invalidate the retrieval that used the old ones.
     """
     return {
+        "harness": HARNESS_VERSION,
         "row": row.id,
         "arm": arm.name,
         "strategy": arm.strategy.value,
@@ -120,6 +150,7 @@ def answer_key(
     from finbrief.prompts import SYSTEM_PROMPT
 
     return {
+        "harness": HARNESS_VERSION,
         "row": row.id,
         "arm": arm.name,
         "question": row.question,
@@ -162,6 +193,8 @@ def retrieve_cells(
             return ()
         return variants.plan(row.id).variants
 
+    arm_settings = settings_for(arm, settings)
+
     def produce(row: GoldenQuestion) -> dict[str, Any]:
         model = variants.planner(row.id) if arm.plans and variants is not None else None
         retrieval = retrieve(
@@ -170,7 +203,7 @@ def retrieve_cells(
             translate=arm.translate,
             k=k,
             store=store,
-            settings=settings,
+            settings=arm_settings,
             model=model,
         )
         return retrieval.as_payload()
@@ -231,6 +264,8 @@ def answer_cells(
     if not arm.judged:
         return tuple(None for _ in rows)
 
+    arm_settings = settings_for(arm, settings)
+
     def produce(item: tuple[GoldenQuestion, Retrieval]) -> dict[str, Any]:
         row, scored = item
         grounded = answer_question(
@@ -239,7 +274,7 @@ def answer_cells(
             translate=arm.translate,
             k=k,
             store=store,
-            settings=settings,
+            settings=arm_settings,
             translation_model=(
                 variants.planner(row.id) if arm.plans and variants is not None else None
             ),

@@ -218,7 +218,28 @@ def test_the_cost_table_matches_what_ragas_actually_calls(scripted, metric, need
         embeddings=FakeEmbeddings() if needs_embeddings else None,
     )
 
-    assert len(model.calls) == calls_per_row(metric, k=len(SAMPLE.contexts))
+    # `batches_completions=True`: this fake is not a `ChatOpenAI`, so ragas cannot ask it for
+    # n completions in one request and sends n prompts instead. The shipped judge *is* one,
+    # which is the branch the default covers — see the next test.
+    assert len(model.calls) == calls_per_row(
+        metric, k=len(SAMPLE.contexts), batches_completions=True
+    )
+
+
+def test_the_shipped_judge_costs_one_relevancy_call_and_a_scripted_one_costs_three():
+    # **The smoke run's second finding.** ragas splits on
+    # `ragas.llms.base.MULTIPLE_COMPLETION_SUPPORTED`, which holds `ChatOpenAI`: the shipped
+    # judge gets one request with n=3, anything else gets 3 prompts. The cost table defaulted
+    # to the wrong branch, and the test above passed anyway because the fake takes the other
+    # one.
+    from langchain_openai import ChatOpenAI
+    from ragas.llms.base import is_multiple_completion_supported
+
+    assert is_multiple_completion_supported(
+        ChatOpenAI(api_key="test-key", model="openai/gpt-4.1-mini")
+    )
+    assert calls_per_row(ANSWER_RELEVANCY, k=5) == 1
+    assert calls_per_row(ANSWER_RELEVANCY, k=5, batches_completions=True) == 3
 
 
 def test_context_precision_scales_with_k_and_the_others_do_not():
@@ -230,14 +251,21 @@ def test_context_precision_scales_with_k_and_the_others_do_not():
     assert calls_per_row(FAITHFULNESS, k=3) == calls_per_row(FAITHFULNESS, k=5) == 2
 
 
-def test_the_full_six_arm_bill_is_the_number_the_plan_quoted():
+def test_the_full_six_arm_bill_is_the_number_the_artifact_quotes():
     # 4 scored arms x 28 rows x 4 metrics, plus 2 ablation arms x 28 rows x the 2 retrieval
-    # metrics. The figure #11's plan was approved on, derived rather than retyped.
+    # metrics — derived rather than retyped, on the shipped judge's call shape.
+    #
+    # **#11's plan quoted 1,232 + 336 and that was wrong**, because it costed response
+    # relevancy at 3 calls. The shipped judge asks for its 3 completions in one request, so
+    # the scored half is 4 x 28 x (2+1+5+1) = 1,008 and the run is ~224 calls cheaper than
+    # approved. Corrected here rather than in prose, so the artifact's cost line and this test
+    # cannot disagree.
     scored = expected_calls(METRICS, rows=28 * 4, k=5)
     ablations = expected_calls(RETRIEVAL_METRICS, rows=28 * 2, k=5)
 
-    assert scored == 1232
+    assert scored == 1008
     assert ablations == 336
+    assert expected_calls(METRICS, rows=28 * 4, k=5, batches_completions=True) == 1232
 
 
 def test_an_unknown_metric_raises_rather_than_costing_nothing_silently():

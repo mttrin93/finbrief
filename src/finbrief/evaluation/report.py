@@ -247,6 +247,23 @@ def render_report(
         "exclude whole `recall_trivial` rows (reported separately) and count only sections a "
         f"`k={provenance.k}` retrieval could miss.",
         "",
+        "**Read `chunk recall` and `section recall` together, and neither as a quality score "
+        "on "
+        "its own.** `chunk recall` asks whether the retriever returned the *specific chunks* a "
+        "reference was authored from, and those references were authored from a handful of "
+        "chunks "
+        "inside sections that are often very large — S1 names 6 of TSLA Item 1A's **129**. At "
+        f"`k={provenance.k}` that is close to a lottery even for a retrieval doing everything "
+        "right: this harness's first live run returned Item 1A chunks 48-70 against targets "
+        "0, 1, "
+        "6, 34, 94 and 117 — chunk recall 0.000, section recall 1.000, for a result an analyst "
+        "would call correct. So `chunk recall` is reported because it is exact and free, "
+        "`section recall` because it is what the multi-hop and cross-filer rows are about, and "
+        "the judged `context precision` / `context recall` below because they compare *text* "
+        "against the reference rather than chunk identity. That is why ADR-0005's "
+        "falsification "
+        "clause rests on those two and not on this column.",
+        "",
         free_metric_table(cells, arms),
         "",
     ]
