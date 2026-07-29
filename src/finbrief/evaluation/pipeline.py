@@ -312,6 +312,7 @@ def judge_cells(
     cache: Cache,
     judge: Any,
     embeddings: Any,
+    workers: int = 1,
 ) -> tuple[Mapping[str, float | None], ...]:
     """Score every row on every metric, one cached cell per `(row, metric)`.
 
@@ -319,34 +320,49 @@ def judge_cells(
     what lets a metric be added to a finished run for the price of that metric alone.
     """
     version = judging.ragas_version()
-    scored: list[Mapping[str, float | None]] = []
-    for row, retrieval, answer in zip(rows, retrievals, answers, strict=True):
-        sample = judging.JudgeSample(
+    samples = [
+        judging.JudgeSample(
             question=row.question,
             contexts=tuple(context.body for context in retrieval.contexts),
             answer=answer or "",
             reference=row.reference,
         )
-        row_scores: dict[str, float | None] = {}
-        for metric in metrics:
-            if metric in judging.GENERATION_METRICS and answer is None:
-                # Absent, not zero: this arm does not generate, so there is no answer to score.
-                row_scores[metric] = None
-                continue
-            payload = cache.resolve(
-                "judge",
-                judging.judge_cache_key(
-                    metric,
-                    sample,
-                    judge_model=settings.judge_model,
-                    ragas_version=version,
-                ),
-                lambda metric=metric, sample=sample: {
-                    "score": judging.score(metric, sample, judge=judge, embeddings=embeddings)
-                },
-            )
-            row_scores[metric] = payload["score"]
-        scored.append(row_scores)
+        for row, retrieval, answer in zip(rows, retrievals, answers, strict=True)
+    ]
+    # One work item per `(row, metric)` — the cache's own granularity, so a stage that dies
+    # mid-metric loses that metric on that row and nothing else, and the concurrency has
+    # something to spread over. A row-shaped item would serialise the four metrics inside it.
+    work = [
+        (index, metric)
+        for index in range(len(samples))
+        for metric in metrics
+        if not (metric in judging.GENERATION_METRICS and answers[index] is None)
+    ]
+
+    def produce(item: tuple[int, str]) -> dict[str, Any]:
+        index, metric = item
+        return {
+            "score": judging.score(metric, samples[index], judge=judge, embeddings=embeddings)
+        }
+
+    payloads = cached_map(
+        cache,
+        "judge",
+        work,
+        key_of=lambda item: judging.judge_cache_key(
+            item[1],
+            samples[item[0]],
+            judge_model=settings.judge_model,
+            ragas_version=version,
+        ),
+        produce=produce,
+        workers=workers,
+    )
+    # `None` for a metric that was skipped — absent, not zero: this arm does not generate, so
+    # there is no answer to score, and 0.0 would read as an unfaithful answer rather than none.
+    scored: list[dict[str, float | None]] = [dict.fromkeys(metrics) for _ in samples]
+    for (index, metric), payload in zip(work, payloads, strict=True):
+        scored[index][metric] = payload["score"]
     return tuple(scored)
 
 

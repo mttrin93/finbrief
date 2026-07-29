@@ -95,6 +95,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"where paid cells are cached (default {DEFAULT_CACHE_DIR}, gitignored)",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=6,
+        help=(
+            "how many cells a stage resolves at once (default 6). 1 is serial. Measured: the "
+            "judge stage ran at 4.7 cells/min serially, which is 99 minutes for a six-arm run."
+        ),
+    )
+    parser.add_argument(
         "--no-write",
         action="store_true",
         help="print the artifact instead of rewriting the committed one",
@@ -186,6 +195,7 @@ def run(args: argparse.Namespace) -> str:
             cache=cache,
             k=k,
             fingerprint=fingerprint,
+            workers=args.workers,
         )
         answers = (
             pipeline.answer_cells(
@@ -197,6 +207,7 @@ def run(args: argparse.Namespace) -> str:
                 variants=variant_set,
                 cache=cache,
                 k=k,
+                workers=args.workers,
             )
             if "answer" in stages
             else tuple(None for _ in rows)
@@ -212,6 +223,7 @@ def run(args: argparse.Namespace) -> str:
                 cache=cache,
                 judge=judge,
                 embeddings=embeddings,
+                workers=args.workers,
             )
             if judge is not None
             else tuple({} for _ in rows)

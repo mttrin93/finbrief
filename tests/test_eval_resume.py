@@ -150,3 +150,68 @@ def test_changing_the_stage_key_invalidates_only_that_stage(tmp_path):
 
     assert rejudged.calls == list(ROWS), "the new judge model did not re-score every row"
     assert len(reretrieved) == len(ROWS)
+
+
+def test_a_concurrent_stage_returns_results_in_the_items_order(tmp_path):
+    # The property the serial path has for free and a thread pool can lose: a caller zips these
+    # against the rows that made them, so an out-of-order result would attach one row's score to
+    # another row. `pool.map` preserves order; `submit` + `as_completed` would not.
+    cache = Cache(tmp_path / "eval-cache")
+
+    values = cached_map(
+        cache,
+        "judge",
+        ROWS,
+        key_of=lambda row: {"row": row},
+        produce=DiesOnceAt("none"),
+        workers=4,
+    )
+
+    assert [value["row"] for value in values] == list(ROWS)
+
+
+def test_a_concurrent_stage_counts_spend_the_same_as_a_serial_one(tmp_path):
+    # `CacheStats` is a read-modify-write, so without the lock these counters drift under
+    # concurrency — and they are what the artifact quotes as spend.
+    serial = Cache(tmp_path / "serial")
+    concurrent = Cache(tmp_path / "concurrent")
+    rows = tuple(f"S{index}" for index in range(40))
+
+    for cache, workers in ((serial, 1), (concurrent, 8)):
+        cached_map(
+            cache,
+            "judge",
+            rows,
+            key_of=lambda row: {"row": row},
+            produce=DiesOnceAt("none"),
+            workers=workers,
+        )
+
+    assert concurrent.stats("judge").misses == serial.stats("judge").misses == len(rows)
+    assert concurrent.stats("judge").hits == 0
+
+
+def test_a_concurrent_stage_still_fails_when_a_cell_does(tmp_path):
+    # An exception must fail the stage, not leave a hole a later table reads as a score.
+    # The cells that finished are already durable, which is what makes the resumed run cheap.
+    cache = Cache(tmp_path / "eval-cache")
+
+    with pytest.raises(RuntimeError, match="429"):
+        cached_map(
+            cache,
+            "judge",
+            ROWS,
+            key_of=lambda row: {"row": row},
+            produce=DiesOnceAt("S3"),
+            workers=4,
+        )
+
+    resumed = cached_map(
+        cache,
+        "judge",
+        ROWS,
+        key_of=lambda row: {"row": row},
+        produce=DiesOnceAt("none"),
+        workers=4,
+    )
+    assert [value["row"] for value in resumed] == list(ROWS)

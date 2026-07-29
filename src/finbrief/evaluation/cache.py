@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,13 @@ class Cache:
     def __init__(self, root: Path | str | None) -> None:
         self._root = None if root is None else Path(root)
         self._stats: dict[str, CacheStats] = {}
+        # `run.cached_map` may resolve cells from several threads, and a `CacheStats` update
+        # is a read-modify-write: without this the hit/miss counts drift, and those counts are
+        # what the artifact quotes as spend. The lock guards the counters only — `resolve`
+        # itself needs none, because two threads racing on one key each write their own temp
+        # file and `os.replace` makes the last one atomic, and both computed the same value
+        # from the same inputs.
+        self._lock = threading.Lock()
 
     @property
     def root(self) -> Path | None:
@@ -156,6 +164,10 @@ class Cache:
         os.replace(temporary, path)
 
     def _count(self, kind: str, *, hits: int = 0, misses: int = 0, malformed: int = 0) -> None:
+        with self._lock:
+            self._bump(kind, hits=hits, misses=misses, malformed=malformed)
+
+    def _bump(self, kind: str, *, hits: int, misses: int, malformed: int) -> None:
         current = self._stats.get(kind, CacheStats())
         self._stats[kind] = CacheStats(
             hits=current.hits + hits,
