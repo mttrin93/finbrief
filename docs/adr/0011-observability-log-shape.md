@@ -88,3 +88,44 @@ The one exception to no-user-content is unchanged and bounded as ADR-0006 leaves
 **blocked** question's normalised text on its `input_gate` line, capped by
 `GATE_LOGGED_INPUT_MAX_CHARS`. Enabling the sink therefore means keeping that text on disk,
 which `.env.example` says beside the switch rather than leaving a reader to discover it.
+
+---
+
+## Amendment (ticket T10, issue #11) — an instrument must be emitted where the behaviour is produced
+
+**Decision.** An event that measures a behaviour is emitted at the layer that *produces* the
+behaviour, never at the layer that displays it. A log line written only by a UI can be reached by a
+human clicking and by nothing else — not by an evaluation harness, not by a script, not by a test.
+
+**This is the second instance, which is why it is a decision and not a note.** The first is in the
+main decision above: `log_turn` is wrapped around `app/Home.py`'s chat turn, and neutralising it
+there left **all 1028 tests green**, because every turn-id test opened the scope itself — so the
+suite proved propagation and never wiring. The fix was to measure it *at the app*, its only
+production caller.
+
+The second arrived when T10 tried to close T5's deferred square-bracket adherence rate.
+`security/markers.py` logs `citation_markers` on every turn, and T7's amendment §4 offered that as
+the denominator "without a second instrument". But `log_markers` is called by `app/Home.py` and by
+nothing else. So the tool-calling eval drove **10 live agent turns through `agent.answer`, and the
+log carried zero `citation_markers` lines** — the turns happened, the markers were produced, and
+the instrument was somewhere else. The rate is unmeasured in
+`docs/verification/evaluation.md` for exactly that reason, and the artifact says so where the
+number would have been rather than omitting the row.
+
+**Why this is a shape and not two accidents.** Both events describe something the *agent* did — a
+turn boundary, a citation marker — and both were wired where that something became visible. That is
+the natural place to put them while building a UI, and it is the wrong place for anything that will
+later be measured: the harness ADR-0003 exists to make possible drives `rag.answer_question` and
+`agent.answer`, and neither goes near Streamlit. An instrument at the display layer is an
+instrument with a human in its denominator.
+
+**What this ADR does *not* do**, so the boundary is clear. It does not move `log_markers`. Doing so
+means deciding where marker resolution belongs — `agent.answer` returns an `AgentTurn` that has the
+ranks, so the check could live there, but the *answer text* is what carries the markers and the
+agent does not currently parse it. That is a change to shipped code with its own design question
+attached, and T10 is a measurement ticket: smuggling it in here would mean the run that reports the
+rate is the run that introduced the code producing it. **It is named as its own ticket**, and
+recorded on #12 as a stated limitation for T11's README.
+
+**The general rule, for the next event added:** ask which caller a harness would use to exercise
+the behaviour, and emit there. If the only caller is a page, the instrument measures clicking.

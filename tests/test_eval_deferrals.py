@@ -236,3 +236,100 @@ def test_a_non_numeric_marker_is_not_a_citation():
 
 def test_an_answer_with_no_markers_yields_nothing():
     assert cited_sentences("The filings do not give a current share price.") == ()
+
+
+class _Retrieval:
+    def __init__(self, bodies):
+        self.contexts = tuple(
+            type("C", (), {"chunk_id": f"c{i}", "body": body})()
+            for i, body in enumerate(bodies)
+        )
+
+
+class _Cell:
+    def __init__(self, answer, bodies, arm="hybrid+translation"):
+        self.arm = arm
+        self.answer = answer
+        self.retrieval = _Retrieval(bodies)
+
+
+def test_a_sentence_is_judged_against_the_chunk_it_names_not_the_whole_set():
+    # **The point of the whole pass.** Chunk 2 supports the sentence and chunk 1 does not;
+    # whole-set faithfulness would score this 1.0 and call the answer grounded. Asked of the
+    # *cited* chunk, it is unsupported — faithful and mis-cited at the same time.
+    from finbrief.evaluation.deferrals import citation_support
+
+    seen: list[str] = []
+
+    def judge(sentence, body):
+        seen.append(body)
+        return 1.0 if "tariffs" in body else 0.0
+
+    result = citation_support(
+        [
+            _Cell(
+                "Tesla flags tariff cost increases [1].", ["supplier concentration", "tariffs"]
+            )
+        ],
+        arm="hybrid+translation",
+        judge_sentence=judge,
+    )
+
+    assert seen == ["supplier concentration"], "it judged against the wrong chunk"
+    assert result.unsupported == 1
+    assert result.rate.rate == pytest.approx(0.0)
+
+
+def test_a_supported_citation_counts_towards_the_rate():
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("Tesla flags supplier concentration [1].", ["supplier concentration"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: 1.0,
+    )
+
+    assert result.supported == 1
+    assert result.rate.rate == pytest.approx(1.0)
+
+
+def test_a_marker_outside_the_retrieval_is_unresolvable_and_stays_out_of_the_rate():
+    # The bracket-rule deferral's failure, not this one's — structurally prevented since T7's
+    # register. Folding it in would blend two questions with different fixes.
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("A claim [9].", ["only one chunk"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: pytest.fail("should not be judged"),
+    )
+
+    assert result.unresolvable == 1
+    assert result.rate.rate is None
+
+
+def test_only_the_named_arm_is_scored():
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("A claim [1].", ["body"], arm="vector")],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: 1.0,
+    )
+
+    assert result.rate.rate is None
+
+
+def test_an_unscoreable_sentence_is_skipped_rather_than_counted_either_way():
+    # The judge returning `None` means it could not score the pair; counting it as unsupported
+    # would blame the pipeline for the judge's failure.
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("A claim [1].", ["body"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: None,
+    )
+
+    assert (result.supported, result.unsupported) == (0, 0)
+    assert result.rate.rate is None

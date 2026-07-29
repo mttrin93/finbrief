@@ -269,3 +269,53 @@ class CitationSupport:
             hits=self.supported,
             total=self.supported + self.unsupported,
         )
+
+
+def citation_support(
+    cells: Sequence[object],
+    *,
+    arm: str,
+    judge_sentence: Callable[[str, str], float | None],
+) -> CitationSupport:
+    """For each cited sentence, ask whether the chunk it *names* supports it.
+
+    **The narrower question, and why it needs its own pass.** RAGAs faithfulness scores a
+    statement against the whole context set, so a sentence supported by chunk 4 while citing
+    chunk 1 scores 1.0 — faithful and mis-cited at once. Narrowing the context set to the
+    single chunk the marker names turns "is this answer grounded?" into "does *this* source
+    say *this*?", which is the question T3 deferred, T5 re-deferred, and ADR-0006's T7
+    amendment §4 left open in as many words: "whether a resolving marker's chunk supports the
+    sentence remains yours".
+
+    `judge_sentence(sentence, chunk_body)` is injected — the caller wraps the cached
+    faithfulness scorer with the context set narrowed to one chunk, which is the whole
+    mechanism. Injected so this pass is testable without a judge, and so the scorer stays the
+    one that is already tested.
+
+    A marker pointing outside the retrieval is `unresolvable` and stays out of the rate: that
+    is the bracket-rule deferral's failure, structurally prevented since T7's register, and
+    folding it in would blend two questions with different fixes.
+    """
+    supported = unsupported = unresolvable = 0
+    for cell in cells:
+        if getattr(cell, "arm", None) != arm:
+            continue
+        answer = getattr(cell, "answer", None)
+        if not answer:
+            continue
+        contexts = cell.retrieval.contexts
+        for cited in cited_sentences(answer):
+            for rank in cited.ranks:
+                if rank < 1 or rank > len(contexts):
+                    unresolvable += 1
+                    continue
+                verdict = judge_sentence(cited.sentence, contexts[rank - 1].body)
+                if verdict is None:
+                    continue
+                if verdict >= 0.5:
+                    supported += 1
+                else:
+                    unsupported += 1
+    return CitationSupport(
+        supported=supported, unsupported=unsupported, unresolvable=unresolvable
+    )

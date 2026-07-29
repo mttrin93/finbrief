@@ -259,7 +259,12 @@ def run(args: argparse.Namespace) -> str:
     # turns into an artifact that understates what the run measured.
     if "agent" in stages:
         sections.append(_agent_section(settings))
-    sections.append(_deferrals_block(sink))
+    support = (
+        _citation_support(cells, settings=settings, cache=cache, judge=judge)
+        if judge is not None
+        else None
+    )
+    sections.append(_deferrals_block(sink, support))
     sections.append(_headline(cells, cache))
     return report.render_report(
         provenance=provenance,
@@ -315,7 +320,43 @@ def _headline(cells: Sequence[Cell], cache: Cache) -> tuple[str, str]:
     )
 
 
-def _deferrals_block(sink: Path | None) -> tuple[str, str]:
+def _citation_support(
+    cells: Sequence[Cell], *, settings: Settings, cache: Cache, judge: object
+) -> object:
+    """The T3/T5 deferral: does a resolving marker's own chunk support its sentence?
+
+    The judge is the **cached faithfulness scorer with the context set narrowed to one chunk**
+    — the same tested metric, asked a narrower question. Cached per `(sentence, chunk)` so a
+    re-run costs nothing, and keyed through `judge.judge_cache_key` so the key carries the
+    judge model and the ragas version like every other judged cell.
+    """
+    version = judging.ragas_version()
+
+    def judge_sentence(sentence: str, body: str) -> float | None:
+        sample = judging.JudgeSample(
+            question="Does the cited source support this sentence?",
+            contexts=(body,),
+            answer=sentence,
+            reference="",
+        )
+        payload = cache.resolve(
+            "cited_sentence",
+            judging.judge_cache_key(
+                judging.FAITHFULNESS,
+                sample,
+                judge_model=settings.judge_model,
+                ragas_version=version,
+            ),
+            lambda: {"score": judging.score(judging.FAITHFULNESS, sample, judge=judge)},
+        )
+        return payload["score"]
+
+    return deferrals.citation_support(
+        cells, arm=SHIPPING_DEFAULT.name, judge_sentence=judge_sentence
+    )
+
+
+def _deferrals_block(sink: Path | None, support: object | None = None) -> tuple[str, str]:
     """The four deferrals, each measured or explicitly named as not measured.
 
     Layer 4's residue is computed here unconditionally, because it needs no run at all — regex
@@ -349,6 +390,13 @@ def _deferrals_block(sink: Path | None) -> tuple[str, str]:
                 f"{brackets.clean.render()} — {brackets.uncited} uncited, "
                 f"{brackets.unresolved} unresolved, {brackets.non_numeric} non-numeric"
             )
+    if support is not None and support.rate.total:
+        measured["faithfulness on markers that resolve but sit on unsupported claims"] = (
+            f"{support.rate.render()} — {support.unsupported} cited sentence(s) not supported "
+            f"by "
+            f"the chunk they name; {support.unresolvable} marker(s) pointed outside the "
+            f"retrieval"
+        )
     body = report.deferrals_section(measured)
     if residue.residue:
         body += (

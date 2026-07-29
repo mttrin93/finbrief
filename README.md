@@ -340,6 +340,42 @@ is a denylist over the backends this repo can reach, not a proof — a new HTTP 
 new path, which is how three of the seven recorded breaches were found, in the two dependencies
 T7 and T10 added.
 
+### What the evaluation actually established: a prompt is an instrument, not a control
+
+The strongest generalisable claim this project's measurements produced is not a retrieval number.
+It is that **a rule stated in a prompt is a thing you can measure compliance with, and not a thing
+you can rely on** — and it is a claim standing on four independent instances, three of them found
+before the evaluation and one measured at scale by it.
+
+| stated rule | where | what was measured |
+|---|---|---|
+| pass the user's question to `search_filings` **verbatim** | the tool's description (ADR-0003 §1) | **100% divergence, 24 of 24 searches.** Every query the agent issued differed from the question as typed — split evenly between first searches, which cannot be reference resolutions, and later ones, which may be |
+| decompose a question into sub-queries when asked to | the planner's prompt (ADR-0004 §6) | the planner refuses, or returns prose refusals the parser has to strip (`_REFUSAL`) |
+| square brackets are reserved for retrieved excerpts | `AGENT_SYSTEM_PROMPT` (T5) | `[Yahoo Finance]` observed live; uncited grounded answers observed live |
+| every figure comes from a tool or a retrieved excerpt | `AGENT_SYSTEM_PROMPT` (T7) | an answer naming Tesla's real segments from a chunk about industrial fasteners |
+
+The verbatim rule is the sharpest of the four because it now has a real denominator. ADR-0003's T4
+amendment recorded 0 verbatim of 2 searches and said itself that was too small to publish; 24 of 24
+is not, and per that same amendment's position it is **a finding rather than a defect to tune away**
+— a prompt tuned against a paid model until the number looks good is a number about the tuning.
+
+**The same shape holds one layer down, where the rule is code rather than prose.** Layer 4's advice
+denylist refuses every recommendation that announces itself and **none** of six hand-labelled
+recommendations that do not: no imperative, no rating word, no price target, no position-sizing
+instruction, and *"if it were my own capital I would be adding to Ford on any further weakness"*
+goes straight through. A rule set that pattern-matches the vocabulary of advice catches the
+vocabulary, not the advice.
+
+What follows for the architecture is what this repo already does, stated once instead of four
+times: **the rules that hold are the ones made unrepresentable, not the ones written down.**
+Citation numbering is assigned in one sequential pass at the agent seam, so two searches in one
+step *cannot* collide (ADR-0003 amendment §3). The `filings` collection is opened in one file, so
+two callers cannot disagree about it. The Universe whitelist is a lookup, so an out-of-Universe
+ticker cannot be fetched. Every one of those is a constraint the model has no opportunity to
+decline. Where a constraint cannot be made structural — and the verbatim rule cannot, because the
+one edit it must permit is indistinguishable from the rewrite it forbids — the honest response is
+to instrument it and publish the rate, which is what `docs/verification/evaluation.md` does.
+
 ### Three libraries, three that phone home by default
 
 Worth stating as a pattern rather than as three separate footnotes, because it changed how this
