@@ -256,14 +256,29 @@ assertion by default (issue #9 review).
   `None` rather than `0` (an unreported token count is not a free call), and a *missing* sink
   raises rather than reading as an empty log — "nobody enabled it" is not "this run emitted
   nothing". `tests/test_event_log.py` round-trips through both halves, including one event whose
-  field is absent; that test is what forbids the drift. The sink itself is
+  field is absent; that test is what forbids the drift. **Absence is per field, not per record**,
+  and that is where it broke: `tokens.usage_total` summed with `.get(name, 0)` and counted a
+  reply as metered if it reported *any* usage, so a provider returning half a pair put
+  `output_tokens: 0` on the line with a denominator claiming otherwise — a fabricated zero in the
+  one module whose docstring forbids it (issue #10 review). Each field carries its own
+  `<field>_calls`. The sink itself is
   `FINBRIEF_LOG_FILE`, **off unless named** (`configure_logging()` takes no arguments at four
   entry points, and conftest strips `FINBRIEF_`, so a path-shaped default would have the
   hermetic suite writing files) — which means it has to be *enabled* where the data matters:
-  `.env.example`, the README's "Recording a run", T11's walkthrough. A `turn_id` on the envelope
+  `.env.example`, the README's "Recording a run", T11's walkthrough. In `.env.example` it ships
+  **commented out**, with a test: default-off in code and default-on in the file the README tells
+  you to copy is not a default-off, and what it silently switched on was retention of blocked
+  questions' normalised text. `.env.example`'s path is also bound to `.gitignore` through
+  `git check-ignore` rather than through prose, because the ignore rules cover a changed
+  directory and not a changed filename. A `turn_id` on the envelope
   is what makes a `retrieval` line's provenance attributable; it comes from a `ContextVar`
   (`logging_setup.turn`), which is **measured** to survive LangGraph's tool executor across a
-  thread boundary rather than assumed to. ADR-0011 records why the log is shaped as a run's
+  thread boundary rather than assumed to — and **measured at the app**, its only production
+  caller, because neutralising `app/Home.py`'s `with log_turn(...)` once left all 1028 tests
+  green: every other turn-id test opened the scope itself, so they proved propagation and never
+  wiring. `log_event` takes `exc_info` so that a *failed* turn is an event too; it had been the
+  one bypass of the single emitter, and so the one line with no `turn_id`. ADR-0011 records why
+  the log is shaped as a run's
   record rather than as the harness's primary input — T10 gets provenance from
   `Retrieval.contexts` in-process, and needs the log only for latency, tokens and live-run facts.
   Never a secret in `fields`, and **never a question or a query variant**: a variant is derived
