@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| generated | 2026-07-29 12:13 UTC |
+| generated | 2026-07-29 12:34 UTC |
 | stages run | resolve, retrieve, answer, judge, agent, report |
 | judge model | `openai/gpt-4.1-mini` (ragas 0.4.3) |
 | answering model | `openai/gpt-4o-mini` |
@@ -126,11 +126,11 @@ Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatc
 
 | | ms | samples |
 |---|---:|---:|
-| planner's chat round, p50 | 1518 | 44 |
-| retrieval p50, translation on | 1546 | 240 |
+| planner's chat round, p50 | 1518 | 60 |
+| retrieval p50, translation on | 1576 | 256 |
 | retrieval p50, translation off | 328 | 104 |
-| retrieval rounds translation adds, p50 | 1218 | — |
-| **total p50 added by translation** | **2736** | — |
+| retrieval rounds translation adds, p50 | 1248 | — |
+| **total p50 added by translation** | **2766** | — |
 | ADR-0005's budget | 1500 | — |
 
 **Verdict: **over budget**.**
@@ -140,8 +140,8 @@ Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatc
 | metered event | input tokens | output tokens | lines | unmetered lines |
 |---|---:|---:|---:|---:|
 | `rag_answer` | 165140 (132 calls) | 17954 (132 calls) | 132 | 0 |
-| `query_translation` | 12004 (44 calls) | 2682 (44 calls) | 602 | 558 |
-| `agent_turn` | 117074 (20 calls) | 5522 (20 calls) | 20 | 0 |
+| `query_translation` | 16260 (60 calls) | 3528 (60 calls) | 674 | 614 |
+| `agent_turn` | 329421 (40 calls) | 11024 (40 calls) | 40 | 0 |
 
 An unmetered line is a call whose cost is **unknown**, not free (`observability/tokens.py`): each count carries its own denominator because a provider that reports half a pair must not put a fabricated zero on the line. The gate classifier's tokens are unmeasured by decision (ADR-0011), and the embeddings API returns no usage this code path can see.
 
@@ -172,10 +172,10 @@ Four measurements were deferred to this ticket by earlier ones. They are listed 
 
 | deferred measurement | from | instrument | result |
 |---|---|---|---|
-| agent-vs-original query divergence rate | T4 (ADR-0003 amendment §2) | `agent_query.verbatim` over live agent turns | divergence rate: **100%** (24/24); first search in a thread: **100%** (8/8); later searches (may be permitted resolutions): **100%** (16/16) |
+| agent-vs-original query divergence rate | T4 (ADR-0003 amendment §2) | `agent_query.verbatim` over live agent turns | divergence rate: **100%** (40/40); first search in a thread: **100%** (8/8); later searches (may be permitted resolutions): **100%** (32/32) |
 | square-bracket rule adherence rate | T5 (ADR-0006 T7 amendment §4) | `citation_markers`, emitted by `app/Home.py` and by nothing else | **not measured by this run** |
 | layer 4's residue — advice phrased so no rule matches | T7 (ADR-0006 T7 amendment §4) | advice probes through the live agent and `security.advice.validate_answer` | layer-4 residue: **100%** (6/6) — 6 of 6 hand-labelled recommendations were **not** refused |
-| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk, not the whole context set | **not measured by this run** |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk, not the whole context set | cited-sentence support: **70%** (49/70) — 21 cited sentence(s) not supported by the chunk they name; 0 marker(s) pointed outside the retrieval |
 
 **Why the bracket-rule rate is absent, and it is not for want of running the agent.** `citation_markers` is emitted by `app/Home.py` — the *only* caller of `security.markers.log_markers` — and not by `agent.answer`. So a harness that drives the agent directly, as the tool-calling eval above does, produces the turns and none of the lines. That is the same shape T8 found and fixed for `turn_id`: an instrument wired at the app is an instrument a harness cannot reach, and neutralising it there left every test green. Closing this needs the marker check moved to where the answer is produced rather than to where it is displayed, which is a change to shipped code and belongs in its own ticket rather than in a measurement run.
 
@@ -192,6 +192,6 @@ Measured on the shipping default (hybrid + translation (shipping default)), over
 | RAGAs context recall | 0.675 [0.000–1.000] n=28 | as above |
 | section recall (free, deterministic) | 0.944 [0.000–1.000] n=27 | non-trivial target sections |
 | judge calls this run paid for | 0 | at k=5, six arms |
-| cells replayed from cache | 868 | see the provenance table |
+| cells replayed from cache | 934 | see the provenance table |
 
 **Response relevancy is deliberately absent from this list.** It is reported in the RAGAs table with its spread, and it is excluded from every pre-registered decision — quoting it as a headline number would be quoting a figure that moves between runs.
