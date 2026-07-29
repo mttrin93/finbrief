@@ -83,17 +83,56 @@ def test_a_turn_sums_its_calls_and_says_how_many_reported():
     ]
 
     assert usage_total(replies) == {
-        "input_tokens": 2_000,
-        "output_tokens": 250,
-        # The denominator, and the reason it is on the line: this total covers 2 of 3 calls,
+        # The denominators, and the reason they are on the line: this total covers 2 of 3 calls,
         # and a partial total presented as a turn's spend understates it silently.
-        "metered_calls": 2,
+        "calls": 3,
+        "input_tokens": 2_000,
+        "input_tokens_calls": 2,
+        "output_tokens": 250,
+        "output_tokens_calls": 2,
     }
 
 
 def test_a_turn_where_nothing_reported_is_absent_rather_than_zeroed():
     assert usage_total([a_reply(), a_reply()]) == {}
     assert usage_total([]) == {}
+
+
+def test_a_half_reported_reply_leaves_the_other_half_off_the_total():
+    """The fabricated zero this function used to write (issue #10 review).
+
+    `usage_fields` has always handled a provider that reports one half of the pair —
+    `test_a_partial_or_malformed_usage_block_yields_only_what_it_reported` is that test. The
+    *aggregate* did not: it summed with `.get(name, 0)` and counted the reply as metered, so
+    `output_tokens: 0` went onto the `agent_turn` line, indistinguishable from a real zero,
+    against this module's own "absent, never zero".
+    """
+    half = Duck({"input_tokens": 120, "output_tokens": None})
+
+    # Asserted first, because it is the premise: the single-reply path already omits the half
+    # nobody reported, and the aggregate has to agree with it rather than fill the gap in.
+    assert usage_fields(half) == {"input_tokens": 120}
+    assert usage_total([half]) == {"calls": 1, "input_tokens": 120, "input_tokens_calls": 1}
+    # The whole equality, not `"output_tokens" not in ...`: a zero *and* a wrong denominator
+    # were both wrong before, and only an equality pins both.
+    assert usage_total([half, a_reply(input_tokens=80, output_tokens=40)]) == {
+        "calls": 2,
+        "input_tokens": 200,
+        "input_tokens_calls": 2,
+        # 1, not 2. One reply reported this field, so one is what it is summed over — the
+        # per-reply denominator claimed two and made the half-total read as complete.
+        "output_tokens": 40,
+        "output_tokens_calls": 1,
+    }
+
+
+def test_a_turn_where_only_the_unreported_half_is_missing_omits_only_that_half():
+    # The mirror case, so the fix is not accidentally one-sided.
+    assert usage_total([Duck({"output_tokens": 55})]) == {
+        "calls": 1,
+        "output_tokens": 55,
+        "output_tokens_calls": 1,
+    }
 
 
 # --- Where the counts land: the three metered call sites (T8, #10) ---------------------

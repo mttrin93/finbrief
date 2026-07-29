@@ -942,12 +942,15 @@ def test_the_turn_line_totals_the_loops_own_calls(tmp_path, filings_store):
     lines = [json.loads(line) for line in stream.getvalue().splitlines()]
     first, second = [line["fields"] for line in lines if line["event"] == "agent_turn"]
     # The scripted `a_search` messages report no usage either, so turn 1 metered exactly one
-    # of its two calls — which is the denominator `metered_calls` exists to state.
-    assert (first["input_tokens"], first["output_tokens"], first["metered_calls"]) == (
-        900,
-        40,
-        1,
-    )
+    # of its two calls — which is the denominator `<field>_calls` exists to state, per field
+    # rather than per reply (issue #10 review).
+    assert (
+        first["calls"],
+        first["input_tokens"],
+        first["input_tokens_calls"],
+        first["output_tokens"],
+        first["output_tokens_calls"],
+    ) == (2, 900, 1, 40, 1)
     # Turn 2's own calls reported nothing, so its spend is absent — *not* turn 1's total
     # carried forward, which is what an unscoped sum would have reported here.
     assert "input_tokens" not in second

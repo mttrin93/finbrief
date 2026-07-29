@@ -1,9 +1,14 @@
 """Token counts off a model reply, for the log lines that record a paid call.
 
 The one instrument #10 asks for that nothing in the repo had: `grep usage_metadata` returned
-nothing before T8, so four call sites held a reply that reported its own cost and dropped it.
-This module reads it and nothing else — there is no framework here, no meter and no price
-table. Dollar cost is the Tier-2 cost-meter's job (PLAN Phase 8); this is capture.
+nothing before T8. Four call sites held a reply that reported its own cost and dropped it, and
+**three of them are metered here** — generation, the planner and the agent loop. The gate's
+classifier is the fourth and stays unmeasured on purpose (ADR-0011: `classify()` returns a bare
+`Verdict`, and it is the cheapest call in the system). Three and four are both true of different
+things and were written as one number here once, so both are named: four sites *dropped* a
+count, three sites *report* one. This module reads them and nothing else — no framework, no
+meter, no price table. Dollar cost is the Tier-2 cost-meter's job (PLAN Phase 8); this is
+capture.
 
 **An unreported count is absent, never zero.** OpenRouter fronts many upstreams and whether a
 given one returns a `usage` block is not something this repo can assert — the same argument
@@ -11,6 +16,14 @@ ADR-0003's T4 amendment makes about `parallel_tool_calls`. A missing count means
 spend was not reported", and writing that as `0` would put a fabricated number in a cost table
 and understate a total that nothing else can recover. So the fields are *omitted*, and
 `events.Samples` counts the lines that omitted them, so a total is read against a denominator.
+
+**And that rule holds per field, not per reply** — which is where it was broken. A provider can
+report one half of a pair (`{"input_tokens": 120, "output_tokens": None}`), and summing such a
+turn with `.get(name, 0)` wrote `output_tokens: 0` onto the line while counting the reply as
+metered: a fabricated zero indistinguishable from a real one, on the very criterion #10's AC-1
+is about, in the module whose docstring forbids it (issue #10 review). Each field is therefore
+summed over the replies that reported **that field**, carries **its own** denominator, and is
+omitted entirely when no reply reported it.
 
 `total_tokens` is deliberately not logged: it is `input + output` and a third number is a
 third thing that can disagree with the other two.
@@ -42,19 +55,29 @@ def usage_fields(reply: Any) -> dict[str, int]:
 
 
 def usage_total(replies: Any) -> dict[str, int]:
-    """Summed usage across `replies`, plus how many of them reported any.
+    """Summed usage across `replies`, each field with the count of replies that reported it.
 
     For the agent loop, where one turn is several paid calls and no single reply is the turn's
-    cost. `metered_calls` is the denominator half and is not diagnostic detail: a turn where
-    two of five calls reported usage has a *partial* total, and a partial total presented as a
-    turn's spend is the silent-narrowing failure this repo keeps hitting. `{}` when nothing
-    reported, so "no usage anywhere" stays absent rather than becoming a zeroed row.
+    cost. `calls` is how many replies were considered and `<field>_calls` how many carried that
+    field; neither is diagnostic detail. A turn where two of five calls reported usage has a
+    *partial* total, and a partial total presented as a turn's spend is the silent-narrowing
+    failure this repo keeps hitting.
+
+    **The denominator is per field, because the absence is.** A single `metered_calls` counted
+    replies reporting *any* usage, so a reply that reported only `input_tokens` made
+    `output_tokens` read as summed-and-complete when nothing had reported it — see the module
+    docstring. `{}` when no reply reported any field, so "no usage anywhere" stays absent rather
+    than becoming a zeroed row.
     """
-    metered = [fields for fields in (usage_fields(reply) for reply in replies) if fields]
-    if not metered:
+    reported = [usage_fields(reply) for reply in replies]
+    totals: dict[str, int] = {}
+    for fields in reported:
+        for name, count in fields.items():
+            totals[name] = totals.get(name, 0) + count
+            totals[f"{name}_calls"] = totals.get(f"{name}_calls", 0) + 1
+    if not totals:
         return {}
-    return {
-        "input_tokens": sum(fields.get("input_tokens", 0) for fields in metered),
-        "output_tokens": sum(fields.get("output_tokens", 0) for fields in metered),
-        "metered_calls": len(metered),
-    }
+    # Only once something was reported: `calls` on an all-absent turn would be the zeroed row
+    # the docstring rules out, and it is the one number a reader can get from
+    # `searches`/`steps`.
+    return {"calls": len(reported), **totals}
