@@ -31,6 +31,12 @@ single log line.** What the return value does *not* carry is exactly three thing
   evaluation-run instructions and in T11's demo walkthrough, because a log nobody enables is an
   instrument that ships and never runs. Unrotated because a rotating file renames mid-run and a
   globbing reader then double-counts or misses — the volume is bounded by a human typing.
+  **Off by default means off in `.env.example` too**, where the recommended path ships
+  *commented out*: it first shipped uncommented, and since the README and the app's own config
+  banner both tell a reader to `cp .env.example .env`, "off by default" was false for everyone
+  who followed the setup instructions — and silently so, because what it turned on was the
+  retention of blocked questions' normalised text (issue #10 review). Enabling the sink has to
+  be a decision, which is the whole reason the default is nothing.
 - **One reader, `observability/events.py`**, paired with the one emitter. It returns *samples*
   and never statistics: the two p50 budgets belong to the reports that quote them, and
   `security/report.py` already owns a median over in-process `Screening` objects.

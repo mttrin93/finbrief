@@ -772,7 +772,11 @@ def resolve_log_file(env: Mapping[str, str]) -> Path | None:
     enables is an instrument that ships and never runs (T8, #10).
 
     No default path is offered here on purpose: naming one in code and another in `.env.example`
-    is two sources of truth for one string. `.env.example` is the one a reader acts on.
+    is two sources of truth for one string. `.env.example` is the one a reader acts on — and it
+    carries the recommendation **commented out**, so that acting on it (`cp .env.example .env`,
+    which the README and `missing_key_message` both advise) does not silently enable a sink that
+    retains blocked questions' normalised text. Default-off in code and default-on in the file a
+    reader copies is not a default-off (issue #10 review).
     """
     raw = _raw(env, "FINBRIEF_LOG_FILE")
     return Path(raw) if raw else None

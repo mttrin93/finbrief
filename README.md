@@ -304,10 +304,12 @@ the environment, so the app and the evaluation harness read the same switches (A
   Unset, they exist only in the terminal that started the app and nothing survives the process —
   so **turn it on for any run whose numbers you intend to report**: latency samples, token counts,
   the agent-vs-original divergence rate and gate-trigger metadata are read back out of this file
-  and out of nothing else. `.env.example` recommends `data/events.jsonl`; the file is gitignored,
-  append-only and never rotated. Enabling it means keeping the one user-derived field above on
-  disk, which is the trade the bullet before this one describes. See ADR-0011 for the log's shape
-  and for what it deliberately does not carry.
+  and out of nothing else. `.env.example` carries the recommended path, `data/events.jsonl`,
+  **commented out** — so a copied `.env` leaves the sink off, and recording a run means
+  uncommenting that one line. The file is gitignored, append-only and never rotated. Enabling it
+  means keeping the one user-derived field above on disk, which is the trade the bullet before
+  this one describes. See ADR-0011 for the log's shape and for what it deliberately does not
+  carry.
 
 ## Development
 
@@ -359,10 +361,18 @@ only as a generator.
 ### Recording a run
 
 Before any run whose numbers will be reported — an evaluation pass, a demo, a live session
-you intend to quote — **enable the event sink**:
+you intend to quote — **enable the event sink**. It is off in a fresh checkout and off in a
+`.env` copied from `.env.example`, where the line is commented out, so **recording is always
+something you turn on deliberately**:
 
 ```bash
-FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py   # or in .env
+# either uncomment this line in .env …
+#FINBRIEF_LOG_FILE=data/events.jsonl
+```
+
+```bash
+# … or name it for one run
+FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py
 ```
 
 Unset, `finbrief.*` events go to stderr only and vanish with the process. The evaluation
@@ -376,8 +386,10 @@ inside one turn share a `turn_id`, which is what lets a `retrieval` line's per-c
 be attributed to the question that caused it.
 
 The file is gitignored, append-only and never rotated. Enabling it keeps a *blocked* question's
-normalised text on disk — the one documented exception to the no-user-content rule, capped at
-500 characters. ADR-0011 records the log's shape and what it deliberately omits.
+normalised text on disk — the one documented exception to the no-user-content rule, capped by
+`config.GATE_LOGGED_INPUT_MAX_CHARS` (the figure is quoted once, in the switches list above, and
+bound to the constant by `tests/test_grounding_scope.py`). ADR-0011 records the log's shape and
+what it deliberately omits.
 
 ### Building the knowledge base
 
