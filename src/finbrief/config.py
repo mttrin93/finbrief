@@ -416,6 +416,20 @@ GATE_LATENCY_BUDGET_PREREGISTERED_MS = 800
 #: refuse.
 GATE_LATENCY_BUDGET_MS = 1000
 
+#: ADR-0005's budget for the p50 latency **added by query translation**, in milliseconds.
+#:
+#: The other pre-registered latency figure, and it lives beside the gate's for the reason
+#: CLAUDE.md gives about a pair split across two files: "the latency budgets" are named in the
+#: single-source-of-truth list, and this one spent T10 as a `budget_ms: float = 1500.0` default
+#: argument in `evaluation/latency.py` — an unbound literal, while the gate's twin was bound by
+#: an equality in `tests/test_grounding_scope.py`. `evaluation/report.py` prints the measured
+#: total beside this, and the artifact's verdict line is a comparison against it.
+#:
+#: **A budget dominance is judged *within*, not a timeout**, exactly like the gate's above:
+#: ADR-0005's clause is that `hybrid + translation` dominates *and* costs no more than this, so
+#: a run that exceeds it puts the default in question rather than aborting a retrieval.
+TRANSLATION_LATENCY_BUDGET_MS = 1500
+
 #: How long the classifier's single model call may take before it is abandoned, in seconds.
 #:
 #: Five, which is deliberately far above the p50 budget above and far below the answering path's

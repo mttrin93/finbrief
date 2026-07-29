@@ -19,6 +19,7 @@ from finbrief.evaluation.report import (
     cell,
     headline_section,
     is_partial,
+    missing_coverage,
     render_report,
 )
 from finbrief.retrieval.retrieve import Retrieval
@@ -36,6 +37,7 @@ def a_provenance(**overrides) -> Provenance:
         "collection_ingest_run": "2026-07-27 08:51 UTC, 5842 chunks",
         "collection_fingerprint": "c986299c02043ee8deadbeef",
         "golden_set_rows": 28,
+        "golden_set_total": 28,
         "stages": ALL_STAGES,
         "cache": {"judge": CacheStats(hits=3, misses=7)},
     }
@@ -117,6 +119,56 @@ def test_a_staged_run_names_the_stages_it_skipped_above_the_numbers():
     banner = markdown.split("## Per-bucket")[0]
     assert "PARTIAL RUN" in banner
     assert "resolve" in banner and "answer" in banner and "judge" in banner
+
+
+def test_a_row_subset_is_flagged_partial_and_names_what_it_scored():
+    """The `--rows` half of the banner gap, as a regression test.
+
+    `--rows S1,T2` is the documented smoke mode and it wrote the committed artifact with every
+    hypothesis, both pre-registered decisions and the headline block rendered over two questions
+    and **no banner** — `is_partial` looked only at stages. `_resolve` already refused to let a
+    partial run overwrite `golden_variants.json`; the artifact had no equivalent.
+    """
+    provenance = a_provenance(golden_set_rows=2, golden_set_total=28)
+
+    markdown = render_report(
+        provenance=provenance,
+        golden=load_golden_set(),
+        cells=some_cells(),
+        arms=SCORED_ARMS,
+    )
+
+    assert is_partial(provenance)
+    banner = markdown.split("## Per-bucket")[0]
+    assert "PARTIAL RUN" in banner
+    assert "2 of the golden set's 28 rows" in banner
+
+
+def test_skipping_the_ablations_is_flagged_partial_and_names_the_absent_channels():
+    # `--no-ablations` dropped ADR-0004 §7's ablation and ADR-0005 §2's falsification channel
+    # and left no trace in the file at all: the section is simply not emitted, so a reader
+    # cannot tell an unrun channel from one that was never asked for.
+    provenance = a_provenance(ablations_run=False)
+
+    markdown = render_report(
+        provenance=provenance,
+        golden=load_golden_set(),
+        cells=some_cells(),
+        arms=SCORED_ARMS,
+        ablations=(),
+    )
+
+    assert is_partial(provenance)
+    banner = markdown.split("## Per-bucket")[0]
+    assert "PARTIAL RUN" in banner
+    assert "ADR-0005 §2" in banner
+
+
+def test_a_full_row_count_with_every_stage_and_the_ablations_is_not_partial():
+    # The equality that keeps the three flags honest in the other direction: a complete run must
+    # not be banner-flagged, or the banner stops meaning anything.
+    assert not is_partial(a_provenance())
+    assert missing_coverage(a_provenance()) == ()
 
 
 def test_an_absent_metric_renders_as_a_dash_and_never_as_zero():

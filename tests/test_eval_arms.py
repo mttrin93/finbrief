@@ -175,7 +175,9 @@ def test_target_sections_are_keyed_the_way_section_chunk_counts_are(golden):
 def test_a_multi_filer_row_reports_every_filer_it_grounds_in(golden):
     row = golden.row("M3")
 
-    assert len(row.tickers) > 1
+    # An equality rather than `> 1`: M3 is *the* multi-filer row and 2, 3 and 7 all satisfy a
+    # bound, so a row that lost a filer would still pass one.
+    assert row.tickers == {"F", "GM"}
     assert row.tickers == {entry.ticker for entry in row.grounding}
 
 

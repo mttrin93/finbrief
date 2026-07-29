@@ -36,7 +36,9 @@ from finbrief.evaluation.run import cached_map
 from finbrief.evaluation.variants import VariantSet
 from finbrief.rag import answer_question
 from finbrief.retrieval.retrieve import Retrieval
-from finbrief.retrieval.vectorstore import all_chunks
+from finbrief.retrieval.vectorstore import (
+    collection_fingerprint as _collection_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,19 +97,13 @@ def settings_for(arm: Arm, settings: Settings) -> Settings:
     return replace(settings, max_sub_queries=arm.max_sub_queries)
 
 
-def collection_fingerprint(store: Chroma) -> str:
-    """A digest over every chunk id and its content hash — the ingest this run measured.
-
-    Ids alone would be wrong: a re-ingest with a different chunker keeps the ids and rewrites
-    the bodies, so a cached retrieval would be served for a collection it never ran against.
-    The metadata already carries `content_hash` (ingest writes it for the idempotency check),
-    so this costs no hashing of bodies.
-    """
-    digest = hashlib.sha256()
-    for document in sorted(all_chunks(store), key=lambda doc: doc.id or ""):
-        digest.update((document.id or "").encode("utf-8"))
-        digest.update(str(document.metadata.get("content_hash", "")).encode("utf-8"))
-    return digest.hexdigest()
+#: Re-exported from `retrieval/vectorstore.py`, which owns every crossing into the corpus.
+#:
+#: This function used to live here and call `vectorstore.all_chunks` directly, which made a
+#: **third** corpus crossing from outside `retrieval/` where CLAUDE.md enumerates two (code
+#: review of #11). The name stays importable here because the stages read it as a cache-key
+#: input.
+collection_fingerprint = _collection_fingerprint
 
 
 def retrieval_key(

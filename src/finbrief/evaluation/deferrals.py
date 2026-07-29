@@ -28,6 +28,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from finbrief.observability.events import EventLog
+from finbrief.security.markers import numeric_markers
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,10 +218,6 @@ def advice_residue(
 
 # --- 4. faithfulness of cited sentences (T3/T5) ---------------------------------------
 
-#: An inline citation marker: `[1]`, `[12]`. The same shape `security/markers.py` parses, and
-#: numeric-only for the same reason — `[Yahoo Finance]` is the *other* deferral's subject.
-_MARKER = re.compile(r"\[(\d+)\]")
-
 #: Sentence boundaries, deliberately crude. A citation sits at the end of the clause it
 #: supports, so splitting on terminal punctuation is enough to pair a marker with the text it
 #: attaches to; a full sentence tokeniser would be a new dependency for no gain here.
@@ -246,28 +243,66 @@ def cited_sentences(answer: str) -> tuple[CitedSentence, ...]:
     """
     found = []
     for sentence in _SENTENCE.split(answer.strip()):
-        ranks = tuple(int(match) for match in _MARKER.findall(sentence))
+        # `security.markers` owns what a citation marker is — numeric-only for the same reason
+        # it is there (`[Yahoo Finance]` is the *other* deferral's subject), and read from that
+        # module so a measurement of the gate cannot disagree with the gate about what a
+        # citation *is*.
+        ranks = numeric_markers(sentence)
         if ranks:
             found.append(CitedSentence(sentence=sentence.strip(), ranks=ranks))
     return tuple(found)
 
 
+#: A cited claim counts as supported only when the judge supports **all** of it.
+#:
+#: ragas faithfulness over one sentence is supported-claims / claims, so a two-claim sentence
+#: with one claim the chunk does not support scores exactly 0.5 — and the first version's
+#: `verdict >= 0.5` counted that as **supported**, on the boundary, documented nowhere. A
+#: marker that names a chunk is a claim that the chunk says this; half of it saying so is not
+#: the claim. Partial support is now its own count rather than a rounding decision, which is
+#: what makes the boundary disappear instead of moving.
+CITED_SUPPORT_FLOOR = 1.0
+
+
 @dataclass(frozen=True, slots=True)
 class CitationSupport:
-    """How often a resolving marker's own chunk supports the sentence carrying it."""
+    """Whether a resolving marker's own chunk supports the claim it is attached to.
+
+    **The unit is one `(sentence, marker)` pair, not one sentence**, and saying so is a
+    correction: a sentence carrying `[1][3]` names two chunks and is two claims, so it
+    contributes two observations, and the first artifact's "21 cited sentence(s) not supported"
+    was 21 pairs. `sentences` is carried beside the pair counts so both denominators are
+    visible.
+    """
 
     supported: int
+    #: The judge supported *some* of the sentence's claims against the named chunk but not all.
+    #: Counted apart rather than rounded either way — see `CITED_SUPPORT_FLOOR`.
+    partial: int
     unsupported: int
     #: Markers pointing outside the retrieval — counted apart, since that is the *other*
     #: deferral's failure and structurally prevented since T7's register.
     unresolvable: int
+    #: Pairs the judge returned no score for. **Never silently dropped**: the first version
+    #: `continue`d past a `None` verdict with no counter at all, so a judge failure would have
+    #: narrowed the rate's denominator leaving no trace — the absence-as-measurement failure
+    #: `observability.events.Samples.absent` exists to prevent, in a module whose own `Rate`
+    #: docstring forbids it.
+    unscored: int
+    #: Distinct sentences that carried at least one resolving marker.
+    sentences: int
 
     @property
     def rate(self) -> Rate:
+        """Fully-supported pairs over every pair the judge scored.
+
+        Partial support sits in the denominator and not the numerator, which is the direction
+        that cannot flatter the result.
+        """
         return Rate(
-            label="cited-sentence support",
+            label="cited-marker support",
             hits=self.supported,
-            total=self.supported + self.unsupported,
+            total=self.supported + self.partial + self.unsupported,
         )
 
 
@@ -294,9 +329,11 @@ def citation_support(
 
     A marker pointing outside the retrieval is `unresolvable` and stays out of the rate: that
     is the bracket-rule deferral's failure, structurally prevented since T7's register, and
-    folding it in would blend two questions with different fixes.
+    folding it in would blend two questions with different fixes. A pair the judge could not
+    score is `unscored` and likewise out of it — but **counted**, because a denominator that
+    narrows itself leaves no trace of having done so.
     """
-    supported = unsupported = unresolvable = 0
+    supported = partial = unsupported = unresolvable = unscored = sentences = 0
     for cell in cells:
         if getattr(cell, "arm", None) != arm:
             continue
@@ -305,17 +342,25 @@ def citation_support(
             continue
         contexts = cell.retrieval.contexts
         for cited in cited_sentences(answer):
+            sentences += 1
             for rank in cited.ranks:
                 if rank < 1 or rank > len(contexts):
                     unresolvable += 1
                     continue
                 verdict = judge_sentence(cited.sentence, contexts[rank - 1].body)
                 if verdict is None:
-                    continue
-                if verdict >= 0.5:
+                    unscored += 1
+                elif verdict >= CITED_SUPPORT_FLOOR:
                     supported += 1
+                elif verdict > 0.0:
+                    partial += 1
                 else:
                     unsupported += 1
     return CitationSupport(
-        supported=supported, unsupported=unsupported, unresolvable=unresolvable
+        supported=supported,
+        partial=partial,
+        unsupported=unsupported,
+        unresolvable=unresolvable,
+        unscored=unscored,
+        sentences=sentences,
     )

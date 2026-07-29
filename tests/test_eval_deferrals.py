@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -194,7 +195,9 @@ def test_the_committed_probes_are_advice_shaped_and_carry_no_rating_word():
     # floor.
     from finbrief.security.corpus import ADVICE_RESIDUE_PROBES
 
-    assert len(ADVICE_RESIDUE_PROBES) >= 5
+    # An equality, not a bound: the committed headline is a rate over this exact count, so a
+    # probe silently added or dropped changes the denominator the artifact publishes.
+    assert len(ADVICE_RESIDUE_PROBES) == 6
     # Whole words, not substrings: a *rating* is `hold` standing alone, as in "Rating: HOLD" —
     # `holding` is a verb of ownership and a 10-K uses it constantly, which is exactly why
     # `RESEARCH_ANSWERS` carries the filer's own first person and why this check has to be
@@ -207,14 +210,47 @@ def test_the_committed_probes_are_advice_shaped_and_carry_no_rating_word():
 
 
 def test_the_residue_probes_are_measurable_without_a_model():
-    # Free and deterministic — which is why this deferral needed no live run and could have been
-    # closed at any point since T7.
+    """Free and deterministic, and asserted on the **split** rather than on the total.
+
+    `measured.rate.total == len(probes)` was the whole assertion, and it is true by construction
+    of `advice_residue` whatever the validator did — the caught/residue split is the measurement
+    and it went unchecked (code review of #11). It matters here more than usual because
+    `advice_residue` reads the verdict through `getattr(verdict, "refused", False)`: rename
+    `AdviceVerdict.refused` and every probe silently lands in the residue, reporting a 100%
+    evasion rate that is really a missing attribute. The committed headline is 6/6, so the
+    failure would have looked exactly like the result.
+    """
     from finbrief.security.advice import validate_answer
     from finbrief.security.corpus import ADVICE_RESIDUE_PROBES
 
     measured = advice_residue(ADVICE_RESIDUE_PROBES, validate=validate_answer)
 
     assert measured.rate.total == len(ADVICE_RESIDUE_PROBES)
+    # The attribute the rate is read through exists and is a bool on a real verdict — the thing
+    # `getattr(..., False)` would swallow.
+    verdict = validate_answer(ADVICE_RESIDUE_PROBES[0])
+    assert isinstance(verdict.refused, bool)
+    # And the split is the validator's, not the helper's: an injected validator that refuses
+    # everything must produce an empty residue over the same probes.
+    all_refused = advice_residue(
+        ADVICE_RESIDUE_PROBES, validate=lambda _: SimpleNamespace(refused=True)
+    )
+    assert all_refused.residue == ()
+    assert all_refused.caught == tuple(ADVICE_RESIDUE_PROBES)
+    assert all_refused.rate.hits == 0
+
+
+def test_a_probe_set_the_validator_cannot_be_read_from_is_not_a_zero_residue():
+    # The `getattr` fallback is a fail-*open* on the measurement: a verdict object with no
+    # `refused` attribute reads as "not refused" and inflates the residue to 100%. Pinned so the
+    # behaviour is a decision rather than an accident — if it should raise instead, this test is
+    # where that choice gets made.
+    measured = advice_residue(("some advice",), validate=lambda _: object())
+
+    assert measured.residue == ("some advice",)
+    assert measured.rate.rate == pytest.approx(1.0), (
+        "an unreadable verdict currently reads as unrefused — see the comment"
+    )
 
 
 # --- 4. cited sentences --------------------------------------------------------------
@@ -320,9 +356,12 @@ def test_only_the_named_arm_is_scored():
     assert result.rate.rate is None
 
 
-def test_an_unscoreable_sentence_is_skipped_rather_than_counted_either_way():
+def test_an_unscoreable_pair_is_kept_out_of_the_rate_and_still_counted():
     # The judge returning `None` means it could not score the pair; counting it as unsupported
-    # would blame the pipeline for the judge's failure.
+    # would blame the pipeline for the judge's failure. **But it is counted**: the first version
+    # `continue`d past it with no field at all, so a judge failure narrowed the rate's
+    # denominator and left nothing in the artifact to say it had — the absence-as-measurement
+    # failure `Samples.absent` exists to prevent.
     from finbrief.evaluation.deferrals import citation_support
 
     result = citation_support(
@@ -331,5 +370,63 @@ def test_an_unscoreable_sentence_is_skipped_rather_than_counted_either_way():
         judge_sentence=lambda sentence, body: None,
     )
 
-    assert (result.supported, result.unsupported) == (0, 0)
+    assert (result.supported, result.partial, result.unsupported) == (0, 0, 0)
+    assert result.unscored == 1
     assert result.rate.rate is None
+
+
+def test_a_half_supported_sentence_is_not_counted_as_supported():
+    """The boundary the first artifact's 70% sat on, as a regression test.
+
+    ragas faithfulness over one sentence is supported-claims / claims, so a two-claim sentence
+    with one claim the chunk does not support scores exactly 0.5 — and `verdict >= 0.5` counted
+    that as **supported**, on the boundary, documented nowhere. Partial support is its own count
+    and sits in the denominator, which is the direction that cannot flatter the rate.
+    """
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("Two claims, one of them grounded [1].", ["body"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: 0.5,
+    )
+
+    assert result.supported == 0
+    assert result.partial == 1
+    assert result.rate.rate == pytest.approx(0.0)
+    assert result.rate.total == 1
+
+
+def test_full_support_is_the_floor_for_supported():
+    # An equality against the constant rather than a bound, so a moved floor fails here.
+    from finbrief.evaluation.deferrals import CITED_SUPPORT_FLOOR, citation_support
+
+    assert CITED_SUPPORT_FLOOR == 1.0
+    result = citation_support(
+        [_Cell("A claim [1].", ["body"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: CITED_SUPPORT_FLOOR,
+    )
+
+    assert (result.supported, result.partial) == (1, 0)
+
+
+def test_the_unit_is_one_sentence_marker_pair_not_one_sentence():
+    """The mislabel in the first artifact: "21 cited sentence(s)" was 21 pairs.
+
+    A sentence citing two chunks makes two claims and is judged twice, so the rate's denominator
+    counts pairs. Both denominators are carried, because a rate whose unit a reader has to infer
+    is a rate they cannot weigh.
+    """
+    from finbrief.evaluation.deferrals import citation_support
+
+    result = citation_support(
+        [_Cell("One sentence naming two chunks [1][2].", ["grounded", "not grounded"])],
+        arm="hybrid+translation",
+        judge_sentence=lambda sentence, body: 1.0 if body == "grounded" else 0.0,
+    )
+
+    assert result.sentences == 1
+    assert result.rate.total == 2, "two markers on one sentence are two observations"
+    assert (result.supported, result.unsupported) == (1, 1)
+    assert result.rate.label == "cited-marker support"

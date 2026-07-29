@@ -11,6 +11,14 @@ met" is the exact failure this repo enforces against, so every function here rai
 than returning a number it could not compute. `scripts/evaluate.py` also checks the switch
 *before* spending anything, because discovering it afterwards costs the whole run.
 
+**And the sink is *shared*, which is the second failure and the one the first artifact
+shipped.** It is append-only across every run and every app session that ever named it, so a
+median over the file is a median over all of them: the first committed artifact reported
+1518 ms p50 over 60 samples from a pool holding 13 appended runs — including the pre-fix runs
+whose ablation cells made real planner calls, which `HARNESS_VERSION` evicted from the *cache*
+and could not touch in the *log*. Every reader here now takes a `start_offset` from
+`events.sink_offset`, marked before the run, so the window is this run's.
+
 **The planner's round and the retrieval rounds are separate lines, and only one of them is
 what the clause is about.** `query_translation.latency_ms` is the chat round translation adds;
 `retrieval.latency_ms` is the whole retrieval, timed from before the translate branch.
@@ -28,12 +36,32 @@ between reporting translation's cost and reporting the stub's.
 
 from __future__ import annotations
 
+import json
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from finbrief.config import TRANSLATION_LATENCY_BUDGET_MS
 from finbrief.observability.events import EventLog, read_events
+
+#: The fewest `variants` a retrieval must carry to count as "translation with the planner on".
+#:
+#: Three: the original question (always variant 0, ADR-0004), the deterministic ticker form,
+#: and at least one planner sub-query. The two ablation arms run with `translation: true` and
+#: the planner off, so they reach two at most — and folding them into the translated pool
+#: measures the ticker form's cost under the budget meant for the planner's, across four arms
+#: where only two plan.
+#:
+#: **The limitation this filter has, stated where the filter is**: a turn where the planner
+#: *refused* also lands under the floor and is excluded, so the reported delta is what
+#: translation costs *when it produces sub-queries* rather than an average over turns where it
+#: sometimes does not. `TranslationCost.planner_off_lines` carries the excluded count, so the
+#: exclusion is visible rather than inferred.
+#:
+#: An assertion about the shape of a retrieval and not a knob, so it lives here rather than in
+#: `config.py` — the same grounds as the ingestion thresholds.
+PLANNED_VARIANTS_FLOOR = 3
 
 
 class NoSamples(RuntimeError):
@@ -44,13 +72,23 @@ class SinkMissing(RuntimeError):
     """The sink was never enabled, so there is no log to read."""
 
 
-def load_log(path: Path | str | None) -> EventLog:
-    """The events at `path`, refusing both an unnamed sink and a missing file.
+def load_log(path: Path | str | None, *, start_offset: int = 0) -> EventLog:
+    """This run's events at `path`, refusing both an unnamed sink and a missing file.
 
     `read_events` already raises on a missing file — "nobody enabled the log" read as "this
     run emitted nothing" is how a p50 over zero samples gets reported as a budget met
     (`observability/events.py`). This adds the `None` case, which is the one a fresh checkout
     hits.
+
+    **`start_offset` is what makes these figures this run's**, and it is required rather than
+    convenient: the sink is append-only across runs, so without a mark every median here is a
+    median over every run that ever shared the file. See `events.sink_offset`.
+
+    It also resolves the interaction between run-scoping and the cache, by making the honest
+    answer the automatic one: a stage served entirely from cache issues no calls and therefore
+    appends no lines, so a warm run's window is empty and `p50` **raises** rather than serving
+    a previous run's number. A latency figure in the artifact now means the stage behind it
+    actually ran.
     """
     if path is None:
         raise SinkMissing(
@@ -58,7 +96,70 @@ def load_log(path: Path | str | None) -> EventLog:
             "ADR-0005's '<=1.5s p50 added by translation' cannot be measured from nothing, and "
             "reporting it as met would be an absence presented as a measurement."
         )
-    return read_events(path)
+    return read_events(path, start_offset=start_offset)
+
+
+#: Where a run records which slice of the sink is *its* window, beside the cells it paid for.
+WINDOW_FILE = "log-window.json"
+
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """The slice of a sink one measuring run wrote, and when.
+
+    **Persisted for the same reason the cells are.** The artifact is regenerable from the
+    cache, so the log window has to be regenerable too: a `--stage report` re-render replays
+    every cell and therefore appends no lines, so without a recorded mark its own window is
+    empty and the latency section refuses on a run whose numbers exist. Recording the mark makes
+    a re-render describe *the measuring run that produced these cached cells* — which is what
+    the artifact is about — and `replayed` is what makes the artifact say so rather than
+    implying a fresh timing.
+    """
+
+    path: str
+    offset: int
+    recorded_at: str
+    replayed: bool = False
+
+
+def save_window(cache_root: Path | str, window: Window) -> Path:
+    """Record this run's window beside its cached cells."""
+    path = Path(cache_root) / WINDOW_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "path": window.path,
+                "offset": window.offset,
+                "recorded_at": window.recorded_at,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_window(cache_root: Path | str) -> Window | None:
+    """The last measuring run's window, or `None` when there is not one recorded.
+
+    `None` rather than a zero offset: offset 0 means "the whole file", which is the pooled-runs
+    reading this module exists to stop. An absent mark is an absence.
+    """
+    path = Path(cache_root) / WINDOW_FILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    try:
+        return Window(
+            path=str(payload["path"]),
+            offset=int(payload["offset"]),
+            recorded_at=str(payload["recorded_at"]),
+            replayed=True,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def p50(values: Sequence[float], *, what: str) -> float:
@@ -93,6 +194,9 @@ class TranslationCost:
     retrieval_untranslated_p50_ms: float
     translated_samples: int
     untranslated_samples: int
+    #: `translation: true` retrievals excluded from the translated pool because the planner was
+    #: off (the ablation arms) or refused. Reported, never silently dropped.
+    planner_off_lines: int
     budget_ms: float
 
     @property
@@ -116,12 +220,19 @@ class TranslationCost:
         return self.added_p50_ms <= self.budget_ms
 
 
-def translation_cost(log: EventLog, *, budget_ms: float = 1500.0) -> TranslationCost:
+def translation_cost(
+    log: EventLog, *, budget_ms: float = TRANSLATION_LATENCY_BUDGET_MS
+) -> TranslationCost:
     """ADR-0005's added-latency p50, from the two kinds of line that carry it.
 
     Raises `NoSamples` if either half is missing, rather than substituting a zero for the half
     it could not measure — a budget met because one of its two terms was silently absent is
     not met.
+
+    The budget comes from `config.TRANSLATION_LATENCY_BUDGET_MS` and not from a literal here:
+    it is one of the two pre-registered latency figures CLAUDE.md's single-source list names,
+    and it sat in this signature as an unbound `1500.0` while the gate's twin was bound by an
+    equality.
     """
     planner = [
         event.field("latency_ms")
@@ -133,20 +244,35 @@ def translation_cost(log: EventLog, *, budget_ms: float = 1500.0) -> Translation
     ]
     translated: list[float] = []
     untranslated: list[float] = []
+    planner_off = 0
     for event in log.of("retrieval"):
         latency = event.field("latency_ms")
         if latency is None:
             continue
-        (translated if event.field("translation") else untranslated).append(latency)
+        if not event.field("translation"):
+            untranslated.append(latency)
+        elif (event.field("variants") or 0) >= PLANNED_VARIANTS_FLOOR:
+            translated.append(latency)
+        else:
+            # A `translation: true` retrieval that added fewer than two variants had the planner
+            # **off** — the two ablation arms, whose only addition is the deterministic ticker
+            # form. Averaging them into the translated pool measures a cheaper operation than
+            # the one the budget is about and drags the delta down: four of the six arms carry
+            # `translation: true` and only two of them plan. Counted apart rather than dropped
+            # silently.
+            planner_off += 1
     return TranslationCost(
         planner_p50_ms=p50(planner, what="query_translation lines with token counts"),
         planner_samples=len(planner),
-        retrieval_translated_p50_ms=p50(translated, what="retrieval lines with translation on"),
+        retrieval_translated_p50_ms=p50(
+            translated, what="retrieval lines with translation on and the planner planning"
+        ),
         retrieval_untranslated_p50_ms=p50(
             untranslated, what="retrieval lines with translation off"
         ),
         translated_samples=len(translated),
         untranslated_samples=len(untranslated),
+        planner_off_lines=planner_off,
         budget_ms=budget_ms,
     )
 
