@@ -192,15 +192,29 @@ def current_turn() -> str | None:
 
 
 def log_event(
-    logger: logging.Logger, event: str, /, *, level: int = logging.INFO, **fields: Any
+    logger: logging.Logger,
+    event: str,
+    /,
+    *,
+    level: int = logging.INFO,
+    exc_info: bool = False,
+    **fields: Any,
 ) -> None:
     """Emit one structured event. `event` is the stable key analyses filter on.
 
     `logger` and `event` are positional-only so that almost any field name is usable.
-    `level` is the one reserved word: it selects the log level, so a payload cannot use it
-    as a field key — give the datum a different name. The envelope's own `level` is
-    unreachable from `fields` either way, since fields are nested rather than flattened —
-    and so is `turn_id`, which is read from the context here rather than taken as a field.
+    `level` and `exc_info` are the two reserved words: they select the log level and attach
+    the current traceback, so a payload cannot use either as a field key — give the datum a
+    different name. The envelope's own `level` is unreachable from `fields` either way, since
+    fields are nested rather than flattened — and so is `turn_id`, which is read from the
+    context here rather than taken as a field.
+
+    `exc_info` exists so that a *failure* is an event like everything else. `app/Home.py` used
+    `logger.exception` directly, which was the only `log_event` bypass in the codebase and
+    therefore the only line that carried no `turn_id` — a failed turn being precisely the one
+    whose provenance a reader wants (issue #10 review). `JsonLinesFormatter` already renders
+    `record.exc_info` into the envelope's `error`; this just stops the caller having to reach
+    past the emitter to get it.
 
     The turn is read **at the call site**, not in the handler: the value belongs to the
     context that emitted the event, and a handler is free to run somewhere else.
@@ -208,5 +222,6 @@ def log_event(
     logger.log(
         level,
         event,
+        exc_info=exc_info,
         extra={"event": event, "fields": fields, "turn_id": _TURN_ID.get()},
     )

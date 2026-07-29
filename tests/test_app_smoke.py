@@ -529,6 +529,13 @@ def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsy
     (failure,) = [line for line in lines if line.get("event") == "chat_turn_failed"]
     assert failure["level"] == "ERROR"
     assert "upstream refused" in failure["error"], "the traceback travels, in one JSON object"
+    # And it is attributable. This line used to come from `logger.exception` — the codebase's
+    # one bypass of `log_event`, and therefore the one line with no `turn_id` on it, on exactly
+    # the turn whose provenance a reader is looking for (issue #10 review).
+    assert failure["turn_id"].startswith(f"{app.session_state.thread_id}:")
+    # The type is a field rather than only inside the traceback, so a reader filtering the log
+    # for what went wrong does not have to parse a formatted exception to find out.
+    assert failure["fields"]["error_type"] == "RuntimeError"
 
 
 def test_a_real_turn_tags_every_line_it_emits_with_one_turn_id(

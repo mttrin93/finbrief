@@ -46,7 +46,7 @@ from finbrief.config import (
     get_settings,
 )
 from finbrief.finance.ratios import Metric, Unit
-from finbrief.observability.logging_setup import configure_logging
+from finbrief.observability.logging_setup import configure_logging, log_event
 
 # Aliased, and the alias is the point: this module already binds `turn` at module scope — the
 # replay loop's `if (turn := message.get("turn"))` walrus, holding an `AgentTurn`. Importing the
@@ -911,13 +911,29 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                     "name a company.",
                     icon=":material/repeat_on:",
                 )
-            except Exception as exc:  # noqa: BLE001 — last resort, and it names no internals
+            # Broad by intent — the last resort, and it names no internals (`noqa: BLE001`).
+            # The prose sits here rather than inline because the reindent this block needed put
+            # the inline version over 96 characters, and shortening it silently dropped a word
+            # (issue #10 review): a line long enough to need rewrapping gets rewrapped, never
+            # trimmed.
+            except Exception as exc:  # noqa: BLE001
                 # The exception *type*, not its message. A client error string can carry a
                 # request URL, and a request URL can carry an API key — the same reason
                 # `log_event` never records one (`observability/logging_setup.py`). The detail
                 # goes to the log, where it is already structured; the reader gets something
                 # actionable instead.
-                logger.exception("chat_turn_failed")
+                #
+                # Through `log_event` rather than `logger.exception`, which was this codebase's
+                # only bypass of the single emitter — and so the only line carrying no
+                # `turn_id`, on precisely the turn whose provenance a reader wants. The
+                # traceback still travels, in the envelope's `error`.
+                log_event(
+                    logger,
+                    "chat_turn_failed",
+                    level=logging.ERROR,
+                    exc_info=True,
+                    error_type=type(exc).__name__,
+                )
                 status.update(label="Failed", state="error", expanded=False)
                 st.error(
                     f"FinBrief could not answer that ({type(exc).__name__}). Try again — and "
