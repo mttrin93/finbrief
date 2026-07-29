@@ -44,9 +44,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from finbrief.config import Settings, get_settings, load_env, resolve_log_file
+from finbrief.evaluation import hypotheses, latency, pipeline, report, variants
 from finbrief.evaluation import judge as judging
-from finbrief.evaluation import pipeline, report, variants
-from finbrief.evaluation.arms import ABLATION_ARMS, SCORED_ARMS, Arm
+from finbrief.evaluation.arms import ABLATION_ARMS, SCORED_ARMS, SHIPPING_DEFAULT, Arm
 from finbrief.evaluation.cache import Cache
 from finbrief.evaluation.loader import GoldenQuestion, GoldenSet, load_golden_set
 from finbrief.evaluation.pipeline import Cell
@@ -232,13 +232,66 @@ def run(args: argparse.Namespace) -> str:
         stages=stages,
         cache={kind: cache.stats(kind) for kind in cache.kinds()},
     )
+    sections = _findings_sections(cells, sink=sink)
     return report.render_report(
         provenance=provenance,
         golden=golden,
         cells=cells,
         arms=SCORED_ARMS,
         ablations=ABLATION_ARMS if args.ablations else (),
+        sections=sections,
     )
+
+
+def _findings_sections(
+    cells: Sequence[Cell], *, sink: Path | None
+) -> tuple[tuple[str, str], ...]:
+    """The pre-registered half of the artifact: predictions, triggers, latency.
+
+    Each block is rendered even when the run could not settle it — a prediction reported only
+    when it resolved is a prediction a reader cannot tell was evaluated, and ADR-0005 §4's
+    trigger fires on an *absence* of gain, which is the shape that goes unnoticed when it is
+    not printed.
+    """
+    sections = [
+        (
+            "## Pre-registered hypotheses — prediction, then measurement, then verdict",
+            report.hypothesis_section(hypotheses.as_report_entries(hypotheses.outcomes(cells))),
+        ),
+        (
+            "## The two pre-registered decisions",
+            report.decisions_section(
+                hypotheses.falsification_clause(cells),
+                hypotheses.reexamination_trigger(cells),
+                default_arm_label=SHIPPING_DEFAULT.label,
+            ),
+        ),
+    ]
+    sections.append(("## Latency and token spend", _latency_body(sink)))
+    return tuple(sections)
+
+
+def _latency_body(sink: Path | None) -> str:
+    """ADR-0005's budget from the log, or a plain statement that it was not measurable.
+
+    The refusal is rendered *as a refusal*, naming what is missing. An artifact that dropped
+    the section when the sink was off would read as a run that had no latency to report, which
+    is the absence-as-measurement failure the whole section exists to avoid.
+    """
+    try:
+        log = latency.load_log(sink)
+        cost = latency.translation_cost(log)
+    except (latency.SinkMissing, latency.NoSamples, FileNotFoundError) as exc:
+        return (
+            "**Not measured, and therefore not met.** "
+            f"{exc}\n\nADR-0005's dominance test has a cost half, and this run cannot answer "
+            "it. Re-run with `FINBRIEF_LOG_FILE` set to fill this section in."
+        )
+    spends = [
+        latency.token_spend(log, name)
+        for name in ("rag_answer", "query_translation", "agent_turn")
+    ]
+    return report.latency_section(cost, [spend for spend in spends if spend.lines])
 
 
 def _resolve(

@@ -337,3 +337,135 @@ def hypothesis_section(entries: Sequence[Mapping[str, Any]]) -> str:
             f"| **{entry['verdict']}** |"
         )
     return "\n".join(lines)
+
+
+def decisions_section(clauses: Sequence[Any], trigger: Any, *, default_arm_label: str) -> str:
+    """ADR-0005's two pre-registered triggers, and what this run did to them.
+
+    Both are printed whether they fired or not. A trigger reported only when it fires is a
+    trigger a reader cannot tell was evaluated — and ADR-0005 §4's fires on an *absence* of
+    gain, which is exactly the shape that goes unnoticed if it is not printed.
+    """
+    lines = [
+        "### Falsification clause (ADR-0005) — translation, per bucket",
+        "",
+        "Fires only when translation is worse on **both** context precision **and** context "
+        "recall within a bucket, each by more than its own per-question spread. Directional "
+        "and "
+        "two-sided by design: with ~7 questions per bucket a tight numeric margin would be "
+        "false "
+        "precision, and dropping a pre-registered default on half the evidence would be worse "
+        "than keeping it.",
+        "",
+        "| bucket | context precision | context recall | clause |",
+        "|---|---|---|---|",
+    ]
+    for clause in clauses:
+        state = "**FIRES**" if clause.fires else "does not fire"
+        lines.append(
+            f"| {clause.bucket.value} | {clause.precision.value} | {clause.recall.value} "
+            f"| {state} |"
+        )
+    fired = [c.bucket.value for c in clauses if c.fires]
+    lines += [
+        "",
+        (
+            f"**Outcome: the clause fires on {', '.join(fired)}, so the shipping default drops "
+            f"to `hybrid-only` and the contradiction is the finding.**"
+            if fired
+            else f"**Outcome: the clause does not fire on any bucket, so the pre-committed "
+            f"default stands: {default_arm_label}.**"
+        ),
+        "",
+        "### Re-examination trigger (ADR-0005 §4) — the strategy axis",
+        "",
+        "Fires on an **absence of gain**, not on a loss: if `hybrid − vector` at equal "
+        "translation is within per-question spread on *every* bucket, the dominance argument "
+        "is "
+        "re-argued rather than defended and `vector + translation` becomes a live candidate "
+        "for "
+        "the default. Registered before any number existed, because a default kept because its "
+        "marginal component was never separately measured is p-hacking in the other direction.",
+        "",
+        "| bucket | hybrid − vector, both +translation |",
+        "|---|---|",
+    ]
+    for bucket, verdict in trigger.per_bucket.items():
+        lines.append(f"| {bucket.value} | {verdict.value} |")
+    lines += [
+        "",
+        (
+            "**Outcome: the trigger FIRES — hybrid adds nothing beyond spread on any settled "
+            "bucket, so ADR-0005's dominance argument is re-argued rather than defended.**"
+            if trigger.fires
+            else "**Outcome: the trigger does not fire.** Hybrid's contribution exceeds "
+            "per-question spread on at least one bucket, so the dominance argument stands as "
+            "argued."
+        ),
+    ]
+    if trigger.undetermined:
+        names = ", ".join(bucket.value for bucket in trigger.undetermined)
+        lines += [
+            "",
+            f"Undetermined on: {names}. Those buckets produced no comparable number, which "
+            f"weakens the conclusion in whichever direction it went — an absence is not "
+            "evidence "
+            f"for either arm.",
+        ]
+    return "\n".join(lines)
+
+
+def latency_section(cost: Any, spends: Sequence[Any]) -> str:
+    """ADR-0005's ≤1.5s p50 budget, and the token counts, both from the log."""
+    verdict = "within budget" if cost.within_budget else "**over budget**"
+    lines = [
+        "Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatch: a "
+        "stopwatch around `retrieve()` cannot split the planner's chat round from the "
+        "retrieval "
+        "rounds, and ADR-0004's amendment makes that split the interesting half of the budget.",
+        "",
+        "| | ms | samples |",
+        "|---|---:|---:|",
+        f"| planner's chat round, p50 | {cost.planner_p50_ms:.0f} | {cost.planner_samples} |",
+        f"| retrieval p50, translation on | {cost.retrieval_translated_p50_ms:.0f} "
+        f"| {cost.translated_samples} |",
+        f"| retrieval p50, translation off | {cost.retrieval_untranslated_p50_ms:.0f} "
+        f"| {cost.untranslated_samples} |",
+        f"| retrieval rounds translation adds, p50 | {cost.retrieval_delta_p50_ms:.0f} | — |",
+        f"| **total p50 added by translation** | **{cost.added_p50_ms:.0f}** | — |",
+        f"| ADR-0005's budget | {cost.budget_ms:.0f} | — |",
+        "",
+        f"**Verdict: {verdict}.**",
+        "",
+        "**The planner's figure comes from the resolve pass, and that is a reconstruction "
+        "rather "
+        "than one measurement.** ADR-0004 §9's replay means the scored `+translation` arms "
+        "serve "
+        "the planner's reply from a stub, so their own `query_translation` lines record ~1 "
+        "ms and "
+        "no token counts — the harness only reads lines that reported spend, since a line "
+        "with no "
+        "`input_tokens` called no model. Adding that median to the retrieval delta is the "
+        "honest "
+        "reconstruction of what the shipped path pays; it is not a single timing of a live "
+        "turn.",
+        "",
+        "| metered event | input tokens | output tokens | lines | unmetered lines |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for spend in spends:
+        lines.append(
+            f"| `{spend.event}` | {spend.input_tokens} ({spend.input_calls} calls) "
+            f"| {spend.output_tokens} ({spend.output_calls} calls) | {spend.lines} "
+            f"| {spend.unmetered_lines} |"
+        )
+    lines += [
+        "",
+        "An unmetered line is a call whose cost is **unknown**, not free "
+        "(`observability/tokens.py`): each count carries its own denominator because a "
+        "provider "
+        "that reports half a pair must not put a fabricated zero on the line. The gate "
+        "classifier's tokens are unmeasured by decision (ADR-0011), and the embeddings API "
+        "returns no usage this code path can see.",
+    ]
+    return "\n".join(lines)
