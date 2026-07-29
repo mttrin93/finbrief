@@ -376,8 +376,15 @@ def a_chunk(index: int, content_hash: str):
 
 
 def a_store(tmp_path, label, chunks):
+    # `fakes`, not `tests.fakes` — every other importer in this suite spells it this way, and
+    # the difference is not cosmetic. pytest puts the test file's own directory on `sys.path`
+    # (there is no `tests/__init__.py`), so `fakes` resolves everywhere; `tests.fakes` needs the
+    # *repo root* on the path as well, which happens to hold under a local editable install and
+    # did not in CI. It passed on the author's machine and failed on the runner — and it reached
+    # the branch unnoticed because no CI run ever executed the commit that introduced it.
+    from fakes import KeywordEmbeddings
+
     from finbrief.retrieval.vectorstore import build_filings_store, write_chunks
-    from tests.fakes import KeywordEmbeddings
 
     store = build_filings_store(
         persist_directory=str(tmp_path / f"chroma-{label}"), embeddings=KeywordEmbeddings()
