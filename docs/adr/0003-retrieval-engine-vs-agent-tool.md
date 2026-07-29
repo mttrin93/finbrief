@@ -217,17 +217,29 @@ live *agent* turns rather than chain runs, which is a different (and nondetermin
 from the one this ADR's numbers come from — so they are reported beside the RAGAs table, never
 inside it, and an unrun measurement is named as unrun rather than left to be assumed:
 
+Requoted from [`docs/verification/evaluation.md`](../verification/evaluation.md). **This table
+said "not measured by this ticket" in all four rows after three of them had been measured** — it was
+written before the live stage existed and never revisited, which is the stale-status failure the
+paragraph below is about, committed inside the amendment that warns against it (code review of #11).
+
 | deferral | from | instrument | status |
 |---|---|---|---|
-| agent-vs-original query divergence rate | T4, §2 above | `agent_query.verbatim` in a live log | **not measured by this ticket** |
-| bracket-rule adherence rate | T5 | `citation_markers` in a live log | **not measured by this ticket** |
-| layer 4's residue — advice no rule matches | T7 | probes through the live agent + `validate_answer` | **not measured by this ticket** |
-| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **not measured by this ticket** |
+| agent-vs-original query divergence rate | T4, §2 above | `agent_query.verbatim` in a live log | **100% (8/8)**, all first-searches |
+| bracket-rule adherence rate | T5 | `citation_markers` in a live log | **not measured** — emitted at the app, unreachable by a harness |
+| layer 4's residue — advice no rule matches | T7 | probes through the live agent + `validate_answer` | **100% (6/6)** not refused |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **31% (22/70)** pairs fully supported |
 
-All four remain **instrumented and unmeasured**, which is the same distinction §2 draws about the
-verbatim rule itself: the events are emitted, the readers exist
-(`observability/events.py`, `evaluation/latency.py`), and nothing has yet run the agent often
-enough to publish a rate. The sample that does exist is the one §2 already records — 0 verbatim of
-2 searches across two conversations — and it is too small to publish as a rate, which is what that
-amendment says about it too. Saying so is the point: an unscored criterion reads as a passed one,
-and the honest form of "we did not get to it" is a row in a table rather than an omission.
+Three of the four are measured and the fourth is named as unmeasurable by this instrument rather
+than as unrun: `citation_markers` is emitted by `app/Home.py` and by nothing else, so a harness that
+drives the agent directly produces the turns and none of the lines (ADR-0011's T8 finding, second
+instance). **The divergence denominator is deliberately small and deliberately honest**: 8 searches
+from this run's own window of the log, not the 40 the first artifact reported by pooling 13 appended
+runs. All 8 are first-searches, so the split §2 asked for has no follow-up half to report — the
+tool-calling eval opens a fresh thread per case, which is what makes each case independent and also
+what removes the one place a *permitted* rewrite could occur. A rate over 8 first-searches is what
+§2 asked for at the size the instrument can currently deliver, and the artifact prints the
+denominator beside it.
+
+Saying so is the point: an unscored criterion reads as a passed one, and the honest form of "we did
+not get to it" is a row in a table rather than an omission — which only works if the row is kept
+current.

@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| generated | 2026-07-29 12:34 UTC |
+| generated | 2026-07-29 13:52 UTC |
 | stages run | resolve, retrieve, answer, judge, agent, report |
 | judge model | `openai/gpt-4.1-mini` (ragas 0.4.3) |
 | answering model | `openai/gpt-4o-mini` |
@@ -14,7 +14,7 @@
 | golden set | 28 rows, verified against EDGAR |
 | collection | 2026-07-27 08:51 UTC, 5842 chunks, docs/verification/ingest-report.md |
 | collection fingerprint | `c986299c02043ee8…` |
-| cache | answer 112 replayed / 0 paid, judge 560 replayed / 0 paid, retrieval 168 replayed / 0 paid, variants 28 replayed / 0 paid |
+| cache | answer 112 replayed / 0 paid, cited_sentence 70 replayed / 0 paid, judge 560 replayed / 0 paid, planner_variance 0 replayed / 40 paid, retrieval 0 replayed / 168 paid, variants 28 replayed / 0 paid |
 
 ## Per-bucket A/B — the deterministic retrieval metrics
 
@@ -85,40 +85,74 @@ Translation on, `max_sub_queries=0`: the deterministic ticker form is still adde
 
 | # | prediction (pre-registered) | measurement | verdict |
 |---|---|---|---|
-| 1 | **H1** hybrid > vector-only on `exact-identifier` — ADR-0002's original prediction, which ADR-0004 §7 narrows to *at equal translation off* and expects to be where the bucket's win comes from **least** <br>*ADR-0002 decision 4; narrowed by ADR-0004 §7* | context precision on `exact-identifier`, hybrid − vector: Δ -0.087 against per-question spread 0.633 → **within spread** (baseline 0.858 n=7, candidate 0.771 n=7) | **refuted** |
-| 2 | **H2** translation is **positive** on `exact-identifier`, via entity normalisation — ADR-0004 §6 revising the earlier '≈ neutral', on one root-caused case where the target chunk moved from absent to rank 1 <br>*ADR-0004 §6 (T6 amendment)* | context precision on `exact-identifier`, hybrid+translation − hybrid: Δ +0.102 against per-question spread 0.633 → **within spread** (baseline 0.771 n=7, candidate 0.874 n=7) | **refuted** |
-| 3 | **H3** translation wins on `multi-hop` — decomposition gives the retrievers something a filing actually answers <br>*ADR-0002 decision 4* | context recall on `multi-hop`, hybrid+translation − hybrid: Δ +0.006 against per-question spread 0.857 → **within spread** (baseline 0.502 n=7, candidate 0.509 n=7) | **refuted** |
-| 4 | **H4** all configurations ≈ tie on `semantic`. **A predicted tie is evidence the experiment is sound, not a failure** (ADR-0002 decision 4) <br>*ADR-0002 decision 4* | context precision on `semantic`, hybrid+translation − vector+translation: Δ +0.007 against per-question spread 1.000 → **within spread** (baseline 0.521 n=7, candidate 0.529 n=7) | **confirmed** |
-| 5 | **H5** hybrid's marginal contribution over `vector + translation` on `exact-identifier` is **small** — ADR-0004 §7, because §6 measured the recovery as embedding-side and BM25's role in it as redundancy rather than recovery <br>*ADR-0004 §7 (pre-data)* | context precision on `exact-identifier`, hybrid+translation − vector+translation: Δ +0.076 against per-question spread 0.633 → **within spread** (baseline 0.798 n=7, candidate 0.874 n=7) | **confirmed** |
-| 6 | **H6** hybrid's contribution may be **larger on `semantic`** than on the bucket it exists to win, after ADR-0004 §10 stopped BM25 admitting chunks on question-form terms <br>*ADR-0004 §7/§10 (pre-data)* | context precision on `semantic`, hybrid+translation − vector+translation: Δ +0.007 against per-question spread 1.000 → **within spread** (baseline 0.521 n=7, candidate 0.529 n=7) | **refuted** |
+| 1 | **H1** hybrid > vector-only on `exact-identifier` — ADR-0002's original prediction, which ADR-0004 §7 narrows to *at equal translation off* and expects to be where the bucket's win comes from **least** <br>*ADR-0002 decision 4; narrowed by ADR-0004 §7* | context precision on `exact-identifier`, hybrid − vector: paired Δ -0.087 [-0.256…+0.250], exact signed-rank p=0.281, n=7 (6 differing) → **not detected** (baseline 0.858 n=7, candidate 0.771 n=7) | **not detected (n=7)** |
+| 2 | **H2** translation is **positive** on `exact-identifier`, via entity normalisation — ADR-0004 §6 revising the earlier '≈ neutral', on one root-caused case where the target chunk moved from absent to rank 1 <br>*ADR-0004 §6 (T6 amendment)* | context precision on `exact-identifier`, hybrid+translation − hybrid: paired Δ +0.102 [+0.000…+0.250], exact signed-rank p=0.125, n=7 (4 differing) → **undetectable at this n** (baseline 0.771 n=7, candidate 0.874 n=7) | **undetectable (effective n=4)** |
+| 3 | **H3** translation wins on `multi-hop` — decomposition gives the retrievers something a filing actually answers <br>*ADR-0002 decision 4* | context recall on `multi-hop`, hybrid+translation − hybrid: paired Δ +0.006 [-0.500…+0.500], exact signed-rank p=1.000, n=7 (5 differing) → **undetectable at this n** (baseline 0.502 n=7, candidate 0.509 n=7) | **undetectable (effective n=5)** |
+| 4 | **H4** all configurations ≈ tie on `semantic`. **A predicted tie is evidence the experiment is sound, not a failure** (ADR-0002 decision 4) <br>*ADR-0002 decision 4* | context precision on `semantic`, hybrid+translation − vector+translation: paired Δ +0.007 [-0.333…+0.500], exact signed-rank p=0.688, n=7 (6 differing) → **not detected** (baseline 0.521 n=7, candidate 0.529 n=7) — the prediction was of *no* difference, so this is **consistent** with it rather than a confirmation of it | **not detected (n=7)** |
+| 5 | **H5** hybrid's marginal contribution over `vector + translation` on `exact-identifier` is **small** — ADR-0004 §7, because §6 measured the recovery as embedding-side and BM25's role in it as redundancy rather than recovery <br>*ADR-0004 §7 (pre-data)* | context precision on `exact-identifier`, hybrid+translation − vector+translation: paired Δ +0.076 [-0.133…+0.250], exact signed-rank p=0.312, n=7 (5 differing) → **undetectable at this n** (baseline 0.798 n=7, candidate 0.874 n=7) — the prediction was of *no* difference, so this is **consistent** with it rather than a confirmation of it | **undetectable (effective n=5)** |
+| 6 | **H6** hybrid's contribution may be **larger on `semantic`** than on the bucket it exists to win, after ADR-0004 §10 stopped BM25 admitting chunks on question-form terms <br>*ADR-0004 §7/§10 (pre-data)* | context precision on `semantic`, hybrid+translation − vector+translation: paired Δ +0.007 [-0.333…+0.500], exact signed-rank p=0.688, n=7 (6 differing) → **not detected** (baseline 0.521 n=7, candidate 0.529 n=7) | **not detected (n=7)** |
 
 ## The two pre-registered decisions
 
 ### Falsification clause (ADR-0005) — translation, per bucket
 
-Fires only when translation is worse on **both** context precision **and** context recall within a bucket, each by more than its own per-question spread. Directional and two-sided by design: with ~7 questions per bucket a tight numeric margin would be false precision, and dropping a pre-registered default on half the evidence would be worse than keeping it.
+Fires only when translation is worse on **both** context precision **and** context recall within a bucket, each resolved as worse by the paired exact signed-rank test. Directional and two-sided by design: with ~7 questions per bucket a tight numeric margin would be false precision, and dropping a pre-registered default on half the evidence would be worse than keeping it.
 
-| bucket | context precision | context recall | clause |
-|---|---|---|---|
-| semantic | within spread | within spread | does not fire |
-| exact-identifier | within spread | within spread | does not fire |
-| tool-augmented | within spread | within spread | does not fire |
-| multi-hop | within spread | within spread | does not fire |
+**The `could fire` column is the one to read first.** A clause that does not fire on a bucket whose sample could not have fired it is not evidence for the default it protects — and that is what this table reported on all four buckets in the first committed run, under a test that could not return anything but a null (ADR-0002's T10 amendment §3). Where `could fire` is **no**, the row is a statement about the sample, not about translation.
+
+| bucket | context precision | context recall | could fire | clause |
+|---|---|---|---|---|
+| semantic | undetectable at this n (effective n=5, Δ -0.067, p=1.000) | undetectable at this n (effective n=3, Δ -0.095, p=0.750) | **no** | does not fire |
+| exact-identifier | undetectable at this n (effective n=4, Δ +0.102, p=0.125) | undetectable at this n (effective n=1, Δ +0.048, p=1.000) | **no** | does not fire |
+| tool-augmented | undetectable at this n (effective n=3, Δ -0.048, p=0.750) | undetectable at this n (effective n=3, Δ +0.167, p=0.250) | **no** | does not fire |
+| multi-hop | undetectable at this n (effective n=4, Δ +0.079, p=0.875) | undetectable at this n (effective n=5, Δ +0.006, p=1.000) | **no** | does not fire |
 
 **Outcome: the clause does not fire on any bucket, so the pre-committed default stands: hybrid + translation (shipping default).**
 
+**How much of that outcome is evidence: the clause could not have fired on semantic, exact-identifier, tool-augmented, multi-hop.** On those buckets too few questions differ between the arms for the exact test to resolve a difference of any size, so the default survives them by default rather than on their evidence. The clause is carried by the buckets marked `yes`, and by nothing else.
+
 ### Re-examination trigger (ADR-0005 §4) — the strategy axis
 
-Fires on an **absence of gain**, not on a loss: if `hybrid − vector` at equal translation is within per-question spread on *every* bucket, the dominance argument is re-argued rather than defended and `vector + translation` becomes a live candidate for the default. Registered before any number existed, because a default kept because its marginal component was never separately measured is p-hacking in the other direction.
+Fires on an **absence of gain**, not on a loss: if `hybrid − vector` at equal translation resolves no gain on *every* bucket, the dominance argument is re-argued rather than defended and `vector + translation` becomes a live candidate for the default. Registered before any number existed, because a default kept because its marginal component was never separately measured is p-hacking in the other direction.
 
-| bucket | hybrid − vector, both +translation |
-|---|---|
-| semantic | within spread |
-| exact-identifier | within spread |
-| tool-augmented | within spread |
-| multi-hop | within spread |
+**Firing on an absence puts the whole weight on the instrument's power**, which is why a bucket that could not have resolved a gain is excluded from the determination rather than counted as an absence of one. In the first committed run every bucket returned a null unconditionally and this trigger fired on that tautology (ADR-0002's T10 amendment §3).
 
-**Outcome: the trigger FIRES — hybrid adds nothing beyond spread on any settled bucket, so ADR-0005's dominance argument is re-argued rather than defended.**
+| bucket | hybrid − vector, both +translation | n (differing) |
+|---|---|---:|
+| semantic | not detected (Δ +0.007, p=0.688) | 7 (6) |
+| exact-identifier | undetectable at this n (effective n=5, Δ +0.076, p=0.312) | 7 (5) |
+| tool-augmented | undetectable at this n (effective n=4, Δ -0.121, p=0.250) | 7 (4) |
+| multi-hop | undetectable at this n (effective n=4, Δ +0.130, p=0.625) | 7 (4) |
+
+**Outcome: the trigger FIRES — on every bucket with the power to resolve one, hybrid's gain is not detected, so ADR-0005's dominance argument is re-argued rather than defended.**
+
+Undetectable on: exact-identifier, tool-augmented, multi-hop. Those buckets' paired differences are too few to reach significance at any effect size, so they are excluded from the determination above rather than read as absences of gain.
+
+## Power audit — which of these cells is a measurement
+
+Every pre-registered comparison in this artifact — the 18 cells of the hypotheses table, the falsification clause and the re-examination trigger — sorted by **whether the instrument could have seen a difference at all**. `undetectable` and `not detected` are different claims and only the second is a measurement; the first committed run had one word for both, and under the range-based comparator every cell was of the first kind while reading as the second.
+
+| verdict | cells | how to read it |
+|---|---:|---|
+| not detected | 4 | **a measurement**: the test had power here and resolved nothing |
+| undetectable at this n | 14 | **not a measurement**: too few differing questions for any result |
+
+**4 of 18 cells carry a measurement.** The rest are statements about the sample.
+
+### The design consequence, and it is a finding about the experiment
+
+ADR-0002 sized each bucket at **≥6 questions**. The exact paired signed-rank test's two-sided p cannot fall below `2 / 2**m` for `m` differing questions, so it reaches α=0.05 only from **m ≥ 6** — and the number of differences allowed to point *against* the majority at each m is what decides what the design can actually resolve:
+
+| differing questions | lowest reachable p | minority signs tolerated |
+|---:|---:|---:|
+| 5 | 0.0625 | none — no result possible |
+| 6 | 0.0312 | 0 |
+| 7 | 0.0156 | 1 |
+| 8 | 0.0078 | 2 |
+
+So at the floor of 6 differing questions the effect must be **perfectly unanimous**, and at 7 exactly one question may disagree. **This design can only resolve near-unanimous effects, at any effect size.** A real difference of 0.2 that holds on five of seven questions is invisible to it — not weakly supported, *unresolvable*.
+
+That is a property of the bucket size, not of the test: an exact test is the right instrument at this n precisely because it refuses to claim what the sample cannot support, and a normal approximation over seven paired differences would have returned a confident-looking number instead. The conclusion is that **ADR-0002's stratification traded per-bucket power for per-bucket interpretability**, and the per-bucket A/B is therefore a screen for large unanimous effects rather than a test of small ones. Raising it is a golden-set sizing decision and belongs to whoever revises ADR-0002, not to a measurement run.
 
 ## Latency and token spend
 
@@ -126,24 +160,59 @@ Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatc
 
 | | ms | samples |
 |---|---:|---:|
-| planner's chat round, p50 | 1518 | 60 |
-| retrieval p50, translation on | 1576 | 256 |
-| retrieval p50, translation off | 328 | 104 |
-| retrieval rounds translation adds, p50 | 1248 | — |
-| **total p50 added by translation** | **2766** | — |
+| planner's chat round, p50 | 1760 | 48 |
+| retrieval p50, translation on (planner planning) | 1919 | 61 |
+| retrieval p50, translation off | 382 | 56 |
+| retrieval rounds translation adds, p50 | 1536 | — |
+| **total p50 added by translation** | **3297** | — |
 | ADR-0005's budget | 1500 | — |
 
 **Verdict: **over budget**.**
 
 **The planner's figure comes from the resolve pass, and that is a reconstruction rather than one measurement.** ADR-0004 §9's replay means the scored `+translation` arms serve the planner's reply from a stub, so their own `query_translation` lines record ~1 ms and no token counts — the harness only reads lines that reported spend, since a line with no `input_tokens` called no model. Adding that median to the retrieval delta is the honest reconstruction of what the shipped path pays; it is not a single timing of a live turn.
 
+**The translated pool is the arms that actually plan, not every arm carrying `translation: true`.** Four of the six do; the two ablation arms add only the deterministic ticker form, so averaging them in measures a cheaper operation than the budget is about. 59 retrieval line(s) were excluded on that ground (`latency.PLANNED_VARIANTS_FLOOR`) — which also excludes a turn whose planner refused, so this is translation's cost *when it produces sub-queries*.
+
 | metered event | input tokens | output tokens | lines | unmetered lines |
 |---|---:|---:|---:|---:|
-| `rag_answer` | 165140 (132 calls) | 17954 (132 calls) | 132 | 0 |
-| `query_translation` | 16260 (60 calls) | 3528 (60 calls) | 674 | 614 |
-| `agent_turn` | 329421 (40 calls) | 11024 (40 calls) | 40 | 0 |
+| `query_translation` | 12968 (48 calls) | 2778 (48 calls) | 188 | 140 |
+| `agent_turn` | 191110 (10 calls) | 2787 (10 calls) | 10 | 0 |
 
 An unmetered line is a call whose cost is **unknown**, not free (`observability/tokens.py`): each count carries its own denominator because a provider that reports half a pair must not put a fabricated zero on the line. The gate classifier's tokens are unmeasured by decision (ADR-0011), and the embeddings API returns no usage this code path can see.
+
+## Mention leakage (ADR-0004 §11)
+
+`known_false_positives` in the golden set labels chunks that are a **correct lexical match** for a question and the **wrong grounding** — the NVDA chunk reading "our agreement with *Microsoft* could delay or prevent a change in control" against a question about Microsoft (ADR-0004 §11). BM25 admitting them is the precision cost hybrid pays for its recall, so it is reported per arm rather than averaged into the bucket means, where a labelled probe and an ordinary row would be indistinguishable.
+
+| arm | rows | chunks retrieved | labelled leaks | leakage-free precision |
+|---|---:|---:|---:|---:|
+| vector, no translation | 2 | 10 | 0 | 1.000 |
+| vector + translation | 2 | 10 | 0 | 1.000 |
+| hybrid, no translation | 2 | 10 | 1 | 0.900 |
+| hybrid + translation (shipping default) | 2 | 10 | 1 | 0.900 |
+| vector + normalisation, planner off (ADR-0004 §7 ablation) | 2 | 10 | 0 | 1.000 |
+| hybrid + normalisation, planner off (ADR-0005 §2 channel) | 2 | 10 | 0 | 1.000 |
+
+Rows nobody enumerated false positives for contribute no evidence either way and are excluded rather than counted clean (`metrics.leakage_precision`): including them would dilute every rate towards 1.0 with rows that were never probed.
+
+## The planner's own variance (ADR-0004 §9 step 3)
+
+Each question's planner call repeated **5×** at temperature 0, comparing the sub-queries it returned. This is ADR-0004 §9's step 3, and it exists to answer §9's own falsifiable prediction: *"if the n-repeat finds the planner returns identical sub-queries across runs on this Universe and this model, step 2 was unnecessary caution"* — step 2 being the resolve-once replay every `+translation` arm above depends on.
+
+Reported here and **nowhere else**, per §9: this is the planner's variance, not the fusion strategy's, and folding it into an arm's spread would make the strategy comparison inherit noise from a component it is not about.
+
+| question | identical across repeats | distinct sub-query sets | modal share |
+|---|---|---:|---:|
+| S1 | **no** | 4 | 40% |
+| S2 | **no** | 3 | 40% |
+| S3 | **no** | 4 | 40% |
+| S4 | **no** | 2 | 80% |
+| S5 | **no** | 4 | 40% |
+| S6 | **no** | 3 | 60% |
+| S7 | **no** | 3 | 60% |
+| E1 | **no** | 5 | 20% |
+
+**0 of 8 sampled questions returned identical sub-queries on every repeat.** Where a question varies, the replay is load-bearing: without it those arms would report a different number on a re-run with no code change, which is exactly what §9 registered.
 
 ## Tool-calling eval — the selection layer
 
@@ -172,10 +241,10 @@ Four measurements were deferred to this ticket by earlier ones. They are listed 
 
 | deferred measurement | from | instrument | result |
 |---|---|---|---|
-| agent-vs-original query divergence rate | T4 (ADR-0003 amendment §2) | `agent_query.verbatim` over live agent turns | divergence rate: **100%** (40/40); first search in a thread: **100%** (8/8); later searches (may be permitted resolutions): **100%** (32/32) |
+| agent-vs-original query divergence rate | T4 (ADR-0003 amendment §2) | `agent_query.verbatim` over live agent turns | divergence rate: **100%** (8/8); first search in a thread: **100%** (8/8); later searches (may be permitted resolutions): **not measured** (0 observations) |
 | square-bracket rule adherence rate | T5 (ADR-0006 T7 amendment §4) | `citation_markers`, emitted by `app/Home.py` and by nothing else | **not measured by this run** |
 | layer 4's residue — advice phrased so no rule matches | T7 (ADR-0006 T7 amendment §4) | advice probes through the live agent and `security.advice.validate_answer` | layer-4 residue: **100%** (6/6) — 6 of 6 hand-labelled recommendations were **not** refused |
-| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk, not the whole context set | cited-sentence support: **70%** (49/70) — 21 cited sentence(s) not supported by the chunk they name; 0 marker(s) pointed outside the retrieval |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk, not the whole context set | cited-marker support: **31%** (22/70) over `(sentence, marker)` pairs across 50 cited sentence(s) — 11 pair(s) with **no** support from the chunk they name, 37 only partly supported (both count against the rate); 0 marker(s) pointed outside the retrieval; 0 pair(s) the judge did not score |
 
 **Why the bracket-rule rate is absent, and it is not for want of running the agent.** `citation_markers` is emitted by `app/Home.py` — the *only* caller of `security.markers.log_markers` — and not by `agent.answer`. So a harness that drives the agent directly, as the tool-calling eval above does, produces the turns and none of the lines. That is the same shape T8 found and fixed for `turn_id`: an instrument wired at the app is an instrument a harness cannot reach, and neutralising it there left every test green. Closing this needs the marker check moved to where the answer is produced rather than to where it is displayed, which is a change to shipped code and belongs in its own ticket rather than in a measurement run.
 
@@ -192,6 +261,6 @@ Measured on the shipping default (hybrid + translation (shipping default)), over
 | RAGAs context recall | 0.675 [0.000–1.000] n=28 | as above |
 | section recall (free, deterministic) | 0.944 [0.000–1.000] n=27 | non-trivial target sections |
 | judge calls this run paid for | 0 | at k=5, six arms |
-| cells replayed from cache | 934 | see the provenance table |
+| cells replayed from cache | 770 | see the provenance table |
 
 **Response relevancy is deliberately absent from this list.** It is reported in the RAGAs table with its spread, and it is excluded from every pre-registered decision — quoting it as a headline number would be quoting a figure that moves between runs.

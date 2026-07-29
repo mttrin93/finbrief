@@ -142,3 +142,114 @@ network round trip and no spend, so the ≤1.5s budget remains a weak instrument
 axis; if hybrid fails to earn its place the argument is **complexity without measurable gain**, which
 is what §4's trigger is written to detect and what the artifact's per-bucket table is where to look
 for it.
+
+## Amendment (code review of #11): the default is retained, not validated
+
+The first T10 run's verdicts came from a comparator that could not return anything but a null
+(ADR-0002's T10 amendment §3). Re-measured with the paired exact test, both of this ADR's
+pre-registered decisions read differently, and the difference is about *what the run could see*
+rather than about retrieval. Every figure below is requoted from
+[`docs/verification/evaluation.md`](../verification/evaluation.md), not from the earlier run.
+
+**1. The default stays `hybrid + translation`, and the basis is now stated honestly: it is
+retained because the experiment could not resolve the question, not because it was validated.**
+
+What the run actually found about hybrid:
+
+- **Nothing detectable on any bucket.** `hybrid − vector` at equal translation is `not detected` on
+  `semantic` and `undetectable at this n` on the other three.
+- **The point estimate on its own predicted bucket is negative.** On `exact-identifier` — the bucket
+  hybrid exists to win, and the bucket ADR-0002 decision 4 named — `hybrid − vector` at translation
+  off is **Δ −0.087** (p=0.281, 6 of 7 differing). Not a resolved loss, and not a gain either.
+- **The one live root-caused case favours the simpler arm.** ADR-0004 §6's exact-identifier recovery
+  put the target chunk at **rank 1** under `vector + normalisation` and **rank 2** under
+  `hybrid + translation`.
+- **§7's pre-registration is consistent with all of it.** It predicted hybrid's marginal
+  contribution over `vector + translation` would be *small*; measured Δ +0.076, undetectable at
+  effective n=5. A pre-registration that survives is worth less when the instrument could not have
+  contradicted it, and that is said here rather than claimed as support.
+
+So **`vector + translation` is a live candidate this run could not rule out** — it is simpler, it
+costs no BM25 index over the whole corpus, and nothing measured here prefers hybrid to it. The
+default does not move on this evidence because *no* configuration is preferred on this evidence, and
+moving a pre-committed default on an unresolvable comparison is the same error as keeping it on one.
+
+**What would settle it: a larger per-bucket `n`, and nothing else.** The exact test's floor is 6
+differing questions with **zero** minority signs tolerated at 6 and one at 7 (ADR-0002's T10
+amendment §4). Effective n ran 1–6 across the decision cells. No amount of re-running at 7 questions
+per bucket resolves a small effect; only more questions per bucket does. Until then this ADR's
+strategy axis is **undetermined**, which is a weaker and more accurate position than either
+"validated" or "falsified".
+
+**2. §4's trigger fired on one bucket, and one bucket is not "every bucket".**
+
+The trigger's condition as written is: *"if T10 finds `hybrid − vector` at equal translation to be
+within per-question spread on **every** bucket"*. Measured:
+
+| bucket | `hybrid − vector`, both +translation | n (differing) |
+|---|---|---:|
+| semantic | not detected (Δ +0.007, p=0.688) | 7 (6) |
+| exact-identifier | undetectable (effective n=5, Δ +0.076, p=0.312) | 7 (5) |
+| tool-augmented | undetectable (effective n=4, Δ −0.121, p=0.250) | 7 (4) |
+| multi-hop | undetectable (effective n=4, Δ +0.130, p=0.625) | 7 (4) |
+
+**One** bucket carries an absence of gain. The other three are excluded as undetectable rather than
+counted as absences — which is the correction that matters, because a trigger firing on an *absence*
+takes an instrument with no power as confirmation. Under the old comparator all four read as
+absences and the trigger fired on a tautology.
+
+**The wording is hereby recorded as too strong for an instrument this underpowered.** "Every bucket"
+presumes every bucket can answer; at ~7 questions most cannot. The trigger's *intent* — do not keep
+a default whose marginal component was never separately measured — is met and then some: the
+component still has not been separately measured, and now the reason is known and quantified. A
+future revision should state the condition over buckets **with the power to resolve a gain** and
+require some minimum count of them, rather than over all four.
+
+**3. The ≤1.5 s budget is missed at 3297 ms, and it is recorded as missed and left unamended.**
+
+| | ms | samples |
+|---|---:|---:|
+| planner's chat round, p50 | 1760 | 48 |
+| retrieval p50, translation on (planner planning) | 1919 | 61 |
+| retrieval p50, translation off | 382 | 56 |
+| retrieval rounds translation adds, p50 | 1536 | — |
+| **total p50 added by translation** | **3297** | — |
+| this ADR's budget | 1500 | — |
+
+**Not amended to the measured value, deliberately.** ADR-0006 revised its gate budget from 800 ms to
+1000 ms and that revision was earned: a figure cleared on eight of eight measured passes, with an
+argument about what the gate is worth and both numbers printed side by side ever since so a reader
+cannot mistake a revised pre-registration for one that always held. Nothing equivalent exists here.
+There is no argument that 3.3 s of added latency is acceptable for an analyst's turn, and moving the
+number to wherever the measurement landed is pre-registration in reverse. So the budget stands at
+1500 ms and this ADR records that its shipping default **misses it by more than 2×**.
+
+**The earlier 2766 ms figure should not be quoted.** It was a median over a pooled window of the
+append-only sink — 13 appended runs, including the pre-fix run whose ablation cells made real planner
+calls — and it also averaged the two planner-*off* ablation arms into the "translation on" pool,
+which measures the deterministic ticker form's cost under a budget meant for the planner's. Both are
+fixed (ADR-0011's T10 amendment; `latency.PLANNED_VARIANTS_FLOOR`), and the honest number is worse
+than the pooled one.
+
+**This is the second half of the default's problem, and it compounds the first.** This ADR judges
+dominance *within* the budget. Hybrid earns nothing detectable, and translation costs more than twice
+what the budget allows. The narrow quality test — the falsification clause — is all that keeps the
+default, and per §1 above that clause **could not have fired on any bucket**: all eight cells
+undetectable, effective n as low as 1. The default is currently held up by nothing that this run
+measured.
+
+**4. §9's falsifiable prediction is answered, and it vindicates the replay.**
+
+ADR-0004 §9 registered: *"if the step-3 n-repeat finds the planner returns identical sub-queries
+across runs on this Universe and this model, step 2 was unnecessary caution and ADR-0003's original
+flat claim was fine. Good outcome; not one to assume."* Measured over 5 repeats each on 8 sampled
+questions at temperature 0:
+
+**0 of 8 questions returned identical sub-queries on every repeat.** Modal share ran 20–60%; three
+questions produced **five distinct** sub-query sets in five attempts.
+
+So the resolve-once replay was **load-bearing, not caution**. Without it the two `+translation` arms
+would report different per-bucket numbers on a re-run with no code change — which is exactly the
+blast radius §9 described — and the reproducibility caveat this ADR inherited from #5 is understated
+rather than overcautious. It also means the planner's variance is a real property of the shipped
+path that no arm's error bar contains, and it is reported on its own, as §9 required.

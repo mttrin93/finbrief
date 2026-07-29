@@ -595,4 +595,18 @@ off from every pre-registered decision.
 this model, step 2 was unnecessary caution". The n-repeat is `variants.agreement`, reported on its
 own and order-sensitive — two orderings of the same sub-queries are not guaranteed to fuse
 identically, and calling them the same would overstate the planner's stability in the direction
-that flatters the harness. `docs/verification/evaluation.md` carries the measurement.
+that flatters the harness.
+
+**Correction (code review of #11): this paragraph claimed the artifact carried that measurement
+while nothing ran it.** `variants.agreement` and `PlannerAgreement` existed with no production
+caller — tests only — and no section rendered them, so §9's step 3 was unmeasured and its prediction
+unanswered while this ADR said otherwise. A claim in an ADR cannot fail any more than a claim in a
+comment can, which is the bug class CLAUDE.md names; the fix is a rendered section driven by a pass
+that makes real planner calls.
+
+**The answer, requoted from [`docs/verification/evaluation.md`](../verification/evaluation.md):
+0 of 8 sampled questions returned identical sub-queries across 5 repeats** at temperature 0. Modal
+share 20–60%; three questions produced five distinct sub-query sets in five attempts. So step 2 was
+**not** unnecessary caution — the resolve-once replay is load-bearing, and without it the two
+`+translation` arms would report different per-bucket numbers on a re-run with no code change. §9
+called that outcome "not one to assume", and it was right not to.

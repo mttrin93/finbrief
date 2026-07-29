@@ -165,6 +165,9 @@ from that comment — leave it unmeasured — is explicitly not taken.
 ## Amendment (T10, #11): what the harness added to this ADR's own claims
 
 Three things measuring the set taught, recorded because they change how its numbers must be read.
+**§3 is a correction, not a lesson** — it recorded a claim about the comparator that a
+fresh-context code review of this branch falsified, and it now records the defect and the
+replacement instead.
 
 **1. Chunk-identity recall is a near-lottery on this set's large sections, and the artifact says
 so beside the column.** S1 grounds in 6 of TSLA Item 1A's **129** chunks. The first live run
@@ -180,7 +183,56 @@ only some sections are trivial contributes its non-trivial sections alone: M2 is
 Item 7A and not on AAPL's 4 or MSFT's 3. Without that, reaching two sections a `k=5` retrieval
 cannot miss would have scored 0.667 on a row that found nothing hard.
 
-**3. A predicted tie is reported as `within spread`, never as "equal".** The arms may genuinely
-differ; the claim the sample supports is only that these seven questions do not show it. The
-comparison is made against the measured per-question spread rather than a constant, which is #11's
-"no threshold at four decimals" implemented rather than promised.
+**3. The comparator that produced this ADR's first set of verdicts could not return anything else,
+and that is the finding.** This section previously read: *"A predicted tie is reported as `within
+spread`, never as 'equal'. … The comparison is made against the measured per-question spread rather
+than a constant, which is #11's 'no threshold at four decimals' implemented rather than promised."*
+Every sentence of that was true and the instrument underneath was still vacuous.
+
+**What was wrong.** `metrics.compare` judged a difference of *means* against `basis` — the larger of
+the two arms' raw **per-question range**. Each arm's mean is bounded by that arm's own min and max,
+so the largest delta the observed values can produce is
+`max(cand.max − base.min, base.max − cand.min)`; and when two arms score *the same questions* under
+near-identical configurations, that quantity **equals the range**. The test was `abs(delta) <= basis`.
+It could not fail.
+
+**How large the consequence was.** All **18** pre-registered comparisons in the first committed
+artifact — the six hypotheses, the eight falsification-clause cells and the four §4 trigger cells —
+were rendered as verdicts by a test mathematically incapable of returning any other. Four
+hypotheses were published as **refuted** on that basis; H2 was refuted while its delta ran +0.102 in
+the *predicted* direction, leaving ADR-0004 §6's root-caused live case standing unreconciled beside
+it. `Verdict.WITHIN_SPREAD`'s own docstring said the arms "may genuinely differ" and
+`Outcome.confirmed` collapsed that into `False` one line later. Both of ADR-0005's pre-registered
+decisions were tautologies: the falsification clause could not fire, and §4's absence-triggered test
+could not fail to fire.
+
+**How it was found, because the method matters more than the fix.** By a fresh-context review
+reading the artifact's own printed `[min–max]` beside each mean and doing the subtraction nobody had
+done. The information needed to catch it was in the committed evidence the whole time. The
+pre-registration was sound — written pre-data, in code, refusing fenced metrics; **the instrument
+judging it was not**, and those are separable failures. A pre-registered prediction is only as good
+as the test that settles it, and this repo had a rule for exactly this ("prefer an equality over a
+bound, prefer a check that exercises the thing") that nobody had pointed at the comparator.
+
+**The replacement.** Pair on the **question** — the arms score the same rows, so the per-question
+difference removes the question's own difficulty, which is the term that dominated the raw spread —
+and settle direction with an **exact** Wilcoxon signed-rank test, its null built by convolution
+rather than approximated (a normal approximation over seven paired differences is not defensible,
+and would have returned a confident-looking number in place of the vacuous one). Three outcomes, not
+two: `NOT_DETECTED` when the test had power and resolved nothing, and `UNDETECTABLE` when no
+arrangement of that many differing questions could have reached α at all. Only the first is a
+measurement, and `metrics.Paired.detectable` is what keeps them apart.
+
+**4. The stratification traded per-bucket power for per-bucket interpretability, and the exact test
+made the price visible.** Decision 3 sizes each bucket at ≥6 questions. The exact two-sided p cannot
+fall below `2 / 2**m` for `m` differing questions, so α=0.05 is reachable only from **m ≥ 6** — and
+at exactly 6 **no** difference may point against the majority, at 7 exactly one may. So this design
+can resolve only near-unanimous effects, at any effect size: a real difference of 0.2 holding on
+five of seven questions is not weakly supported, it is *unresolvable*. On the re-run, **4 of 18**
+cells carried a measurement and 14 were undetectable.
+
+This is a property of the bucket size, not of the test — and it is a finding about the experiment
+rather than about retrieval, discovered after the fact. The per-bucket A/B is therefore a **screen
+for large unanimous effects**, not a test of small ones, and every conclusion drawn from it inherits
+that. Raising `n` is a golden-set sizing decision and belongs to whoever revises this ADR; the
+artifact's power audit prints the arithmetic so the limit cannot be inferred wrongly from a p-value.

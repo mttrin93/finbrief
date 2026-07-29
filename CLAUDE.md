@@ -153,10 +153,20 @@ assertion by default (issue #9 review).
   `NEGATION_WINDOW_CHARS` (an assertion about the length of a clause) and
   `security/markers.py`'s `MARKER_SPAN_MAX_CHARS` (an assertion about the shape of a citation —
   what `[12]` and `[Yahoo Finance]` look like — which nothing should be able to tune from the
-  environment). Every *other* gate knob — the latency budgets, the classifier's timeout and
-  attempt count, **both** logged-input caps (`GATE_LOGGED_INPUT_MAX_CHARS` and
-  `GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS`) and the answering path's `ANSWER_TIMEOUT_SECONDS` /
-  `ANSWER_MAX_RETRIES` — is in `config.py`. The last pair moved there from `llm.py` in issue #8's
+  environment). T10 adds three, all assertions about what a *measurement* is allowed to claim:
+  `evaluation/metrics.py`'s `PAIRED_ALPHA` (the significance level the paired exact test judges a
+  difference at — an env-overridable alpha is a knob for tuning a verdict after seeing it),
+  `evaluation/latency.py`'s `PLANNED_VARIANTS_FLOOR` (an assertion about the shape of a retrieval
+  that actually planned, which is what separates the two translated arms from the two ablation
+  ones in a latency pool) and `scripts/evaluate.py`'s `BUCKET_FLOOR` (ADR-0002 decision 3's
+  per-bucket size, which the power audit reads to state what a bucket that size can resolve —
+  changing it changes ADR-0002, not a run). Every *other* gate knob — the latency budgets
+  (**both**: `GATE_LATENCY_BUDGET_MS` and `TRANSLATION_LATENCY_BUDGET_MS`, the second moved there
+  from an unbound `budget_ms=1500.0` default argument in issue #11's review, because a pair split
+  across two files is a pair that drifts and the gate's twin was already bound by an equality),
+  the classifier's timeout and attempt count, **both** logged-input caps
+  (`GATE_LOGGED_INPUT_MAX_CHARS` and `GATE_LOGGED_CLASSIFIER_TOKEN_MAX_CHARS`) and the answering
+  path's `ANSWER_TIMEOUT_SECONDS` / `ANSWER_MAX_RETRIES` — is in `config.py`. The last pair moved there from `llm.py` in issue #8's
   review: the gate's twins were already in `config.py`, and a pair split across two files is a
   pair that drifts. **This list is the exception**: a limit not
   enumerated here belongs in `config.py`, or the exemption stops being narrow.
@@ -166,7 +176,9 @@ assertion by default (issue #9 review).
   embeddings constructor, and ingest and query must share it (a drifting model degrades
   retrieval to noise with no error).
 - `retrieval/vectorstore.py` is the only place the `filings` collection is opened,
-  written, or read (`FILINGS_COLLECTION`). `build_filings_store` is the constructor;
+  written, or read (`FILINGS_COLLECTION`) — which is why `collection_fingerprint` lives there and
+  not in `evaluation/pipeline.py`, where it was a **third** corpus crossing from outside
+  `retrieval/` (issue #11 review). `build_filings_store` is the constructor;
   `default_filings_store` is the **shared per-process handle** the application reads, and the
   app must go through it — `hybrid.bm25_index` caches against that store *object*, so anything
   that opens a fresh `Chroma` per query rebuilds the whole ~5,800-chunk lexical index for one
@@ -277,7 +289,21 @@ assertion by default (issue #9 review).
   caller, because neutralising `app/Home.py`'s `with log_turn(...)` once left all 1028 tests
   green: every other turn-id test opened the scope itself, so they proved propagation and never
   wiring. `log_event` takes `exc_info` so that a *failed* turn is an event too; it had been the
-  one bypass of the single emitter, and so the one line with no `turn_id`. ADR-0011 records why
+  one bypass of the single emitter, and so the one line with no `turn_id`.
+  **A statistic over the sink is not a statistic over a run**, because it is append-only across
+  every run and app session that names it: T10's first artifact reported a planner p50 over a pool
+  of 13 appended runs while its header claimed the numbers were that run's, and re-reading the
+  unchanged file two runs later gave a different number. `events.sink_offset` marks the file before
+  a run and every reader takes `start_offset` — an offset rather than a new envelope field, so a
+  line written by an older deploy still parses. Two consequences: a **fully replayed** stage
+  appends nothing, so its window is empty and the p50 **raises** rather than serving the previous
+  run's median (a latency figure now means the stage behind it ran); and the window is persisted
+  beside the cached cells (`latency.Window`), because the artifact is regenerable from that cache
+  and a re-render must describe the measuring run rather than refuse. **Every pass that emits runs
+  before anything that reads** — a log-reading section computed before the pass that writes its
+  lines reports an absence on a run that measured the thing, which happened twice here: the agent
+  stage, then the planner-variance pass.
+  ADR-0011 records why
   the log is shaped as a run's
   record rather than as the harness's primary input — T10 gets provenance from
   `Retrieval.contexts` in-process, and needs the log only for latency, tokens and live-run facts.
@@ -297,6 +323,10 @@ assertion by default (issue #9 review).
   question in a kept log, which is the reason for the three bounds rather than a reason to keep no
   record. Nothing else may widen this, and a bound may not be described as removing more than it
   removes.
+- `security/markers.py` owns what a citation marker *is* — the bracket shape, the numeric rule
+  and `numeric_markers()` for anyone counting them. `evaluation/deferrals.py` had its own
+  `re.compile(r"\[(\d+)\]")` for the same job, which lets a measurement *of* the gate disagree
+  with the gate about what it is measuring (issue #11 review).
 - `security/` is the gate, one module per layer, because a marginal-contribution claim has to be
   checkable *at* the layer it is about (user story 34): `normalize.py` (folds obfuscation into two
   forms — `text` keeps the word boundaries a rule needs to *not* match, `squeezed` is the only

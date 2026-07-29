@@ -129,3 +129,51 @@ recorded on #12 as a stated limitation for T11's README.
 
 **The general rule, for the next event added:** ask which caller a harness would use to exercise
 the behaviour, and emit there. If the only caller is a page, the instrument measures clicking.
+
+## Amendment (T10 code review, #11): the sink is shared, so a statistic over it is not a run's
+
+The precondition this ADR handed T10 was "assert the sink was enabled and non-empty before
+computing any statistic over it". That was necessary and not sufficient: it guards against an
+**empty** log and says nothing about a **shared** one.
+
+**What went wrong.** `FINBRIEF_LOG_FILE` names one append-only file, and every run and every app
+session that names it writes to the same stream. `read_events(path)` read the whole file, so every
+figure T10 derived from the log was a figure over every run that had ever shared it. The first
+committed evaluation artifact reported a planner p50 of **1518 ms over 60 samples** while asserting,
+in its own header, that "every number here is a measurement of the run named below". The pool held
+**13** appended runs. Re-reading the same unchanged file two runs later gave **1649 ms over 68** —
+the same cache, the same artifact, a different number, which is the proof rather than the argument.
+
+Worse in kind: the pool included the pre-fix runs whose ablation cells made **real planner calls**
+because `Arm.max_sub_queries` was not reaching `retrieve()`. `HARNESS_VERSION` evicted those cells
+from the cache; nothing could evict their lines from the log. **A content-addressed cache can be
+poisoned and repaired; an append-only log can only be windowed.**
+
+**The fix, and why it is an offset rather than a field.** `events.sink_offset(path)` takes the file's
+size before a run appends anything, and every reader takes `start_offset`. No new envelope field, so
+a line written by an older deploy still parses — the checkpoint rule in CLAUDE.md applies to logs as
+much as to payloads. It is also honest about what it selects: lines appended after the mark, which is
+this run's lines plus anything writing concurrently, and that is stated where the function is.
+
+**The interaction with the cache, and the resolution.** Run-scoping and resumability pull against
+each other: a warm run replays every cell, issues no calls, appends no lines, and therefore has an
+*empty* window. Two rules settle it.
+
+- **A fully-replayed stage cannot print a latency number.** `p50` raises on an empty window rather
+  than serving the previous run's median, so a latency figure in the artifact now means the stage
+  behind it actually ran. The refusal names both causes — sink off, or everything replayed.
+- **The window is persisted beside the cells** (`latency.Window`, `<cache-dir>/log-window.json`).
+  The artifact is regenerable from the cache, so its window has to be regenerable too; a
+  `--stage report` re-render reads the mark the last *measuring* run recorded and the artifact says
+  the figures are replayed. Without this a re-render would refuse to report latency for numbers it
+  was otherwise reproducing exactly.
+
+**And a third instance of the ordering shape this ADR already records.** ADR-0011's T8 finding was
+that an instrument emitted where the behaviour is *displayed* cannot be measured by a harness; T10
+added that a log-reading section computed *before* the pass that emits its lines reports an absence
+on a run that measured the thing. The `agent` stage had been moved above the deferrals block for
+exactly this reason, and the planner-variance pass — whose 40 live planner calls are the only metered
+`query_translation` lines a warm run produces — broke it again from the other side, rendering
+ADR-0005's budget "not measured" on the run that had just measured it. **Every pass that emits runs
+before anything that reads**, and `scripts/evaluate.py` now groups them that way with the rule
+written above the group.

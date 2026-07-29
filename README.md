@@ -349,15 +349,19 @@ before the evaluation and one measured at scale by it.
 
 | stated rule | where | what was measured |
 |---|---|---|
-| pass the user's question to `search_filings` **verbatim** | the tool's description (ADR-0003 §1) | **100% divergence, 24 of 24 searches.** Every query the agent issued differed from the question as typed — split evenly between first searches, which cannot be reference resolutions, and later ones, which may be |
+| pass the user's question to `search_filings` **verbatim** | the tool's description (ADR-0003 §1) | **100% divergence, 8 of 8 searches.** Every query the agent issued differed from the question as typed, and all 8 are *first* searches — which cannot be reference resolutions, so none of them is the one rewrite the description permits |
 | decompose a question into sub-queries when asked to | the planner's prompt (ADR-0004 §6) | the planner refuses, or returns prose refusals the parser has to strip (`_REFUSAL`) |
 | square brackets are reserved for retrieved excerpts | `AGENT_SYSTEM_PROMPT` (T5) | `[Yahoo Finance]` observed live; uncited grounded answers observed live |
 | every figure comes from a tool or a retrieved excerpt | `AGENT_SYSTEM_PROMPT` (T7) | an answer naming Tesla's real segments from a chunk about industrial fasteners |
 
-The verbatim rule is the sharpest of the four because it now has a real denominator. ADR-0003's T4
-amendment recorded 0 verbatim of 2 searches and said itself that was too small to publish; 24 of 24
-is not, and per that same amendment's position it is **a finding rather than a defect to tune away**
-— a prompt tuned against a paid model until the number looks good is a number about the tuning.
+The verbatim rule is the sharpest of the four because every divergence is one the description
+forbids outright. ADR-0003's T4 amendment recorded 0 verbatim of 2 searches and said itself that was
+too small to publish; 8 of 8, all of them first searches, is a rate over a denominator the harness
+can attribute to one run — and per that same amendment's position it is **a finding rather than a
+defect to tune away**, since a prompt tuned against a paid model until the number looks good is a
+number about the tuning. The denominator is 8 and not the 40 an earlier draft of the artifact
+reported: that figure pooled 13 runs' worth of an append-only log, and the honest per-run count is
+smaller (ADR-0011's T10 amendment).
 
 **The same shape holds one layer down, where the rule is code rather than prose.** Layer 4's advice
 denylist refuses every recommendation that announces itself and **none** of six hand-labelled
