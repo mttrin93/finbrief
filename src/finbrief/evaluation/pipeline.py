@@ -179,6 +179,7 @@ def retrieve_cells(
     cache: Cache,
     k: int,
     fingerprint: str,
+    workers: int = 1,
 ) -> tuple[Retrieval, ...]:
     """Retrieve every row on one arm, replaying the persisted variants where the arm translates.
 
@@ -221,6 +222,7 @@ def retrieve_cells(
             variants=planned_variants(row),
         ),
         produce=produce,
+        workers=workers,
     )
     return tuple(Retrieval.from_payload(payload) for payload in payloads)
 
@@ -239,6 +241,7 @@ def answer_cells(
     variants: VariantSet | None,
     cache: Cache,
     k: int,
+    workers: int = 1,
 ) -> tuple[str | None, ...]:
     """One answer per row through `rag.answer_question` — the measured chain, unmodified.
 
@@ -298,6 +301,7 @@ def answer_cells(
         pairs,
         key_of=lambda item: answer_key(item[0], item[1], arm, settings=settings),
         produce=produce,
+        workers=workers,
     )
     return tuple(str(payload["answer"]) for payload in payloads)
 
