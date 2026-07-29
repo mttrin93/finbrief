@@ -228,8 +228,8 @@ def escaped(text: str) -> str:
     return f"\\{body}" if text[0] in _LINE_START_ACTIVE else body
 
 
-# : Active anywhere in a line: emphasis, code, links, images, autolinks — plus `$`, for the
-# KaTeX : reason `as_markdown` exists, and `|`, which would otherwise open a table cell.
+#: Active anywhere in a line: emphasis, code, links, images, autolinks — plus `$`, for the KaTeX
+#: reason `as_markdown` exists, and `|`, which would otherwise open a table cell.
 _INLINE_ACTIVE = frozenset("\\`*_[]()<>$|!")
 
 #: Active only as a line's first character, where they open a list item, a heading or a quote.
@@ -614,15 +614,17 @@ def _render_failure(card: FailedCard) -> None:
     st.warning(card.message, icon=":material/cloud_off:")
 
 
-# : card kind -> how to draw it. **The UI's one card-kind dispatch**, keyed on the same `KIND` :
-# strings `tools/finance.py` builds `_CARDS` and `_TOOL_BY_KIND` from. : : This was an
-# `isinstance` cascade, the third of three independent enumerations of the card : kinds — so
-# adding a fourth card meant remembering three edits across two files with nothing : to catch a
-# missed one (issue #9 review). A map keyed on the kind means the UI's list is : checkable
-# against the engine's, which `tests/test_app_smoke.py` does: a card kind with no : renderer
-# here fails there rather than rendering an empty bordered box in front of a reader. : :
-# Declared below the functions rather than beside `render_tool_cards`, because a dict of names :
-# is evaluated at import: referencing them above their definitions is a `NameError` at startup.
+#: card kind -> how to draw it. **The UI's one card-kind dispatch**, keyed on the same `KIND`
+#: strings `tools/finance.py` builds `_CARDS` and `_TOOL_BY_KIND` from.
+#:
+#: This was an `isinstance` cascade, the third of three independent enumerations of the card
+#: kinds — so adding a fourth card meant remembering three edits across two files with nothing
+#: to catch a missed one (issue #9 review). A map keyed on the kind means the UI's list is
+#: checkable against the engine's, which `tests/test_app_smoke.py` does: a card kind with no
+#: renderer here fails there rather than rendering an empty bordered box in front of a reader.
+#:
+#: Declared below the functions rather than beside `render_tool_cards`, because a dict of names
+#: is evaluated at import: referencing them above their definitions is a `NameError` at startup.
 _RENDERERS = {
     QuoteCard.KIND: _render_quote,
     RatiosCard.KIND: _render_ratios,
