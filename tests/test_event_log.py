@@ -13,7 +13,7 @@ import logging
 import pytest
 
 from finbrief.observability.events import Event, read_events
-from finbrief.observability.logging_setup import configure_logging, log_event
+from finbrief.observability.logging_setup import configure_logging, log_event, turn
 
 
 @pytest.fixture
@@ -88,6 +88,41 @@ def test_the_denominator_of_a_sample_is_reported_not_silently_narrowed(sink):
     # reported as a mean over the run is the "no silent caps" failure (CLAUDE.md).
     assert samples.absent == 1
     assert samples.total == 3
+
+
+def test_the_turn_id_survives_the_round_trip_and_groups_a_questions_lines(sink):
+    # The join, through both halves: `logging_setup.turn` writes it into the envelope and
+    # `read_events` has to read it off the envelope, not out of `fields`. Emitter and reader
+    # were written in the same commit, which is exactly when a key can be spelled two ways.
+    logger, path = sink
+    with turn("golden-multi-hop-02:hybrid+translation"):
+        log_event(logger, "query_translation", sub_queries=3)
+        log_event(logger, "retrieval", hits=5)
+    log_event(logger, "retrieval", hits=5)  # a line from outside any turn
+
+    log = read_events(path)
+    grouped = log.by_turn()
+    assert set(grouped) == {"golden-multi-hop-02:hybrid+translation", None}
+    assert [event.event for event in grouped["golden-multi-hop-02:hybrid+translation"]] == [
+        "query_translation",
+        "retrieval",
+    ]
+    # And it is *not* smuggled into the payload, where a field of the same name could shadow it.
+    assert all("turn_id" not in event.fields for event in log.events)
+
+
+def test_a_line_from_before_the_turn_id_existed_reads_as_no_turn(tmp_path):
+    # The checkpoint-compatibility rule again: the sink is append-only, so a file can hold
+    # lines written by a deploy that had no `turn_id` at all. Absence, not a `KeyError`.
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"ts": "2026-07-29T10:00:00.000+00:00", "level": "INFO", "logger": "finbrief",'
+        ' "event": "retrieval", "fields": {"hits": 5}}\n',
+        encoding="utf-8",
+    )
+
+    (event,) = read_events(path).events
+    assert event.turn_id is None
 
 
 def test_an_event_with_no_fields_at_all_round_trips(sink):
