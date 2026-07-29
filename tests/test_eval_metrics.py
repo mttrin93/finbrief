@@ -344,3 +344,41 @@ def test_a_comparison_with_a_missing_side_is_undetermined_not_zero():
 
     assert result.verdict is Verdict.UNDETERMINED
     assert result.delta is None
+
+
+def test_section_precision_asks_whether_a_chunk_came_from_a_target_section(golden):
+    # The precision counterpart to section recall, and the deterministic headline alongside it:
+    # stricter than filer precision (right filer, wrong Item is a miss) and looser than chunk
+    # identity (any chunk of the right Item counts).
+    row = golden.row("S1")  # grounds in TSLA Item 1A
+    retrieval = a_retrieval(
+        a_context("x:Item 1A:99", rank=1, ticker="TSLA", section="Item 1A"),
+        a_context("y:Item 7:1", rank=2, ticker="TSLA", section="Item 7"),
+        a_context("z:Item 1A:2", rank=3, ticker="F", section="Item 1A"),
+        a_context("w:Item 1A:3", rank=4, ticker="TSLA", section="Item 1A"),
+    )
+
+    score = score_row(row, retrieval, arm="hybrid", k=5)
+
+    # Two of four sit in TSLA Item 1A. The right filer's wrong Item and the wrong filer's right
+    # Item both miss, which is the distinction from filer precision.
+    assert score.section_precision == pytest.approx(0.5)
+    assert score.filer_precision == pytest.approx(0.75)
+
+
+def test_section_precision_credits_a_trivial_section(golden):
+    # `recall_trivial` says a section cannot be *missed*, a claim about recall. Retrieving from
+    # it is still correct, and calling it a precision error would penalise the retriever for
+    # the corpus's shape.
+    row = golden.row("M2")
+    retrieval = a_retrieval(a_context("x:Item 7A:0", rank=1, ticker="AAPL", section="Item 7A"))
+
+    score = score_row(row, retrieval, arm="v", k=5)
+
+    assert "AAPL Item 7A" in row.recall_trivial_sections
+    assert score.section_precision == pytest.approx(1.0)
+    assert score.section_recall == pytest.approx(0.0), "but it earns no recall credit"
+
+
+def test_section_precision_is_absent_for_an_empty_retrieval(golden):
+    assert score_row(golden.row("S1"), a_retrieval(), arm="v", k=5).section_precision is None

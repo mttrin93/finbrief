@@ -21,14 +21,18 @@ dataset; a metric has to be skippable per row (ADR-0002's amendment, and the
 decorated with the analytics tracker. Calling `metric.single_turn_ascore` directly costs a
 `for` loop and buys all three.
 
-**One metric here is not reproducible, by construction, and it is fenced off rather than
-caveated.** `ragas.llms.base.get_temperature` returns **0.3 whenever n > 1**, and
-`ResponseRelevancy` asks for `n=strictness=3`. So response relevancy moves between runs on any
-judge at any temperature this code names, and it is therefore excluded from every pre-registered
-decision — see `EXCLUDED_FROM_HYPOTHESES` and ADR-0002's T10 amendment. ADR-0005's
-falsification clause and its §4 re-examination trigger both rest on context precision and
-context recall, which are single-call metrics at temperature 0.01 and reproducible to the
-judge's own sampling.
+**One metric here is not reproducible, and it is fenced off rather than caveated — for two
+measured reasons, not one.** `ragas.llms.base.get_temperature` returns **0.3 whenever n > 1**,
+and `ResponseRelevancy` asks for `n=strictness=3`. So response relevancy moves between runs on
+any judge at any temperature this code names. **The second is worse and was found by running
+it:** the `n=3` is not honoured. OpenRouter answers that single request with one completion,
+logging `LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.` on
+every judged cell of every run so far — so the metric is a cosine similarity against **one**
+temperature-0.3 question rather than the mean over three it is defined as. It is therefore
+excluded from every pre-registered decision — see `EXCLUDED_FROM_HYPOTHESES` and ADR-0002's
+T10 amendment. ADR-0005's falsification clause and its §4 re-examination trigger both rest on
+context precision and context recall, which are single-call metrics at temperature 0.01 and
+reproducible to the judge's own sampling.
 """
 
 from __future__ import annotations

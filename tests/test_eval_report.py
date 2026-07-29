@@ -54,6 +54,7 @@ def a_cell(*, bucket: Bucket, arm: str, row: str, **judged) -> Cell:
         chunk_recall=0.5,
         chunk_recall_ceiling=0.83,
         section_recall=1.0,
+        section_precision=1.0,
         filer_precision=1.0,
         target_rank=1,
         leaked_chunk_ids=(),

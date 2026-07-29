@@ -9,6 +9,18 @@ reviewer can re-derive.
 Four decisions in here are about *not* reporting a number, and each one is a rule this repo
 already enforces elsewhere:
 
+**The granularity was chosen after measuring, and the measurement is why.** The obvious
+deterministic metric is chunk-identity precision/recall — did the retriever return the exact
+chunks a reference was authored from? On this corpus that measures **section size**, not
+retrieval quality: S1's reference is authored from 6 of TSLA Item 1A's **129** chunks, and the
+first live run returned chunks 48-70 against targets 0, 1, 6, 34, 94 and 117 — chunk recall
+0.000 and section recall 1.000, for a retrieval that found the right filer's right Item and
+would satisfy an analyst. So **section-level recall and precision are the deterministic
+headline**, with filer-level precision beside them (ADR-0004 §7's own prediction is about
+filer precision), and chunk-level figures are kept for the rows where they mean something —
+the small sections, where "the right chunks" and "the right section" nearly coincide. Reported
+in that order, and the order is a finding rather than a preference.
+
 - **An absent target chunk has no rank.** `target_rank` is `None` when nothing relevant was
   retrieved, never `k + 1` or `999`. A stand-in would average into a mean and read as a
   measurement of a retrieval that missed entirely (`Context.distance`'s reason for being
@@ -66,7 +78,19 @@ class RowScore:
     #: Sections reached over sections needed, counting only sections a `k=5` retrieval could
     #: miss. `None` when every target section was trivial, because a row that cannot miss has no
     #: recall to report — it is reported in its own table instead.
+    #:
+    #: **The headline recall on this corpus**, for a reason established by measurement rather
+    #: than assumed in advance — see the module docstring's note on granularity.
     section_recall: float | None
+    #: Share of retrieved chunks that belong to a `(ticker, section)` the row grounds in — the
+    #: precision counterpart to `section_recall`, and the headline precision for the same
+    #: reason.
+    #:
+    #: Stricter than `filer_precision` and looser than `precision_at_k`: it asks "did this chunk
+    #: come from somewhere the answer should be drawn from?", which is the question an analyst
+    #: would ask of a source list, where chunk identity asks whether it is one of the six
+    #: paragraphs a reference happened to be authored from.
+    section_precision: float | None
     #: Share of retrieved chunks belonging to a filer the row grounds in — ADR-0004 §7's
     #: *positive* prediction for hybrid, and the other sign of §11's mention leakage.
     filer_precision: float | None
@@ -99,6 +123,7 @@ def score_row(question: GoldenQuestion, retrieval: Retrieval, *, arm: str, k: in
         chunk_recall=(len(hits) / len(targets) if targets else 0.0),
         chunk_recall_ceiling=(min(k, len(targets)) / len(targets) if targets else 0.0),
         section_recall=_section_recall(question, contexts),
+        section_precision=_section_precision(question, contexts),
         filer_precision=_filer_precision(question, contexts),
         target_rank=(min(context.rank for context in hits) if hits else None),
         leaked_chunk_ids=tuple(
@@ -120,6 +145,22 @@ def _section_recall(question: GoldenQuestion, contexts: Sequence[Context]) -> fl
         return None
     reached = {f"{context.ticker} {context.section.value}" for context in contexts}
     return sum(1 for key in needed if key in reached) / len(needed)
+
+
+def _section_precision(question: GoldenQuestion, contexts: Sequence[Context]) -> float | None:
+    """Retrieved chunks that sit in a target `(ticker, section)`, over all retrieved chunks.
+
+    Counts **every** target section, trivial ones included — unlike `_section_recall`, which
+    excludes them. A trivial section is one a `k=5` retrieval cannot *miss*, which is a
+    statement about recall; retrieving from it is still correct, and calling it a precision
+    error because it was easy to find would penalise the retriever for the corpus's shape.
+    """
+    if not contexts:
+        return None
+    wanted = frozenset(question.target_sections)
+    return sum(
+        1 for context in contexts if f"{context.ticker} {context.section.value}" in wanted
+    ) / len(contexts)
 
 
 def _filer_precision(question: GoldenQuestion, contexts: Sequence[Context]) -> float | None:

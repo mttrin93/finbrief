@@ -39,12 +39,16 @@ from finbrief.evaluation.loader import Bucket, GoldenSet
 from finbrief.evaluation.metrics import Comparison, Summary, Verdict, summarise
 from finbrief.evaluation.pipeline import Cell
 
-#: The free metrics, and the column heading each gets.
+#: The free metrics, and the column heading each gets — **section-level first**, because that
+#: is the granularity this corpus supports (see `metrics`' module docstring: chunk identity
+#: measures section size here). Chunk-level stays, last and labelled, for the small-section
+#: rows.
 FREE_METRICS: tuple[tuple[str, str], ...] = (
-    ("precision_at_k", "precision@k"),
-    ("chunk_recall", "chunk recall"),
     ("section_recall", "section recall"),
+    ("section_precision", "section precision"),
     ("filer_precision", "filer precision"),
+    ("chunk_recall", "chunk recall †"),
+    ("precision_at_k", "chunk precision@k †"),
 )
 
 ABSENT = "—"
@@ -190,14 +194,22 @@ def ragas_table(cells: Sequence[Cell], arms: Sequence[Arm]) -> str:
             lines.append(f"| {bucket.value} | {arm.label} | " + " | ".join(columns) + " |")
     lines.append("")
     lines.append(
-        "⚠ **response relevancy is excluded from every pre-registered decision.** ragas forces "
-        "temperature 0.3 whenever it asks for n > 1 completions (`ragas.llms.base."
-        "get_temperature`) and `ResponseRelevancy` asks for n=3, so this column moves between "
-        "runs on any judge at any temperature this code names. It is reported with its "
-        "spread and "
-        "read as nothing else. ADR-0005's falsification clause and its §4 re-examination "
-        "trigger "
-        "both rest on context precision and context recall, which are single-call metrics."
+        "⚠ **Response relevancy is excluded from every pre-registered decision — for two "
+        "measured reasons, not one.** First: ragas forces temperature 0.3 whenever it asks for "
+        "n > 1 completions (`ragas.llms.base.get_temperature`) and `ResponseRelevancy` asks "
+        "for "
+        "n=3, so this column moves between runs on any judge at any temperature this code "
+        "names. "
+        "**Second, and worse: the n=3 is not honoured.** The provider answers that single "
+        "request "
+        "with one completion, logging `LLM returned 1 generations instead of requested 3. "
+        "Proceeding with 1 generations.` on every judged cell of every run so far. So this "
+        "column is a cosine similarity against **one** model-generated question sampled at "
+        "temperature 0.3 — not the mean over three the metric is defined as. It is reported "
+        "with "
+        "its spread, read as nothing else, and quoted nowhere. ADR-0005's falsification clause "
+        "and its §4 re-examination trigger both rest on context precision and context recall, "
+        "which are single-call metrics at temperature 0.01."
     )
     return "\n".join(lines)
 
@@ -263,6 +275,17 @@ def render_report(
         "against the reference rather than chunk identity. That is why ADR-0005's "
         "falsification "
         "clause rests on those two and not on this column.",
+        "",
+        "† **The chunk-level columns are last because of a measurement, not a preference.** "
+        "They "
+        "ask whether the retriever returned the exact chunks a reference was authored from, "
+        "which "
+        "on this corpus measures section size: S1's reference comes from 6 of TSLA Item 1A's "
+        "129 "
+        'chunks. They stay because they mean something on the small-section rows, where "the '
+        'right chunks" and "the right section" nearly coincide — and because they are exact '
+        "and free, so a reader can re-derive them. The granularity above them was chosen after "
+        "seeing this, which is the honest order.",
         "",
         free_metric_table(cells, arms),
         "",
