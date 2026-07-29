@@ -136,7 +136,28 @@ class EventLog:
         return {turn_id: tuple(events) for turn_id, events in grouped.items()}
 
 
-def read_events(path: Path | str) -> EventLog:
+def sink_offset(path: Path | str) -> int:
+    """The sink's current size in bytes — a mark to read forward from later.
+
+    **The sink is append-only across runs, and every statistic taken over it inherits that.**
+    A file named by `FINBRIEF_LOG_FILE` accumulates app sessions, smoke runs and previous
+    evaluation runs into one stream, so a median over "the log" is a median over all of them.
+    That is how the first committed evaluation artifact reported a planner p50 of 1518 ms over
+    60 samples while asserting "every number here is a measurement of the run named below": the
+    pool held 13 appended runs, including the pre-fix runs whose ablation cells made real
+    planner calls, and re-reading the same file after two more runs gave 1649 ms over 68
+    (ADR-0011's T10 amendment).
+
+    Taking the mark *before* a run and reading forward from it is the whole fix. It needs no new
+    envelope field and no change to `log_event`, so a checkpointed line written by an older
+    deploy is still readable; and it is honest about what it selects — lines appended after this
+    mark, which is this run's lines plus anything else writing concurrently.
+    """
+    path = Path(path)
+    return path.stat().st_size if path.exists() else 0
+
+
+def read_events(path: Path | str, *, start_offset: int = 0) -> EventLog:
     """Parse the sink at `path`. Raises if it does not exist; never raises on its contents.
 
     A line is an event when it is a JSON object carrying an `event` name and a parsable
@@ -144,11 +165,16 @@ def read_events(path: Path | str) -> EventLog:
     they are the emitter's, so a line missing one was not written by `log_event` — while the
     *payload* is validated not at all, because a field the emitter has not added yet is the
     normal state of a file that outlived a deploy.
+
+    `start_offset` reads only what was appended after a mark from `sink_offset` — see there for
+    why a statistic over a whole sink is a statistic over every run that ever shared it.
     """
     path = Path(path)
     events: list[Event] = []
     malformed = 0
     with path.open(encoding="utf-8") as handle:
+        if start_offset:
+            handle.seek(start_offset)
         for line in handle:
             if not line.strip():
                 continue

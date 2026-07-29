@@ -186,3 +186,60 @@ upstreams, and whether a given one honours it is not something we can assert. Th
 the second line and not the first. §3's register is what makes the failure impossible; this only
 makes it rare, which is worth having for the measurement but is not what the correctness rests
 on.
+
+---
+
+## Amendment (ticket T10, issue #11) — what the harness measures, and the four deferrals' status
+
+**The validity gap this ADR commits to stating is stated, and it is now stated with a mechanism
+behind it.** The headline RAGAs and A/B numbers come from `rag.answer_question` and `retrieve()`
+driven directly, question by question, exactly as §1 requires. Two details are worth recording
+because they are the seam holding.
+
+**1. The harness drives the chain unmodified, and checks that it did.** Scoring faithfulness over
+an arm's contexts needs an answer generated over *those* contexts, and `answer_question` owns its
+own retrieval — so the obvious shortcut is to call the generation half directly over the contexts
+the arm was scored on. That was written and then rejected: it is a second code path through the
+thing being measured, which is exactly what keeping `rag.answer_question` callable exists to
+avoid. Instead the chain runs with the arm's own configuration and its replayed planner, and the
+contexts it returns are compared against the ones the arm was scored on; a mismatch raises
+`ContextDrift` and stops the run rather than scoring an answer against contexts the scored
+retrieval never surfaced. The cost is one extra embedding round per cell, accepted and recorded.
+
+**2. The `tool-augmented` bucket is scoreable on faithfulness *because* of this split.** A chain
+answer carries no tool-derived sentence — the chain calls no tools — so ADR-0002's amendment's
+worry about a depressed number does not arise at this seam. The full reasoning is in that
+amendment's T10 entry; what belongs here is that it is a consequence of §1's separation rather
+than a special case bolted onto it.
+
+**The four deferrals earlier tickets handed T10, and their honest status.** Three of the four need
+live *agent* turns rather than chain runs, which is a different (and nondeterministic) instrument
+from the one this ADR's numbers come from — so they are reported beside the RAGAs table, never
+inside it, and an unrun measurement is named as unrun rather than left to be assumed:
+
+Requoted from [`docs/verification/evaluation.md`](../verification/evaluation.md). **This table
+said "not measured by this ticket" in all four rows after three of them had been measured** — it was
+written before the live stage existed and never revisited, which is the stale-status failure the
+paragraph below is about, committed inside the amendment that warns against it (code review of #11).
+
+| deferral | from | instrument | status |
+|---|---|---|---|
+| agent-vs-original query divergence rate | T4, §2 above | `agent_query.verbatim` in a live log | **100% (8/8)**, all first-searches |
+| bracket-rule adherence rate | T5 | `citation_markers` in a live log | **not measured** — emitted at the app, unreachable by a harness |
+| layer 4's residue — advice no rule matches | T7 | probes through `validate_answer`, with `ADVICE_ANSWERS` as positive controls | **100% (6/6)** not refused, on a validator shown live by **10/10** controls refused |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **31% (22/70)** pairs fully supported — 8 with no support, 40 partial |
+
+Three of the four are measured and the fourth is named as unmeasurable by this instrument rather
+than as unrun: `citation_markers` is emitted by `app/Home.py` and by nothing else, so a harness that
+drives the agent directly produces the turns and none of the lines (ADR-0011's T8 finding, second
+instance). **The divergence denominator is deliberately small and deliberately honest**: 8 searches
+from this run's own window of the log, not the 40 the first artifact reported by pooling 13 appended
+runs. All 8 are first-searches, so the split §2 asked for has no follow-up half to report — the
+tool-calling eval opens a fresh thread per case, which is what makes each case independent and also
+what removes the one place a *permitted* rewrite could occur. A rate over 8 first-searches is what
+§2 asked for at the size the instrument can currently deliver, and the artifact prints the
+denominator beside it.
+
+Saying so is the point: an unscored criterion reads as a passed one, and the honest form of "we did
+not get to it" is a row in a table rather than an omission — which only works if the row is kept
+current.

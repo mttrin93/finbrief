@@ -416,6 +416,20 @@ GATE_LATENCY_BUDGET_PREREGISTERED_MS = 800
 #: refuse.
 GATE_LATENCY_BUDGET_MS = 1000
 
+#: ADR-0005's budget for the p50 latency **added by query translation**, in milliseconds.
+#:
+#: The other pre-registered latency figure, and it lives beside the gate's for the reason
+#: CLAUDE.md gives about a pair split across two files: "the latency budgets" are named in the
+#: single-source-of-truth list, and this one spent T10 as a `budget_ms: float = 1500.0` default
+#: argument in `evaluation/latency.py` — an unbound literal, while the gate's twin was bound by
+#: an equality in `tests/test_grounding_scope.py`. `evaluation/report.py` prints the measured
+#: total beside this, and the artifact's verdict line is a comparison against it.
+#:
+#: **A budget dominance is judged *within*, not a timeout**, exactly like the gate's above:
+#: ADR-0005's clause is that `hybrid + translation` dominates *and* costs no more than this, so
+#: a run that exceeds it puts the default in question rather than aborting a retrieval.
+TRANSLATION_LATENCY_BUDGET_MS = 1500
+
 #: How long the classifier's single model call may take before it is abandoned, in seconds.
 #:
 #: Five, which is deliberately far above the p50 budget above and far below the answering path's
@@ -505,6 +519,12 @@ class RetrievalStrategy(StrEnum):
 #: Pre-registered shipping default (ADR-0005), fixed before any A/B data exists.
 DEFAULT_STRATEGY = RetrievalStrategy.HYBRID
 DEFAULT_TRANSLATION_ENABLED = True
+#: ADR-0004's latency-driven ceiling on the planner's sub-queries. Named beside the other two
+#: because it is the third thing the shipping default *is*, and `evaluation/arms.py` had a
+#: hardcoded copy of the literal that `shipping_default_matches_config` could not see (code
+#: review of #11). Still env-overridable through `FINBRIEF_MAX_SUB_QUERIES` — this is the
+#: default, not a second knob.
+DEFAULT_MAX_SUB_QUERIES = 3
 
 #: Reciprocal Rank Fusion's rank-smoothing constant: a candidate list's vote for the chunk it
 #: ranks `r`th is `1 / (RRF_K + r)` (`retrieval/hybrid.py`).
@@ -566,6 +586,23 @@ class Settings:
     #: answering model is what the analyst's brief is worth. Raising one must not raise the
     #: other — which is exactly what a single field would do.
     classifier_model: str
+    #: The model RAGAs scores with (T10, #11) — the **judge**, and deliberately not
+    #: `chat_model`.
+    #:
+    #: ADR-0002 decision 1 separates the ground truth from the answering pipeline: candidate Q/A
+    #: pairs were drafted by a different model and hand-verified, so the references cannot be
+    #: circular. A judge that *is* the answering model puts the circularity back at the other
+    #: end of the same measurement — the pipeline grading its own output — and the whole reason
+    #: the golden set cost a day of reading filings is to avoid that. Its own field for the
+    #: reason `classifier_model` has one: three roles, three prices, and raising one must not
+    #: raise the others.
+    #:
+    #: The default is a *stronger* model than the answerer rather than a cheaper one, which is
+    #: the opposite of the gate's choice and for the opposite reason: the gate pays for one
+    #: YES/NO per turn, while a judge that misreads a filing passage silently moves every number
+    #: in the report. Measured cost of the difference over a full six-arm run: about $1.28
+    #: against $0.57 (docs/verification/evaluation.md records the arithmetic).
+    judge_model: str
     embedding_model: str
     retrieval_strategy: RetrievalStrategy
     query_translation_enabled: bool
@@ -601,6 +638,7 @@ class Settings:
             ),
             chat_model=_string(env, "FINBRIEF_CHAT_MODEL", "openai/gpt-4o-mini"),
             classifier_model=_string(env, "FINBRIEF_CLASSIFIER_MODEL", "openai/gpt-4o-mini"),
+            judge_model=_string(env, "FINBRIEF_JUDGE_MODEL", "openai/gpt-4.1-mini"),
             # Served by OpenRouter's /v1/embeddings, so it needs no key or base URL of
             # its own. One model for ingest and query — see retrieval/embeddings.py.
             embedding_model=_string(
@@ -615,7 +653,13 @@ class Settings:
             # not merely defaulted: the latency budget ADR-0005 judges dominance within
             # (<=1.5s p50 added by translation) assumes it, so an env override must not be
             # able to quietly invalidate the A/B result.
-            max_sub_queries=_integer(env, "FINBRIEF_MAX_SUB_QUERIES", 3, minimum=0, maximum=3),
+            max_sub_queries=_integer(
+                env,
+                "FINBRIEF_MAX_SUB_QUERIES",
+                DEFAULT_MAX_SUB_QUERIES,
+                minimum=0,
+                maximum=DEFAULT_MAX_SUB_QUERIES,
+            ),
             eval_mode=_boolean(env, "FINBRIEF_EVAL_MODE", False),
             alphavantage_enabled=_boolean(env, "FINBRIEF_ALPHAVANTAGE_ENABLED", False),
             sec_edgar_user_agent=resolve_sec_edgar_user_agent(env),

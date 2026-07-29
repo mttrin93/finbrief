@@ -256,3 +256,72 @@ def test_the_reader_does_not_reformat_what_it_read(sink):
     (event,) = read_events(path).events
     (raw,) = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert event.fields == raw["fields"]
+
+
+# --- run-scoping: a statistic over a shared sink is a statistic over every run ---------
+
+
+def test_reading_from_a_mark_returns_only_what_was_appended_after_it(tmp_path):
+    """The defect ADR-0011's T10 amendment records, as a regression test.
+
+    The sink is append-only across runs, so a median over the whole file is a median over every
+    run that ever shared it — which is how the first committed evaluation artifact reported a
+    planner p50 from a pool holding 13 appended runs, the pre-fix ones included. `sink_offset`
+    marks the file before a run and `read_events` reads forward from the mark.
+    """
+    from finbrief.observability.events import read_events, sink_offset
+
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event": "retrieval", "ts": "2026-07-29T10:00:00+00:00",'
+        ' "fields": {"latency_ms": 9}}\n',
+        encoding="utf-8",
+    )
+
+    mark = sink_offset(path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            '{"event": "retrieval", "ts": "2026-07-29T11:00:00+00:00",'
+            ' "fields": {"latency_ms": 1}}\n'
+        )
+
+    assert len(read_events(path).of("retrieval")) == 2, "the whole file still reads whole"
+    scoped = read_events(path, start_offset=mark).of("retrieval")
+    assert [event.field("latency_ms") for event in scoped] == [1]
+
+
+def test_a_mark_on_a_sink_that_does_not_exist_yet_is_zero(tmp_path):
+    # `configure_logging()` may not have created the file, and a run that then writes it must
+    # read all of its own lines rather than none.
+    from finbrief.observability.events import sink_offset
+
+    assert sink_offset(tmp_path / "absent.jsonl") == 0
+
+
+def test_a_fully_replayed_stage_leaves_an_empty_window_and_the_p50_refuses(tmp_path):
+    """The interaction between run-scoping and the cache, asserted rather than assumed.
+
+    A warm run issues no calls, so it appends no lines, so its window is empty — and the honest
+    outcome is a refusal, not the previous run's median served as this run's. This is what makes
+    a latency figure in the artifact mean the stage behind it actually ran.
+    """
+    from finbrief.evaluation.latency import NoSamples, load_log, translation_cost
+    from finbrief.observability.events import sink_offset
+
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event": "query_translation", "ts": "2026-07-29T10:00:00+00:00",'
+        ' "fields": {"latency_ms": 1518, "input_tokens": 271}}\n'
+        '{"event": "retrieval", "ts": "2026-07-29T10:00:01+00:00",'
+        ' "fields": {"latency_ms": 1576, "translation": true, "variants": 5}}\n'
+        '{"event": "retrieval", "ts": "2026-07-29T10:00:02+00:00",'
+        ' "fields": {"latency_ms": 328, "translation": false, "variants": 1}}\n',
+        encoding="utf-8",
+    )
+
+    # Unscoped, the previous run's lines are a complete measurement.
+    assert translation_cost(load_log(path)).planner_p50_ms == 1518
+
+    warm = sink_offset(path)
+    with pytest.raises(NoSamples):
+        translation_cost(load_log(path, start_offset=warm))

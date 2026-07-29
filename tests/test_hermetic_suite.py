@@ -24,6 +24,22 @@ installs it as the **process-wide** event loop policy on every `Guard.validate`,
 every subsequent async lookup outside a guard written in Python. Both have a test below, and
 both were found by running this file rather than by reading the dependency tree.
 
+The **seventh** is T10's one new dependency (#11): `ragas`, added to compute the four metrics
+ADR-0002 names, POSTs usage analytics to `t.explodinggradients.com` on every metric completion
+unless `RAGAS_DO_NOT_TRACK` says otherwise. It is the same shape as the fifth in every respect
+that matters and one that is worse: `ragas._analytics.track` is wrapped in a decorator literally
+named `@silent`, and the batcher that calls it flushes from a **background thread** and again at
+**`atexit`** — so the exception is swallowed, and the last flush can be attempted after the test
+session has ended and nobody is left to look. `EGRESS_ATTEMPTS` is the only detector that
+survives that, which is the third time that list has been the only thing standing between this
+repo and a silent packet.
+
+**Three libraries added for quality or safety, three that phone home by default.** That is a
+finding about the ecosystem rather than three coincidences, and it is why the rule is a test per
+backend rather than a reading of each new dependency's docs: the switch is in a different place
+every time (a `~/.guardrailsrc` key, an event loop policy, an environment variable), and only
+one of the three documents it anywhere a reader would look.
+
 Two lessons are built into the shape of this file. A per-backend test is what turns the next
 instance into a red test instead of a quiet packet — so a networking dependency without a case
 here is an uncovered path by default. And a *claim in a comment cannot fail*: three of the six
@@ -116,6 +132,53 @@ def test_aiohttp_cannot_reach_out():
         asyncio.run(fetch())
     assert "hermetic" in str(caught.value) or isinstance(
         caught.value.__cause__ or caught.value, EgressBlocked
+    )
+
+
+def test_requests_cannot_reach_out():
+    # The backend T10's one new dependency uses for its analytics POST (`ragas._analytics`), and
+    # the one `yfinance` falls back to when `curl_cffi` is absent — so it is covered twice over
+    # by inference and gets a test for the reason every other backend here does. `requests`
+    # bottoms out in `urllib3`, which calls `create_connection`.
+    requests = pytest.importorskip("requests")
+
+    with pytest.raises((EgressBlocked, requests.RequestException)) as caught:
+        requests.post("https://t.explodinggradients.com", json={}, timeout=1)
+    assert "hermetic" in str(caught.value) or isinstance(
+        caught.value.__cause__ or caught.value, EgressBlocked
+    )
+
+
+def test_ragas_analytics_makes_no_call_of_its_own():
+    # **The seventh instance** (T10, #11), and the one where a verdict-only assertion would have
+    # been useless twice over. `ragas._analytics.track` POSTs to `t.explodinggradients.com`; it
+    # is decorated `@silent`, which catches every exception, and `AnalyticsBatcher` calls it
+    # from a background thread and from an `atexit` hook. So there is no return value to assert
+    # on, no exception to catch, and the last attempt can happen after pytest has finished.
+    #
+    # `EGRESS_ATTEMPTS` is checked rather than `pytest.raises` for exactly that reason — the
+    # append happens inside the refusal, before the swallow. Two switches are asserted, not one,
+    # because they fail independently: `conftest` sets the environment variable for the suite,
+    # and `evaluation.judge` sets it for the *script*, which runs with no conftest anywhere near
+    # it. A hole is a hole whether today's code walks through it (`security/advice.py`).
+    analytics = pytest.importorskip("ragas._analytics")
+
+    attempts_before = len(EGRESS_ATTEMPTS)
+
+    # A real event through the real entry point, not a mocked one: what is being tested is
+    # whether *this* call reaches the network.
+    probe = analytics.IsCompleteEvent(event_type="t10-hermetic-probe", is_completed=True)
+    analytics.track(probe)
+
+    assert analytics.do_not_track() is True, (
+        "RAGAS_DO_NOT_TRACK is not set for this process, so ragas' analytics POST is live. "
+        "conftest sets it at import; note do_not_track() is lru_cached, so setting it after "
+        "the first metric has run is too late."
+    )
+    assert EGRESS_ATTEMPTS[attempts_before:] == [], (
+        "ragas attempted an outbound call while tracking an event. Note that nothing raised "
+        "and nothing was logged — track() is decorated @silent — which is why this asserts on "
+        "the guard's own record rather than on an exception or a return value."
     )
 
 

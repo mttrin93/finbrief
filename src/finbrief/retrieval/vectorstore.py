@@ -9,6 +9,7 @@ apart with no error to show for it.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Collection, Sequence
 
 from langchain_chroma import Chroma
@@ -105,6 +106,27 @@ def all_chunks(store: Chroma) -> tuple[Document, ...]:
             held["ids"], held["documents"] or (), held["metadatas"] or (), strict=True
         )
     )
+
+
+def collection_fingerprint(store: Chroma) -> str:
+    """A digest over every chunk id and its content hash — which ingest a reader is looking at.
+
+    Here rather than in the caller because CLAUDE.md enumerates exactly **two** crossings into
+    the corpus, both inside `retrieval/` and both through this module; `evaluation/pipeline.py`
+    had made a third by calling `all_chunks` from outside (code review of #11). The evaluation
+    harness needs this to key a cached retrieval to the ingest it ran against, but "read the
+    whole collection" is this module's decision to own either way.
+
+    Ids alone would be wrong: a re-ingest with a different chunker keeps the ids and rewrites
+    the bodies, so a cached retrieval would be served for a collection it never ran against. The
+    metadata already carries `content_hash` (ingest writes it for the idempotency check), so
+    this costs no hashing of bodies.
+    """
+    digest = hashlib.sha256()
+    for document in sorted(all_chunks(store), key=lambda doc: doc.id or ""):
+        digest.update((document.id or "").encode("utf-8"))
+        digest.update(str(document.metadata.get("content_hash", "")).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def nearest_chunks(store: Chroma, question: str, k: int) -> list[tuple[Document, float]]:

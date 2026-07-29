@@ -74,6 +74,31 @@ _BRACKETED = re.compile(rf"\[([^\[\]\n]{{1,{MARKER_SPAN_MAX_CHARS}}})\]")
 #: markers by this reading, which is the compound form `_ANSWER_RULES` asks for.
 _NUMERIC = re.compile(r"\A\d+\Z")
 
+
+def numeric_markers(text: str) -> tuple[int, ...]:
+    r"""Every resolving `[n]` in `text`, in order — the one definition of that shape.
+
+    **The `r` prefix is load-bearing**, and its absence was a defect rather than a style slip:
+    this docstring quotes a pattern, so without it `\[` and `\d` are invalid escape sequences
+    and importing this module — which the app does — emitted `SyntaxWarning: invalid escape
+    sequence '\['`, a future `SyntaxError`. Ruff's `W605` is not in this repo's `select`, so the
+    lint gate could not see it (code review of #11).
+
+    Exported because `evaluation/deferrals.py` had its own `re.compile(r"\[(\d+)\]")` for the
+    same job (code review of #11), and a second copy of a shape lets the gate and a
+    *measurement* of the gate disagree about what a citation is — the reason
+    `ingestion/model.py` owns the section boundaries. Built from `_BRACKETED` and `_NUMERIC`
+    rather than a fresh pattern, so a marker the logger would not resolve is not one this
+    counts.
+    """
+    found = []
+    for match in _BRACKETED.finditer(text):
+        inner = match.group(1).strip()
+        if _NUMERIC.match(inner):
+            found.append(int(inner))
+    return tuple(found)
+
+
 #: What a bracket must contain to be a *label* — something a reader could mistake for a
 #: citation.
 #:

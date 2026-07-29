@@ -116,3 +116,162 @@ that it must be made explicitly.
   what stops a set being cited before that pass happens, and the test binds the top-level claim to
   the rows so it cannot read `true` over unverified data. Ingestion could in principle mis-parse a
   Section, and a mis-parse would propagate straight into ground truth.
+
+---
+
+## Amendment (T10, #11): the faithfulness decision, made explicitly
+
+The amendment above fixes that T10 must choose between two options for the `tool-augmented`
+bucket's faithfulness, and must not run the metric unchanged. **Neither option is taken. A third
+is, because the premise both rest on does not hold at the seam this harness measures.**
+
+**Decision: keep all 28 rows in faithfulness, inject nothing, and score the tool half only
+through the tool-calling eval.**
+
+**Why the premise fails.** The amendment's warning is that "a tool-augmented answer's
+tool-derived sentences — the price, the ratio, the headline — are *not* in the retrieved
+contexts, so faithfulness will mark them unsupported". That is a property of an **agent** answer.
+The harness scores `rag.answer_question` — the deterministic chain, which calls no tools at all
+(ADR-0003; its amendment §4 forbids agent output reaching the harness that measures the chain).
+A chain answer therefore contains no tool-derived sentence to be unfaithful with, and
+faithfulness against the retrieved contexts is well defined for those seven rows like any other.
+
+**Why injecting tool output would be worse, not merely unnecessary.** It needs the agent loop, so
+the number would be about the loop rather than the chain. And the injected value is a live price:
+the cell would be irreproducible between runs, which is why `tool_expectation` deliberately holds
+no figures.
+
+**What *is* distorted is response relevancy, not faithfulness** — and that is where the harness
+does report something other than a number. A chain answer to "Is Ford expensive right now?"
+correctly says the retrieved filings do not carry a current share price; ragas' `noncommittal`
+flag fires and the metric scores ≈0 **for being right**. Printing that beside a semantic bucket's
+0.9 would invite a comparison it cannot support, so the artifact prints the *count of noncommittal
+answers* in that cell instead of a mean (#11, addition 3). Measured on the first live run: 1 of 1
+on the smoke's tool-augmented row.
+
+**Pre-registered, with its own refutation channel.** If the chain's answers on those rows turn
+out to be memory-supplemented — a P/E or a market cap from the weights, which is the failure
+recorded on #8 for `planted-news-html` — faithfulness *catches* it, the low scores are the
+finding, and the premise above is wrong. That is a good outcome for the metric and a bad one for
+this paragraph; the artifact reports the number either way.
+
+**The tool half, and the AC-1 pairing hole #9 recorded.** `tool_expectation` keeps its one-tool
+shape. The valuation-pairing criterion ("a valuation question wants the quote *and* the peer
+comparison") is measured as a **separate bucket-level metric** rather than by reshaping the
+committed artifact: ADR-0002 describes the field as recording *the additional* tool, and
+rewriting hand-verified reference data to carry a measurement is the wrong direction. Option 3
+from that comment — leave it unmeasured — is explicitly not taken.
+
+## Amendment (T10, #11): what the harness added to this ADR's own claims
+
+Three things measuring the set taught, recorded because they change how its numbers must be read.
+**§3 is a correction, not a lesson** — it recorded a claim about the comparator that a
+fresh-context code review of this branch falsified, and it now records the defect and the
+replacement instead.
+
+**1. Chunk-identity recall is a near-lottery on this set's large sections, and the artifact says
+so beside the column.** S1 grounds in 6 of TSLA Item 1A's **129** chunks. The first live run
+returned chunks 48–70 against targets 0, 1, 6, 34, 94 and 117: chunk recall 0.000, section recall
+1.000, for a retrieval an analyst would call correct. So the harness reports three recall-shaped
+things and says what each is for — exact chunk recall (free, and harsh), **section recall** (what
+the multi-hop and cross-filer rows are really asking), and the judged context precision/recall
+(which compare *text* against the reference rather than chunk identity). ADR-0005's falsification
+clause rests on the judged pair, which is what its own wording already named.
+
+**2. `recall_trivial` needed a companion rule for the partial case, and it had one.** A row where
+only some sections are trivial contributes its non-trivial sections alone: M2 is scored on META
+Item 7A and not on AAPL's 4 or MSFT's 3. Without that, reaching two sections a `k=5` retrieval
+cannot miss would have scored 0.667 on a row that found nothing hard.
+
+**3. The comparator that produced this ADR's first set of verdicts could not return anything else,
+and that is the finding.** This section previously read: *"A predicted tie is reported as `within
+spread`, never as 'equal'. … The comparison is made against the measured per-question spread rather
+than a constant, which is #11's 'no threshold at four decimals' implemented rather than promised."*
+Every sentence of that was true and the instrument underneath was still vacuous.
+
+**What was wrong.** `metrics.compare` judged a difference of *means* against `basis` — the larger of
+the two arms' raw **per-question range**. Each arm's mean is bounded by that arm's own min and max,
+so the largest delta the observed values can produce is
+`max(cand.max − base.min, base.max − cand.min)`; and when two arms score *the same questions* under
+near-identical configurations, that quantity **equals the range**. The test was `abs(delta) <= basis`.
+It could not fail.
+
+**How large the consequence was.** All **18** pre-registered comparisons in the first committed
+artifact — the six hypotheses, the eight falsification-clause cells and the four §4 trigger cells —
+were rendered as verdicts by a test mathematically incapable of returning any other. Four
+hypotheses were published as **refuted** on that basis; H2 was refuted while its delta ran +0.102 in
+the *predicted* direction, leaving ADR-0004 §6's root-caused live case standing unreconciled beside
+it. `Verdict.WITHIN_SPREAD`'s own docstring said the arms "may genuinely differ" and
+`Outcome.confirmed` collapsed that into `False` one line later. Both of ADR-0005's pre-registered
+decisions were tautologies: the falsification clause could not fire, and §4's absence-triggered test
+could not fail to fire.
+
+**How it was found, because the method matters more than the fix.** By a fresh-context review
+reading the artifact's own printed `[min–max]` beside each mean and doing the subtraction nobody had
+done. The information needed to catch it was in the committed evidence the whole time. The
+pre-registration was sound — written pre-data, in code, refusing fenced metrics; **the instrument
+judging it was not**, and those are separable failures. A pre-registered prediction is only as good
+as the test that settles it, and this repo had a rule for exactly this ("prefer an equality over a
+bound, prefer a check that exercises the thing") that nobody had pointed at the comparator.
+
+**The replacement.** Pair on the **question** — the arms score the same rows, so the per-question
+difference removes the question's own difficulty, which is the term that dominated the raw spread —
+and settle direction with an **exact** Wilcoxon signed-rank test, its null built by convolution
+rather than approximated (a normal approximation over seven paired differences is not defensible,
+and would have returned a confident-looking number in place of the vacuous one). Three outcomes, not
+two: `NOT_DETECTED` when the test had power and resolved nothing, and `UNDETECTABLE` when no
+arrangement of that many differing questions could have reached α at all. Only the first is a
+measurement, and `metrics.Paired.detectable` is what keeps them apart.
+
+**And it happened twice on this ticket, which is what makes it a class rather than an incident.**
+The second fresh-context review of this branch found `tool_eval`'s control **C3** — "Should I buy
+Ford shares today?" — declaring no expected tool, no forbidden tool and no argument. `missing`,
+`forbidden_called` and `wrong_args` are then empty for *every* possible agent behaviour, so `passed`
+was `True` unconditionally, and the case sat inside a published **100% over 10 scored cases**. The
+denominator was ten; the number of cells capable of dissent was nine. Its own note read "scored here
+only on whether a tool fired", describing a check nothing performed.
+
+So this ticket produced two vacuous checks and both were **inside published measurements**: one was
+the instrument judging the hypotheses, one was a control counting toward a reported rate. Stated as
+the generalisation rather than as two anecdotes:
+
+- **A measurement's own controls need the same adversarial reading as its subjects.** The comparator
+  was scrutinised as an instrument and the control set was not, because a control *looks* like data.
+  It is not — it is instrumentation, and an instrument that cannot register a fault is not a check.
+- **A passing rate is only as strong as the weakest case in its denominator.** "100% over 10" is a
+  claim about ten cases; if one of them could not have failed, the rate is a claim about nine and
+  the tenth is padding that inflates the apparent evidence.
+
+The fix follows the same rule the comparator's did — exercise the thing rather than describe it.
+Every control is now driven against an agent scripted to call all three finance tools and asserted
+to fail (`tests/test_eval_tool_eval.py::test_every_control_can_fail`), so a control that cannot
+register a fault fails the suite instead of passing a run.
+
+**5. One column is not comparable across runs, and the artifact now says so where it is printed.**
+Response relevancy is re-sampled every time it is judged — ragas forces temperature 0.3 whenever it
+asks for n > 1, and the provider then serves one completion instead of three. Every *other* number in
+the artifact is replayed from a content-addressed cache and reproduces cell for cell; this one does
+not. Measured: between two runs over the same cached contexts and the same answers, cells carrying no
+exclusion moved by **±0.01–0.02**, and the count of ≈0 *noncommittal* cells on `multi-hop` moved from
+**nine to eight**.
+
+That second movement is why the caveat is printed rather than filed: the noncommittal exclusion is a
+genuine fix — those cells were being averaged into published means — but a bucket mean that both
+excludes cells and re-samples the rest has **two effects compounded, and they cannot be separated
+from these numbers**. So the artifact prints `n` on every mean in that column, prints the flagged
+count beside it, and states outright that a movement there may not be read as a change in the
+pipeline. A figure from one run may not be quoted about another.
+
+**4. The stratification traded per-bucket power for per-bucket interpretability, and the exact test
+made the price visible.** Decision 3 sizes each bucket at ≥6 questions. The exact two-sided p cannot
+fall below `2 / 2**m` for `m` differing questions, so α=0.05 is reachable only from **m ≥ 6** — and
+at exactly 6 **no** difference may point against the majority, at 7 exactly one may. So this design
+can resolve only near-unanimous effects, at any effect size: a real difference of 0.2 holding on
+five of seven questions is not weakly supported, it is *unresolvable*. On the re-run, **4 of 18**
+cells carried a measurement and 14 were undetectable.
+
+This is a property of the bucket size, not of the test — and it is a finding about the experiment
+rather than about retrieval, discovered after the fact. The per-bucket A/B is therefore a **screen
+for large unanimous effects**, not a test of small ones, and every conclusion drawn from it inherits
+that. Raising `n` is a golden-set sizing decision and belongs to whoever revises this ADR; the
+artifact's power audit prints the arithmetic so the limit cannot be inferred wrongly from a p-value.

@@ -290,3 +290,122 @@ def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
     assert f"{GATE_LOGGED_INPUT_MAX_CHARS} characters" in readme
     # And exactly once, so the copy that drifts cannot be reintroduced quietly.
     assert readme.count(f"{GATE_LOGGED_INPUT_MAX_CHARS} characters") == 1
+
+
+EVALUATION = Path(__file__).parents[1] / "docs" / "verification" / "evaluation.md"
+
+
+def _figures(text: str) -> str:
+    """`text` with the spellings a number can legitimately differ by folded away.
+
+    The README writes `−0.087` with a typographic minus and `8 of 8`; the artifact writes
+    `-0.087` and `100% (8/8)`. Those are the same measurement in two registers, so the binding
+    normalises rather than demanding one — which would be a style rule dressed as a check.
+    """
+    return text.replace("−", "-").replace("–", "-").replace(" of ", "/")
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [
+        "-0.087",  # H1's paired delta, the bucket hybrid exists to win
+        "3212",  # the p50 translation adds
+        "1500",  # ADR-0005's pre-registered budget
+        "4/18",  # comparisons that carried a measurement
+        "8/8",  # the agent-vs-original divergence rate
+        # The determinism result, which is a headline claim in the README and therefore has to
+        # be bound like every other. `report.Determinism` emits these as table cells for this
+        # reason — a prose assertion cannot be diffed against a measurement, and the artifact
+        # not carrying them parseably was the cheaper half of the problem to fix.
+        "168",  # retrieval cells re-paid from scratch, all six arms
+        "672",  # cells replayed on context-body keys, zero misses
+        # Layer 4's residue never appears without its controls, so both are bound.
+        "6/6",  # recommendations not refused
+        "10/10",  # positive controls refused, which is what makes the 6/6 a measurement
+    ],
+)
+def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
+    """A figure retyped into prose is a figure that will disagree with its source.
+
+    `report.headline_section`'s own docstring says exactly that, and `test_grounding_scope.py`
+    exists to bind README prose to derived values and committed evidence — yet the README's
+    whole evaluation section was retyped from `evaluation.md` with nothing binding it (code
+    review of #11). The next run moves these numbers and the README would keep asserting the old
+    ones, in the section that states the project's headline conclusion.
+    """
+    readme = _figures(README.read_text(encoding="utf-8"))
+    artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
+
+    # **Matched as a whole number, not as a substring**, which is the difference between a
+    # binding and a decoration: `"8" in text` is true of "18", "0.087" and every date, so a
+    # bare-substring check on a short figure is a check that cannot fail — this repo's named
+    # bug class, and it very nearly arrived inside the test written to prevent it.
+    def quotes(text: str) -> bool:
+        return re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", text) is not None
+
+    assert quotes(readme), f"the README no longer quotes {figure}; update this list too"
+    assert quotes(artifact), (
+        f"the README quotes {figure} and the committed artifact does not. Re-run "
+        f"`scripts/evaluate.py` and requote from the file it writes."
+    )
+
+
+def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
+    """Its twin `GATE_LATENCY_BUDGET_MS` is bound by equalities in two places, which is the
+    reason `config.py` cites for the move. This one's only coverage was `within_budget is True`
+    at 1300 and `False` at 2200 — satisfied by any budget in [1300, 2200) (review of #11)."""
+    from finbrief.config import TRANSLATION_LATENCY_BUDGET_MS
+
+    assert TRANSLATION_LATENCY_BUDGET_MS == 1500.0
+    assert f"{TRANSLATION_LATENCY_BUDGET_MS:.0f} ms" in README.read_text(encoding="utf-8")
+
+
+#: The cited-marker deferral's three-way split, which README and artifact both lead with.
+#:
+#: Bound as one phrase rather than as three numbers: `22`, `40` and `8` are each too short to
+#: match meaningfully on their own, and the *composition* is the finding anyway — the middle
+#: bucket is the largest and is what neither the citation register nor whole-answer faithfulness
+#: can see. A rate quoted without it reads as a simple failure rate, which it is not.
+CITED_MARKER_COMPOSITION = "22 fully supported / 40 partly supported / 8 not supported"
+
+
+def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
+    """The README leads with the split, and the artifact is where it comes from."""
+    readme = README.read_text(encoding="utf-8")
+    artifact = EVALUATION.read_text(encoding="utf-8")
+
+    assert CITED_MARKER_COMPOSITION in artifact, (
+        f"the artifact no longer renders {CITED_MARKER_COMPOSITION!r}. If the run moved those "
+        f"counts, requote the README from it and update this constant."
+    )
+    assert CITED_MARKER_COMPOSITION in readme, (
+        "the README must lead with the composition rather than the derived rate: a 31% "
+        "full-support rate hides that partial support is the largest bucket."
+    )
+
+
+def test_no_test_imports_through_the_tests_package():
+    """`from fakes import …`, never `from tests.fakes import …` — and the difference is CI.
+
+    There is no `tests/__init__.py`, so pytest puts *this directory* on `sys.path` and `fakes`
+    resolves anywhere. The `tests.` prefix additionally needs the **repo root** on the path,
+    which a local editable install happens to supply and a clean runner does not: one such
+    import sat in `test_eval_pipeline.py`, passed on the author's machine, and failed CI with
+    `ModuleNotFoundError: No module named 'tests'`.
+
+    Forbidden by a scan rather than fixed once, because "green locally" and "green in CI" are
+    different claims and this is the difference that made them differ. A convention followed by
+    nine of ten importers is not a convention — it is a coin flip that has come up heads nine
+    times.
+    """
+    offenders = sorted(
+        f"{path.name}:{number}"
+        for path in Path(__file__).resolve().parent.glob("*.py")
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if re.match(r"^\s*(?:from|import)\s+tests\.", line)
+    )
+
+    assert not offenders, (
+        f"{offenders} import through the `tests.` package. Spell it `from fakes import …`: "
+        f"the prefixed form needs the repo root on sys.path, which CI does not provide."
+    )

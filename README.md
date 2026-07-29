@@ -49,7 +49,20 @@ business overview, risk factors, current valuation, and recent news — in minut
 > is [`docs/verification/security-gate.md`](./docs/verification/security-gate.md). One
 > pre-registered number did not survive the measurement — see *What the gate does not do* below.
 >
-> The four files under
+> **And the whole thing has now been measured** (T10, [#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)):
+> six configurations over ADR-0002's 28-question golden set, all four RAGAs metrics, the two
+> pre-registered decisions evaluated against the numbers rather than argued, and the tool-calling
+> eval user story 29 asks for. The evidence is
+> [`docs/verification/evaluation.md`](./docs/verification/evaluation.md), and it leads with what the
+> run could **not** resolve, because that is the honest headline: only 4 of 18 pre-registered
+> comparisons carried a measurement at all, so the shipping default is **retained, not validated**.
+> Tool-selection accuracy was 100% over 10 scored cases — 3 of them negative controls the golden set
+> cannot express — with the valuation quote-plus-peers pairing measured at 1 of 2 rather than
+> enforced. The translation latency budget was **missed and left unamended**, and three deferred
+> measurements came back with findings rather than clean bills. Details in *Running the evaluation*
+> below.
+>
+> The five files under
 > [`docs/verification/`](./docs/verification/) are generated run evidence, never
 > hand-authored. The plan lives in [`PLAN.md`](./PLAN.md), the Tier-1 spec in
 > [`docs/spec/finbrief.md`](./docs/spec/finbrief.md), the domain language in
@@ -197,7 +210,13 @@ prompt.
   not hypothetical: three candidate models were unavailable on this account and fail-open made
   them read as the *fastest* rows in the benchmark, catching nothing.
 - **Novel advice phrasing is layer 4's blind spot**, exactly as a novel payload is layer 2's, and
-  there is no layer 5.
+  there is no layer 5. T10 measured the size of it: **100% (6/6) of hand-labelled recommendations
+  were not refused, on a validator shown live by 10/10 positive controls refused**. Both halves,
+  always together — the residue alone is equally consistent with a *dead* validator, since
+  `validate_answer` fails open by design and a fail-open also yields 100%. The controls are advice
+  the rules provably catch, and `deferrals.advice_residue` raises rather than reporting a rate if
+  none of them is. n is small and hand-authored, so this is a statement about the rules'
+  **generality**, not a 100%-evasion claim.
 - **A refused answer is still in the agent's memory.** The validator guards the surface, not the
   checkpointer: the answer has already been generated when it fires, so a follow-up in the same
   thread can reference text the reader never saw.
@@ -209,8 +228,16 @@ prompt.
   against the numbers this conversation has issued, and unresolvable ones are named beside the
   answer rather than silently stripped — a reader losing that evidence is worse than seeing it.
   But a marker that *resolves* can still sit on a claim its chunk does not support. That is
-  faithfulness, it needs a judge model and ground truth, and it stays with T10's RAGAs run over
-  T9's golden set.
+  faithfulness, it needed a judge model and ground truth, and **T10 measured it**. Over 70
+  `(sentence, marker)` pairs across 50 cited sentences on the shipping default, the split is
+  **22 fully supported / 40 partly supported / 8 not supported** — a 31% full-support rate,
+  derived from that composition rather than quoted alone. **The middle bucket is the largest and
+  the interesting one**: a partly supported cited sentence has a marker that *resolves* and a
+  chunk that carries *some* of the claim, which is precisely what the citation register cannot
+  see and what whole-answer faithfulness scores as fine, since the claim is supported somewhere
+  in the context set. See
+  [`docs/verification/evaluation.md`](./docs/verification/evaluation.md). Marker resolution is
+  enforced in code; marker support is measured, and mostly partial.
 - **The homoglyph map is not the Unicode confusables table.** A lookalike outside it survives
   normalisation and reaches layer 3 — which is the layer that exists for what layers 1 and 2 miss.
 - **The Universe whitelist is an incidental extra**, not part of the argument: it happens to stop
@@ -251,10 +278,12 @@ stale.
   debt"* names no company. That instruction is a **prompt, and nothing in the code enforces
   it**: the tool pre-processes nothing on our side, and what the model actually passes is then
   recorded rather than corrected. Whether each search ran your words is logged as a verdict
-  (never the text of either query), and T10 reports the rate. On the first live two-turn run the
-  model rephrased **both** queries, so the rate so far is 0 of 2. That is a finding for the
-  evaluation phase, not something to tune the prompt against — and not a criterion this project
-  claims to have met.
+  (never the text of either query), and T10 measured the rate: **100% divergence, 8 of 8
+  searches** — and all 8 are *first* searches in their thread, which cannot be reference
+  resolutions, so none of them is the one rewrite the description permits. Quoted from
+  [`docs/verification/evaluation.md`](./docs/verification/evaluation.md), over that run's own
+  window of the log. That is a finding, not something to tune the prompt against — and not a
+  criterion this project claims to have met.
 - **One `[n]` means one chunk for the whole conversation.** A second search continues the
   numbering rather than restarting at `[1]`, so a marker in an answer three turns up still
   resolves to the source you were shown beside it. The numbers are assigned in a single pass
@@ -295,16 +324,24 @@ the environment, so the app and the evaluation harness read the same switches (A
   worst case inside a latency budget, and the gate fails open onto three other layers.
   There is deliberately **no switch to turn the gate off**: a security control with an off switch is
   a security control that is off somewhere.
+- `FINBRIEF_JUDGE_MODEL` (default `openai/gpt-4.1-mini`) is what RAGAs scores with, read only by
+  `scripts/evaluate.py`. Its own field for the same reason the classifier's is, reaching the
+  opposite conclusion: it defaults **stronger** than the answering model rather than cheaper,
+  because the gate pays for one YES/NO per turn while a judge that misreads a filing passage moves
+  every number in the report. And deliberately not `FINBRIEF_CHAT_MODEL` — a judge that is the
+  answering model grades its own output, which is the circularity ADR-0002's source-separated
+  golden set exists to avoid. Measured cost of the difference over a full six-arm run: about $1.28
+  against $0.57.
 - `finbrief.*` logs one JSON object per line to stderr at `LOG_LEVEL` (default `INFO`);
-  the Phase-7 A/B and security-gate analyses read those lines back. **One field is user-derived and
+  the Phase-7 A/B reads those lines back. (The security suite does **not** — it computes its results
+  in process and renders its own artifact from them.) **One field is user-derived and
   it is the only one**: a blocked turn's gate-trigger line carries the *normalised* input, truncated
   to 500 characters, because a denylist you cannot audit is a denylist you cannot tune. An allowed
   turn logs counts and verdicts only.
 - `FINBRIEF_LOG_FILE` (**unset by default**, i.e. nowhere) appends those same lines to a file.
   Unset, they exist only in the terminal that started the app and nothing survives the process —
-  so **turn it on for any run whose numbers you intend to report**: latency samples, token counts,
-  the agent-vs-original divergence rate and gate-trigger metadata are read back out of this file
-  and out of nothing else. `.env.example` carries the recommended path, `data/events.jsonl`,
+  so **turn it on for any run whose numbers you intend to report**: latency samples, token counts
+  and the agent-vs-original divergence rate are read back out of this file and out of nothing else. `.env.example` carries the recommended path, `data/events.jsonl`,
   **commented out** — so a copied `.env` leaves the sink off, and recording a run means
   uncommenting that one line. The file is gitignored, append-only and never rotated. Enabling it
   means keeping the one user-derived field above on disk, which is the trade the bullet before
@@ -337,11 +374,199 @@ Tests are hermetic — no API key, no `.env`, and no network calls — so they r
 four DNS resolvers, through `curl_cffi` (which resolves in C) and through `uvloop` (which
 resolves in libuv), and `tests/test_hermetic_suite.py` carries one test per backend. The guard
 is a denylist over the backends this repo can reach, not a proof — a new HTTP dependency is a
-new path, which is how two of the six recorded breaches were found, both in T7's single new
-dependency.
+new path, which is how three of the seven recorded breaches were found, in the two dependencies
+T7 and T10 added.
 
-The security suite is the third of the four non-hermetic entry points, and the cheapest of the
-three that cost anything (`ingest_filings.py --dry-run` is the fourth and spends nothing):
+### What the evaluation established about the shipping default: nothing
+
+The pre-registered default is `hybrid + translation` and **it is retained because the experiment
+could not resolve the question, not because it was validated** (ADR-0005's code-review amendment,
+requoted from [`docs/verification/evaluation.md`](docs/verification/evaluation.md)).
+
+Hybrid earns nothing detectable on any bucket. The point estimate on `exact-identifier` — the bucket
+hybrid exists to win — is **−0.087**. The one root-caused live case favours the simpler arm:
+`vector + normalisation` put the target chunk at rank 1 against `hybrid + translation`'s rank 2.
+Translation costs **3212 ms** p50 against a pre-registered budget of 1500 ms, and the budget is
+recorded as missed and left unamended, because moving a number to wherever the measurement landed
+is pre-registration in reverse. ADR-0005's §4 re-examination trigger fired on **one** bucket of
+four, the other three excluded as too underpowered to resolve a gain at all — and its condition
+says "every bucket", so as written it is not met. The falsification clause that protects the default
+**could not have fired on any bucket**: all eight cells undetectable, effective n as low as 1.
+
+**The default is currently held up by nothing that this run measured.** `vector + translation` is a
+live candidate this run could not rule out. What would settle it is a larger per-bucket `n` and
+nothing else: at ~7 questions per bucket the exact paired test resolves only near-unanimous effects,
+so **4 of 18** pre-registered comparisons carried a measurement at all and the rest are statements
+about the sample. That limit is a property of ADR-0002's bucket size, it was discovered after the
+fact, and it means the per-bucket A/B is a screen for large unanimous effects rather than a test of
+small ones.
+
+None of that is a defect in the pipeline. It is a measurement that came back saying *we cannot tell*,
+reported as that instead of as a result — which is the whole reason the pre-registration and the
+artifact are separate things.
+
+### Which half of the pipeline is deterministic, measured on both sides
+
+Two findings from the same runs answer this precisely, and they point opposite ways — which is why
+they belong together rather than in separate sections.
+
+**Retrieval is exactly reproducible, and that is now the strongest empirical claim in the project.**
+A code review changed the retrieval cache key, so all **168** retrieval cells — 28 questions × six
+arms, baselines, translated arms and both planner-off ablations — were re-paid from scratch against
+the same collection. Everything downstream then **replayed**: **672 cells with zero misses**, being
+560 judge cells (all four metrics) and 112 answer cells. Those keys
+are not identifiers. The judge key carries the **full text of every retrieved context**; the answer
+key carries the chunk ids plus a **sha256 of the context bodies**. A single character different in
+any chunk of any cell, on any arm, and that cell would have missed and been re-paid. None did.
+
+This is the third independent confirmation and the first covering the **whole matrix** — the earlier
+two were partial, over the four scored arms. So: given the same collection and the same question,
+`retrieve()` returns the same chunks in the same order, byte for byte, on every configuration this
+project ships or ablates.
+
+**The planner is not, and the same runs measure that too.** ADR-0004 §9's n-repeat asks the planner
+for sub-queries five times per question at temperature 0. Three successive runs of that pass
+reported **0, 1 and 2 of 8** questions returning an identical set every time — the count is itself
+re-sampled, because the pass makes live planner calls and so inherits the variance it is measuring.
+**The conclusion is the same in all three and that is what makes it usable: 6, 7 and 8 of 8
+questions varied.** Quote the range, never one run's count. That is why the two `+translation` arms
+replay a recorded planner reply instead of calling it — without the replay those arms would report
+different numbers on a re-run with no code change.
+
+Together they locate the nondeterminism exactly: **it is in the model calls, not in the retrieval.**
+Everything between the query variants and the ranked chunks is reproducible; the planner that writes
+those variants is not, and neither is the judge that scores the answers — response relevancy is
+re-sampled every time it is judged, which is why the artifact fences that column off from every
+pre-registered decision and now states outright that it is not comparable across runs.
+
+### What the evaluation actually established: a prompt is an instrument, not a control
+
+The strongest generalisable claim this project's measurements produced is not a retrieval number.
+It is that **a rule stated in a prompt is a thing you can measure compliance with, and not a thing
+you can rely on** — and it is a claim standing on four independent instances, three of them found
+before the evaluation and one measured at scale by it.
+
+| stated rule | where | what was measured |
+|---|---|---|
+| pass the user's question to `search_filings` **verbatim** | the tool's description (ADR-0003 §1) | **100% divergence, 8 of 8 searches.** Every query the agent issued differed from the question as typed, and all 8 are *first* searches — which cannot be reference resolutions, so none of them is the one rewrite the description permits |
+| decompose a question into sub-queries when asked to | the planner's prompt (ADR-0004 §6) | the planner refuses, or returns prose refusals the parser has to strip (`_REFUSAL`) |
+| square brackets are reserved for retrieved excerpts | `AGENT_SYSTEM_PROMPT` (T5) | `[Yahoo Finance]` observed live; uncited grounded answers observed live |
+| every figure comes from a tool or a retrieved excerpt | `AGENT_SYSTEM_PROMPT` (T7) | an answer naming Tesla's real segments from a chunk about industrial fasteners |
+
+The verbatim rule is the sharpest of the four because every divergence is one the description
+forbids outright. ADR-0003's T4 amendment recorded 0 verbatim of 2 searches and said itself that was
+too small to publish; 8 of 8, all of them first searches, is a rate over a denominator the harness
+can attribute to one run — and per that same amendment's position it is **a finding rather than a
+defect to tune away**, since a prompt tuned against a paid model until the number looks good is a
+number about the tuning. The denominator is 8 and not the 40 an earlier draft of the artifact
+reported: that figure pooled 13 runs' worth of an append-only log, and the honest per-run count is
+smaller (ADR-0011's T10 amendment).
+
+**The same shape holds one layer down, where the rule is code rather than prose.** Layer 4's advice
+denylist refuses every recommendation that announces itself and **none** of six hand-labelled
+recommendations that do not: no imperative, no rating word, no price target, no position-sizing
+instruction, and *"if it were my own capital I would be adding to Ford on any further weakness"*
+goes straight through. A rule set that pattern-matches the vocabulary of advice catches the
+vocabulary, not the advice.
+
+What follows for the architecture is what this repo already does, stated once instead of four
+times: **the rules that hold are the ones made unrepresentable, not the ones written down.**
+Citation numbering is assigned in one sequential pass at the agent seam, so two searches in one
+step *cannot* collide (ADR-0003 amendment §3). The `filings` collection is opened in one file, so
+two callers cannot disagree about it. The Universe whitelist is a lookup, so an out-of-Universe
+ticker cannot be fetched. Every one of those is a constraint the model has no opportunity to
+decline. Where a constraint cannot be made structural — and the verbatim rule cannot, because the
+one edit it must permit is indistinguishable from the rewrite it forbids — the honest response is
+to instrument it and publish the rate, which is what `docs/verification/evaluation.md` does.
+
+### The other generalisable claim: a check that cannot fail, five times on one ticket
+
+The evaluation ticket produced five defects with one shape — **something asserted a result the
+code had not established** — and they are worth reading together because they look unrelated
+apart:
+
+| where | what it asserted | what it had established |
+|---|---|---|
+| `metrics.compare` | a verdict on each of 18 pre-registered comparisons | nothing: it tested a delta of means against the arms' own range, which is the largest delta those values permit, so it could not return anything but a null |
+| `tool_eval`'s control C3 | a pass, inside a published **100% over 10 scored cases** | nothing: with no expected tool, no forbidden tool and no argument, `passed` was `True` for every possible agent behaviour |
+| the judge stage's error path | `APIConnectionError: Connection error.` | nothing about the network: a client built once at process start was reused across the per-cell `asyncio.run` loops, and `httpx` raised `bound to a different event loop`, which the SDK renamed |
+| the figure-binding test itself | that every evaluation figure the README quotes is in the artifact | nothing, for short figures: it matched **substrings**, so `"8"` is satisfied by `18`, `0.087` or any date. Adding the cited-marker counts to it would have bound nothing |
+| "1324 tests green" on the inherited commit | that the suite passed | nothing CI had seen: that commit was pushed inside a later push, so the workflow only ever built the tip. It was green locally and red on the runner |
+
+The first two sat **inside published measurements**; the third was in an error path, which is why
+it cost three killed runs and a wrong diagnosis before the real exception surfaced. Two things kept
+it hidden, and both are ordinary good practice working against visibility: the **cache** meant every
+earlier run replayed the one metric that triggers it, so the path was never exercised; and the
+**retry** could self-heal it, so it failed at a different point every time.
+
+**The fourth is the one worth sitting with: it was inside the mechanism built to prevent the
+others.** `test_grounding_scope.py` exists because a figure retyped into prose disagrees with its
+source, and it binds the README's evaluation numbers to the committed artifact. It did so with
+`figure in text`. That is adequate for `3212` and `-0.087` and vacuous for anything short — and the
+moment the cited-marker composition (`22`, `40`, `8`) was added, the guard would have been asserting
+nothing while looking like the strictest check in the repo. It now matches on whole numbers
+(`(?<![\d.\-])…(?![\d])`), verified against `"8" in "the value is 18"`, and the composition is
+bound as one phrase because three short numbers cannot be bound separately. **A guard is code, and
+inherits every failure mode of the code it guards.**
+
+**The fifth is the same shape wearing process clothes.** "1324 tests green" was true on a laptop and
+untrue on the runner: `test_eval_pipeline` was the suite's only `from tests.fakes import`, which
+needs the repo root on `sys.path` where the other nine importers' `from fakes import` does not. A
+local pass is evidence about a local environment. The structural half of that gap is now closed —
+`test_no_test_imports_through_the_tests_package` forbids the spelling outright, so the two
+environments cannot disagree about it again. The other half is not closable by a test: GitHub runs
+one workflow per *push*, on the tip, so any commit pushed alongside a later one is never built on
+its own. **Treat a green local run as a hypothesis about CI, never as a result from it.**
+
+What follows is the rule this repo now applies to instrumentation as well as to code: **prefer a
+check that exercises the thing over one that describes it.** Every control in the tool eval is now
+driven against an agent that calls all three finance tools and asserted to fail; the comparator was
+replaced by an exact paired test that reports "we could not have seen it" as a third verdict; and
+the judge stage now runs every cell on one event loop, with a regression test that reproduces the
+condition. An instrument that cannot register a fault is not a check, and an exception a program
+*translates* is a claim like any other.
+
+The third one has a footnote worth keeping, because the first fix for it was wrong in an
+instructive way. Building a client per cell so none outlives its loop is the obvious repair, and it
+failed identically on the next run: `langchain_openai` caches the async HTTP client below this
+repo's constructor, so distinct model objects share one connection pool. The per-cell fix passed a
+test asserting exactly what it achieved — a fresh client per cell — and that fact was true and
+beside the point. **A test binds the layer it names**, and a fix aimed one layer above the defect
+can look correct until it is run.
+
+### Three libraries, three that phone home by default
+
+Worth stating as a pattern rather than as three separate footnotes, because it changed how this
+project adds a dependency. Every library added here **for quality or safety** ships with a
+telemetry path enabled:
+
+| library | added for | what it sends, unconfigured | how it is switched off |
+|---|---|---|---|
+| `guardrails-ai` | the output validator (T7) | a record of every validated answer, to its own endpoint | `guard.configure(allow_metrics_collection=False)`, in `security/advice.py` |
+| `uvloop` (via guardrails) | nothing — it arrives transitively | nothing itself, but it becomes the **process-wide** event loop and resolves DNS in libuv, outside a Python-level guard | `GUARDRAILS_RUN_SYNC`, plus the guard covers the backend |
+| `ragas` | the four RAGAs metrics (T10) | a POST per metric completion, to `t.explodinggradients.com` | `RAGAS_DO_NOT_TRACK`, set in `evaluation/judge.py` **and** in `conftest.py` |
+
+Three things follow, and they are why the rule is a test per backend rather than a careful read
+of each new dependency's documentation.
+
+**The switch is in a different place every time** — an SDK method call, an environment variable
+that must be set before a cached read, an event loop policy — and only one of the three documents
+it anywhere a reader would look.
+
+**The failure is silent by construction.** `ragas._analytics.track` is decorated `@silent`, and it
+is called from a background thread and again at `atexit`; guardrails' POST happens inside
+OpenTelemetry's `BatchSpanProcessor`, which catches the exception on its own export thread and
+logs it. So in both cases the library returns a completely normal result while a packet is being
+attempted, and a test asserting on the return value passes. `conftest.EGRESS_ATTEMPTS` — a list
+the guard appends to *inside* the refusal, before any caller can swallow it — is the only detector
+that survives that, and it has now been the only detector three times.
+
+**Off-by-default has to be set twice.** Each switch is set both where the library is used and in
+`conftest.py`, on the principle `security/advice.py` records: a hole is a hole whether today's
+code walks through it, and the two mechanisms fail independently.
+
+The security suite is the third of the five non-hermetic entry points, and the cheapest of the
+four that cost anything (`ingest_filings.py --dry-run` is the fifth and spends nothing):
 
 ```bash
 uv run python scripts/security_suite.py               # full run, rewrites the evidence artifact
@@ -357,6 +582,70 @@ It exists because three of the gate's claims cannot be met by a test — whether
 recognises a *novel* payload, whether a real model *obeys* a planted one, and the latency p50,
 which is a measurement. It exits non-zero on a failing suite, so it is usable as a gate and not
 only as a generator.
+
+### Running the evaluation
+
+The fifth non-hermetic entry point, and the most expensive:
+
+```bash
+uv run python scripts/evaluate.py                   # every stage, every arm, 28 rows
+uv run python scripts/evaluate.py --rows S1,T2      # a two-question smoke over all six arms
+uv run python scripts/evaluate.py --stage judge     # re-judge only; replay everything else
+uv run python scripts/evaluate.py --no-write        # print the artifact, do not commit it
+uv run python scripts/evaluate.py --no-ablations    # skip the two planner-off cells
+uv run python scripts/evaluate.py --workers 1       # serial; the default is 6
+uv run python scripts/evaluate.py --cache-dir DIR   # paid cells (default data/eval-cache)
+```
+
+`--workers` exists because it was measured: the judge stage ran at 4.7 cells/min serially, which
+is 99 minutes of wall clock for a six-arm run's 560 independent, network-bound cells.
+
+The results are in [`docs/verification/evaluation.md`](docs/verification/evaluation.md), which
+that command rewrites. **Quote its numbers from there, not from prose** — a figure retyped into a
+README is a figure that will disagree with its source.
+
+Four properties are worth knowing before running it.
+
+**It refuses to start with `FINBRIEF_LOG_FILE` unset.** The sink is off unless named and
+`.env.example` ships it commented out, so an evaluation run with no log is the *likely* state
+rather than an unlucky one — and the latency half of ADR-0005's dominance test is measured from
+that log. Discovering it afterwards would mean re-running the whole thing, so the check is at the
+door, before anything is spent. `--allow-missing-sink` proceeds anyway — the latency half of the
+dominance test is then unmeasurable and the artifact prints "**Not measured, and therefore not
+met**" in place of a number.
+
+**It is resumable, and that is the design rather than a retrofit.** Every paid cell is addressed
+by a hash of the inputs that determine it, under `data/eval-cache/`, so a 429, a closed laptop or
+a `^C` costs the cell it died inside and nothing else; a second full run costs nothing. The first
+full run here died twice — once on `openai.APIConnectionError` — and lost two cells between them.
+
+**A staged run says so in the artifact.** `--stage` renders a **PARTIAL RUN** banner naming the
+stages that did not execute, above the tables, for the same reason `--gate-only` does — and so do
+`--rows` and `--no-ablations`, because a two-question smoke and a run missing ADR-0005 §2's
+falsification channel are both partial runs. A skipped stage *replays* from the cache rather than
+vanishing: `--stage judge` re-judges over the cached answers, and `--stage report` re-renders the
+whole artifact from cached cells and pays nothing.
+
+**A warm run has nothing to time.** Latency is read from *this run's own window* of the sink
+(`events.sink_offset`), because the file is append-only across every run and app session that ever
+named it — reading the whole of it reports a median over all of them, which the first committed
+artifact did. The consequence is worth expecting rather than discovering: a run that replays every
+cell appends no lines, so its window is empty and the artifact says "not measured, and therefore
+not met" instead of serving the previous run's median. Clear the `retrieval` cache to re-time, or
+re-render with `--stage report`, which reads the mark the last measuring run persisted beside the
+cache and says in the section that the figures are that run's.
+
+**The tool-calling eval is reported beside those tables, never inside them.** It measures the
+agent's *selection* layer — a nondeterministic instrument — while every per-bucket table measures
+the chain (ADR-0003's split). Ten scored cases: the seven `tool-augmented` golden rows built from
+their own `tool_expectation` field, plus three negative controls the golden set cannot express,
+because it holds no row whose right answer is *not to call a tool* — a retrieval-only question that
+must not fetch a quote, an out-of-Universe ticker that must be refused as a result, and an
+advice-shaped question that must not send the loop off to price the recommendation. Accuracy was
+100% over those ten. The pairing hole issue #9 recorded — `AGENT_SYSTEM_PROMPT` asks a valuation
+question for the quote *and* the peer comparison, while `tool_expectation` records one tool per row
+— is measured as its own rate rather than by reshaping the reference data: **1 of 2**. Measured,
+not enforced, and the artifact says so.
 
 ### Recording a run
 
@@ -377,9 +666,14 @@ FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py
 
 Unset, `finbrief.*` events go to stderr only and vanish with the process. The evaluation
 harness ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)) reads
-four things back out of this file and out of nothing else: latency samples against ADR-0005's
-≤1.5 s p50 translation budget and ADR-0006's ≤1 s gate budget, token counts, the
-agent-issued-vs-original query divergence rate, and gate-trigger metadata. Read them with
+three things back out of this file and out of nothing else: latency samples against ADR-0005's
+≤1.5 s p50 translation budget, token counts, and the agent-issued-vs-original query divergence
+rate — each over *this run's* window of the file (`events.sink_offset`) rather than the whole of it,
+because the file is append-only across every run that ever named it. It also looks for
+`citation_markers` and finds none: that line is emitted by `app/Home.py` and by nothing else, so a
+harness driving the agent directly produces the turns and none of the lines (ADR-0011's T10
+amendment defers the instrument to its own ticket). Gate-trigger records are **not** read by the
+harness — they are there to make the denylist auditable, which is a different job. Read them with
 `observability.events.read_events`, which returns samples and a count of the lines that carried
 nothing — never a statistic, so a median is computed once, by whoever quotes it. Events emitted
 inside one turn share a `turn_id`, which is what lets a `retrieval` line's per-chunk provenance
@@ -427,8 +721,10 @@ someone needs to read. The out-of-KB control query is recorded, never scored.
 Needs `OPENROUTER_API_KEY` — it embeds each query with the same paid model the ingest used,
 because a query embedded by a different model retrieves noise with no error. It is a **smoke
 check, not an evaluation**: five hand-written queries, no buckets, no ground truth, no
-baseline, so no number it prints may be cited as a retrieval-quality claim. ADR-0002's
-stratified golden set with per-bucket RAGAs (ticket T9) is the measurement artifact of record.
+baseline, so no number it prints may be cited as a retrieval-quality claim.
+[`docs/verification/evaluation.md`](docs/verification/evaluation.md) — ADR-0002's stratified
+golden set with per-bucket RAGAs (T9), scored by T10's harness — is the measurement artifact of
+record.
 
 It runs plain `vector` with translation **off** — deliberately *not* the shipping default, and
 the report names both switches so nobody reads its distances as `hybrid + translation`'s. The
@@ -442,7 +738,7 @@ golden set and the T10 A/B
 ([#11](https://github.com/TuringCollegeSubmissions/mrinal-AE.AFA.3.5/issues/11)), never this
 script.
 
-Four committed evidence files, all generated:
+Five committed evidence files, all generated:
 
 - `docs/verification/ingest-report.md` — the gate table plus what the collection holds.
   Rewritten by a **full-Universe** run, pass or fail. A `--tickers` or `--dry-run` run
@@ -464,3 +760,9 @@ Four committed evidence files, all generated:
   same reason the smoke report does, and it prints the **pre-registered** latency figure beside the
   revised one: an artifact showing only the budget now being met would turn a revised
   pre-registration into a number that had always held.
+- `docs/verification/evaluation.md` — **the measurement artifact of record.** The per-bucket A/B
+  over six arms, all four RAGAs metrics, both pre-registered decisions with their verdicts, the
+  power audit, latency and token spend, the tool-calling eval and the four deferred measurements.
+  Rewritten by every `scripts/evaluate.py` run. It leads with what the run could **not** resolve,
+  and a `--stage`, `--rows` or `--no-ablations` run carries a **PARTIAL RUN** banner for the same
+  reason `--gate-only` does. Quote a quality number from here and from nowhere else.
