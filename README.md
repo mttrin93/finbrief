@@ -337,11 +337,42 @@ Tests are hermetic — no API key, no `.env`, and no network calls — so they r
 four DNS resolvers, through `curl_cffi` (which resolves in C) and through `uvloop` (which
 resolves in libuv), and `tests/test_hermetic_suite.py` carries one test per backend. The guard
 is a denylist over the backends this repo can reach, not a proof — a new HTTP dependency is a
-new path, which is how two of the six recorded breaches were found, both in T7's single new
-dependency.
+new path, which is how three of the seven recorded breaches were found, in the two dependencies
+T7 and T10 added.
 
-The security suite is the third of the four non-hermetic entry points, and the cheapest of the
-three that cost anything (`ingest_filings.py --dry-run` is the fourth and spends nothing):
+### Three libraries, three that phone home by default
+
+Worth stating as a pattern rather than as three separate footnotes, because it changed how this
+project adds a dependency. Every library added here **for quality or safety** ships with a
+telemetry path enabled:
+
+| library | added for | what it sends, unconfigured | how it is switched off |
+|---|---|---|---|
+| `guardrails-ai` | the output validator (T7) | a record of every validated answer, to its own endpoint | `guard.configure(allow_metrics_collection=False)`, in `security/advice.py` |
+| `uvloop` (via guardrails) | nothing — it arrives transitively | nothing itself, but it becomes the **process-wide** event loop and resolves DNS in libuv, outside a Python-level guard | `GUARDRAILS_RUN_SYNC`, plus the guard covers the backend |
+| `ragas` | the four RAGAs metrics (T10) | a POST per metric completion, to `t.explodinggradients.com` | `RAGAS_DO_NOT_TRACK`, set in `evaluation/judge.py` **and** in `conftest.py` |
+
+Three things follow, and they are why the rule is a test per backend rather than a careful read
+of each new dependency's documentation.
+
+**The switch is in a different place every time** — an SDK method call, an environment variable
+that must be set before a cached read, an event loop policy — and only one of the three documents
+it anywhere a reader would look.
+
+**The failure is silent by construction.** `ragas._analytics.track` is decorated `@silent`, and it
+is called from a background thread and again at `atexit`; guardrails' POST happens inside
+OpenTelemetry's `BatchSpanProcessor`, which catches the exception on its own export thread and
+logs it. So in both cases the library returns a completely normal result while a packet is being
+attempted, and a test asserting on the return value passes. `conftest.EGRESS_ATTEMPTS` — a list
+the guard appends to *inside* the refusal, before any caller can swallow it — is the only detector
+that survives that, and it has now been the only detector three times.
+
+**Off-by-default has to be set twice.** Each switch is set both where the library is used and in
+`conftest.py`, on the principle `security/advice.py` records: a hole is a hole whether today's
+code walks through it, and the two mechanisms fail independently.
+
+The security suite is the third of the five non-hermetic entry points, and the cheapest of the
+four that cost anything (`ingest_filings.py --dry-run` is the fifth and spends nothing):
 
 ```bash
 uv run python scripts/security_suite.py               # full run, rewrites the evidence artifact
@@ -357,6 +388,36 @@ It exists because three of the gate's claims cannot be met by a test — whether
 recognises a *novel* payload, whether a real model *obeys* a planted one, and the latency p50,
 which is a measurement. It exits non-zero on a failing suite, so it is usable as a gate and not
 only as a generator.
+
+### Running the evaluation
+
+The fifth non-hermetic entry point, and the most expensive:
+
+```bash
+uv run python scripts/evaluate.py                   # every stage, every arm, 28 rows
+uv run python scripts/evaluate.py --rows S1,T2      # a two-question smoke over all six arms
+uv run python scripts/evaluate.py --stage judge     # re-judge only; replay everything else
+```
+
+The results are in [`docs/verification/evaluation.md`](docs/verification/evaluation.md), which
+that command rewrites. **Quote its numbers from there, not from prose** — a figure retyped into a
+README is a figure that will disagree with its source.
+
+Three properties are worth knowing before running it.
+
+**It refuses to start with `FINBRIEF_LOG_FILE` unset.** The sink is off unless named and
+`.env.example` ships it commented out, so an evaluation run with no log is the *likely* state
+rather than an unlucky one — and the latency half of ADR-0005's dominance test is measured from
+that log. Discovering it afterwards would mean re-running the whole thing, so the check is at the
+door, before anything is spent.
+
+**It is resumable, and that is the design rather than a retrofit.** Every paid cell is addressed
+by a hash of the inputs that determine it, under `data/eval-cache/`, so a 429, a closed laptop or
+a `^C` costs the cell it died inside and nothing else; a second full run costs nothing. The first
+full run here died twice — once on `openai.APIConnectionError` — and lost two cells between them.
+
+**A staged run says so in the artifact.** `--stage` renders a **PARTIAL RUN** banner naming the
+stages that did not execute, above the tables, for the same reason `--gate-only` does.
 
 ### Recording a run
 
