@@ -116,3 +116,71 @@ that it must be made explicitly.
   what stops a set being cited before that pass happens, and the test binds the top-level claim to
   the rows so it cannot read `true` over unverified data. Ingestion could in principle mis-parse a
   Section, and a mis-parse would propagate straight into ground truth.
+
+---
+
+## Amendment (T10, #11): the faithfulness decision, made explicitly
+
+The amendment above fixes that T10 must choose between two options for the `tool-augmented`
+bucket's faithfulness, and must not run the metric unchanged. **Neither option is taken. A third
+is, because the premise both rest on does not hold at the seam this harness measures.**
+
+**Decision: keep all 28 rows in faithfulness, inject nothing, and score the tool half only
+through the tool-calling eval.**
+
+**Why the premise fails.** The amendment's warning is that "a tool-augmented answer's
+tool-derived sentences — the price, the ratio, the headline — are *not* in the retrieved
+contexts, so faithfulness will mark them unsupported". That is a property of an **agent** answer.
+The harness scores `rag.answer_question` — the deterministic chain, which calls no tools at all
+(ADR-0003; its amendment §4 forbids agent output reaching the harness that measures the chain).
+A chain answer therefore contains no tool-derived sentence to be unfaithful with, and
+faithfulness against the retrieved contexts is well defined for those seven rows like any other.
+
+**Why injecting tool output would be worse, not merely unnecessary.** It needs the agent loop, so
+the number would be about the loop rather than the chain. And the injected value is a live price:
+the cell would be irreproducible between runs, which is why `tool_expectation` deliberately holds
+no figures.
+
+**What *is* distorted is response relevancy, not faithfulness** — and that is where the harness
+does report something other than a number. A chain answer to "Is Ford expensive right now?"
+correctly says the retrieved filings do not carry a current share price; ragas' `noncommittal`
+flag fires and the metric scores ≈0 **for being right**. Printing that beside a semantic bucket's
+0.9 would invite a comparison it cannot support, so the artifact prints the *count of noncommittal
+answers* in that cell instead of a mean (#11, addition 3). Measured on the first live run: 1 of 1
+on the smoke's tool-augmented row.
+
+**Pre-registered, with its own refutation channel.** If the chain's answers on those rows turn
+out to be memory-supplemented — a P/E or a market cap from the weights, which is the failure
+recorded on #8 for `planted-news-html` — faithfulness *catches* it, the low scores are the
+finding, and the premise above is wrong. That is a good outcome for the metric and a bad one for
+this paragraph; the artifact reports the number either way.
+
+**The tool half, and the AC-1 pairing hole #9 recorded.** `tool_expectation` keeps its one-tool
+shape. The valuation-pairing criterion ("a valuation question wants the quote *and* the peer
+comparison") is measured as a **separate bucket-level metric** rather than by reshaping the
+committed artifact: ADR-0002 describes the field as recording *the additional* tool, and
+rewriting hand-verified reference data to carry a measurement is the wrong direction. Option 3
+from that comment — leave it unmeasured — is explicitly not taken.
+
+## Amendment (T10, #11): what the harness added to this ADR's own claims
+
+Three things measuring the set taught, recorded because they change how its numbers must be read.
+
+**1. Chunk-identity recall is a near-lottery on this set's large sections, and the artifact says
+so beside the column.** S1 grounds in 6 of TSLA Item 1A's **129** chunks. The first live run
+returned chunks 48–70 against targets 0, 1, 6, 34, 94 and 117: chunk recall 0.000, section recall
+1.000, for a retrieval an analyst would call correct. So the harness reports three recall-shaped
+things and says what each is for — exact chunk recall (free, and harsh), **section recall** (what
+the multi-hop and cross-filer rows are really asking), and the judged context precision/recall
+(which compare *text* against the reference rather than chunk identity). ADR-0005's falsification
+clause rests on the judged pair, which is what its own wording already named.
+
+**2. `recall_trivial` needed a companion rule for the partial case, and it had one.** A row where
+only some sections are trivial contributes its non-trivial sections alone: M2 is scored on META
+Item 7A and not on AAPL's 4 or MSFT's 3. Without that, reaching two sections a `k=5` retrieval
+cannot miss would have scored 0.667 on a row that found nothing hard.
+
+**3. A predicted tie is reported as `within spread`, never as "equal".** The arms may genuinely
+differ; the claim the sample supports is only that these seven questions do not show it. The
+comparison is made against the measured per-question spread rather than a constant, which is #11's
+"no threshold at four decimals" implemented rather than promised.

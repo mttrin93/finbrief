@@ -544,3 +544,55 @@ one of the two numbers it moves. Until then this is a **known precision cost of 
 as positive, and this is the same effect's other sign: hybrid admits the wrong filer on a *correct*
 token. Both readings belong in the same cell of the report, and the bucket that carries them is
 `semantic`, where questions name companies by name.
+
+---
+
+### 12. §9's harness design, as built (T10, #11) — and the bug that proves it was needed
+
+§9 pre-registered three steps for making the A/B exact. All three are built
+(`src/finbrief/evaluation/variants.py`), and one detail of the implementation is worth recording
+because it is not what §9 wrote.
+
+**What is persisted is the planner's raw reply, not the parsed sub-queries.** §9 says "resolve each
+question's variants once, and persist them". Persisting the *variants* would freeze the output of
+whichever version of `query_translation.sub_queries` was current when the resolve ran — and that
+parser has already changed twice for good reasons (`_MARKER`'s decimal fix, `_REFUSAL`). So the
+reply is persisted and replayed through the real parser, and `verify_replay` re-parses every stored
+reply on load and raises unless it still yields the variants stored beside it. A parser change
+therefore fails at the door instead of silently altering what every `+translation` arm retrieved
+over. The file is `src/finbrief/evaluation/golden_variants.json`, committed, versioned with the
+golden set, and never hand-edited.
+
+That also closes §9's second complaint directly. "A scored run's variants cannot be inspected after
+the fact" is no longer true: they are in a committed file with the reply that produced them, which
+is what a surprising bucket number needs.
+
+**The bug, and why it belongs in this ADR rather than only in a commit message.** `retrieve()`
+takes `strategy` and `translate` as caller-named arguments — the rule that stops a number being
+reported against a configuration nobody selected — but it reads `max_sub_queries` from `Settings`,
+because the cap is *enforced* configuration that ADR-0005's latency budget assumes. So an `Arm`
+object carrying `max_sub_queries=0` changed nothing: **both planner-off ablation cells ran at the
+application's cap of 3 and made real, unreplayed planner calls.** Those two cells are §7's ablation
+and ADR-0005 §2's falsification channel, so the two refutation tests this ADR relies on would have
+answered a question nobody asked, while the artifact looked like a completed run.
+
+Found by a **two-question smoke run over all six arms** before the full sweep, in its log: four
+`query_translation` lines carrying `input_tokens` where a replayed arm emits none. Not found by any
+test, and the reason is worth stating — every test until then injected a planner and asserted on
+what came back, which is exactly what a wrongly-capped arm still does correctly. The test that
+catches it now counts a spy planner's invocations and asserts **zero**
+(`tests/test_eval_pipeline.py`), which is the "assert the input arrived" rule from CLAUDE.md
+applied to an input that was supposed *not* to.
+
+Two smaller findings from the same smoke, both about the judge rather than the engine, are recorded
+in ADR-0002's T10 amendment and in `evaluation/judge.py`: response relevancy costs one judge call
+rather than three on this judge, and OpenRouter serves that call with **one** completion where
+ragas asks for three — so that metric is computed over a single generated question and is fenced
+off from every pre-registered decision.
+
+**§9's falsifiable prediction is now answerable, and the answer is in the artifact.** §9 wrote:
+"if the n-repeat finds the planner returns identical sub-queries across runs on this Universe and
+this model, step 2 was unnecessary caution". The n-repeat is `variants.agreement`, reported on its
+own and order-sensitive — two orderings of the same sub-queries are not guaranteed to fuse
+identically, and calling them the same would overstate the planner's stability in the direction
+that flatters the harness. `docs/verification/evaluation.md` carries the measurement.

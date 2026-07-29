@@ -83,3 +83,62 @@ adds no network round trip and no spend, only local CPU, so the ≤1.5s p50 budg
 instrument against it — if hybrid fails to earn its place, the argument will be **complexity without
 measurable gain**, not latency, and this ADR should say so rather than reach for the budget it
 already has.
+
+---
+
+## Amendment (ticket T10, issue #11) — both triggers are now evaluated, and how to read them
+
+The clause and the §4 trigger are no longer prose: they are code
+(`src/finbrief/evaluation/hypotheses.py`), evaluated per bucket on every run, and **printed in the
+artifact whether they fire or not**. A trigger reported only when it fires is a trigger a reader
+cannot tell was evaluated — and §4's fires on an *absence* of gain, which is precisely the shape
+that goes unnoticed when it is not printed. The measured outcome for any given run is in
+`docs/verification/evaluation.md`, not here: this ADR records what the rules are, and the artifact
+records what happened.
+
+**Five things about the evaluation that this ADR did not anticipate.**
+
+**1. The operands are data, because a clause whose operands live in prose can be applied to the
+wrong pair.** The falsification clause is about *translation*, so both its arms hold strategy fixed
+(`hybrid` vs `hybrid + translation`); §4's trigger is about *strategy at equal translation*, so
+both its arms hold translation fixed. `arms.TRANSLATION_CONTRAST` and `arms.STRATEGY_CONTRAST` are
+those pairs, and tests assert each holds the other axis constant. Comparing across strategies would
+let a strategy effect drop the shipping default for translation's supposed sin.
+
+**2. "Worse" means worse by more than the per-question spread, and nothing tighter.** This ADR
+already reasoned that "with ~6 questions per bucket a tight numeric margin would be false
+precision", and the implementation makes that concrete: `metrics.compare` returns `WITHIN_SPREAD`
+rather than a direction whenever the mean difference is no larger than the measured spread of the
+questions it is a mean over. The comparison is against a *measurement*, not a constant nobody
+derived — which is #11's "no threshold at four decimals" as a mechanism rather than a promise. #5's
+~0.0009 embedding wobble is the floor under any comparison at all.
+
+**3. An unmeasured bucket cannot fire either trigger.** `UNDETERMINED` is its own verdict and a
+test asserts the clause does not fire on it. "We cannot say" and "translation is worse" are
+different claims, and only one of them is grounds for dropping a pre-committed default.
+
+**4. Neither trigger may rest on response relevancy, and that is enforced.** ragas forces
+temperature 0.3 whenever it asks for more than one completion and `ResponseRelevancy` asks for
+three, so that column moves between runs on any judge — and on this judge the provider serves one
+completion where three were requested, so it is also computed over a single generated question.
+Both triggers rest on context precision and context recall, which is what this ADR's own wording
+already named; `judge.EXCLUDED_FROM_HYPOTHESES` makes the exclusion machine-checkable and
+`Prediction.__post_init__` refuses to build a prediction on a fenced metric (#11, addition 2).
+
+**5. The latency half is a reconstruction, and is labelled one.** The clause says "≤1.5s p50 added
+by translation, measured from the Phase-6 structured logs", and after ADR-0004 §9's replay the
+scored `+translation` arms no longer make a planner call — they serve a recorded reply through a
+stub, so their `query_translation` lines record about a millisecond and no token counts. So the
+planner's real cost is read from the **resolve** pass, where the planner does run, filtered to lines
+that reported spend; the retrieval-round cost is the difference between the translated and
+untranslated `retrieval.latency_ms` medians; and the artifact prints both halves and their sum,
+saying in the table that the sum is a reconstruction of what the shipped path pays rather than one
+timing of a live turn. Counting the stub's millisecond as the planner's cost would have reported
+translation as very nearly free — the most flattering possible error, which is why the filter is
+explicit and tested.
+
+**The cost asymmetry this ADR flagged still holds and now has a number attached.** BM25 adds no
+network round trip and no spend, so the ≤1.5s budget remains a weak instrument against the strategy
+axis; if hybrid fails to earn its place the argument is **complexity without measurable gain**, which
+is what §4's trigger is written to detect and what the artifact's per-bucket table is where to look
+for it.

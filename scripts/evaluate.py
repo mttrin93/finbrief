@@ -232,7 +232,7 @@ def run(args: argparse.Namespace) -> str:
         stages=stages,
         cache={kind: cache.stats(kind) for kind in cache.kinds()},
     )
-    sections = _findings_sections(cells, sink=sink)
+    sections = (*_findings_sections(cells, sink=sink), _headline(cells, cache))
     return report.render_report(
         provenance=provenance,
         golden=golden,
@@ -269,6 +269,21 @@ def _findings_sections(
     ]
     sections.append(("## Latency and token spend", _latency_body(sink)))
     return tuple(sections)
+
+
+def _headline(cells: Sequence[Cell], cache: Cache) -> tuple[str, str]:
+    """The T11 hand-off block. Derived here so the README never retypes a number."""
+    judge = cache.stats("judge")
+    replayed = sum(cache.stats(kind).hits for kind in cache.kinds())
+    return (
+        "## The numbers T11's README will quote",
+        report.headline_section(
+            cells,
+            default_arm=SHIPPING_DEFAULT,
+            judge_calls=judge.misses,
+            cache_replayed=replayed,
+        ),
+    )
 
 
 def _latency_body(sink: Path | None) -> str:

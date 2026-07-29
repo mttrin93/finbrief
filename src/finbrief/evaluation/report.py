@@ -469,3 +469,48 @@ def latency_section(cost: Any, spends: Sequence[Any]) -> str:
         "returns no usage this code path can see.",
     ]
     return "\n".join(lines)
+
+
+def headline_section(
+    cells: Sequence[Cell],
+    *,
+    default_arm: Arm,
+    judge_calls: int,
+    cache_replayed: int,
+) -> str:
+    """The figures T11's README quotes, in one place, each with its denominator.
+
+    A deliberate short list rather than a summary of everything: the README's job is to state
+    what was measured and point at the artifact, and a figure retyped into prose is a figure
+    that will disagree with its source (`config.ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY`'s
+    docstring makes the same point about a number written in four places). Everything here is
+    derived from the cells this run scored, so re-running rewrites it.
+    """
+    rows = [row for row in cells if row.arm == default_arm.name]
+    faith = _summarise_judged(rows, "faithfulness")
+    precision = Summary.of(row.judged.get("context_precision") for row in rows)
+    recall = Summary.of(row.judged.get("context_recall") for row in rows)
+    section_recall = summarise(
+        [row.score for row in rows], "section_recall", exclude_trivial=True
+    )
+    lines = [
+        f"Measured on the shipping default ({default_arm.label}), over "
+        f"{len(rows)} golden-set rows. **Quote these from here, not from prose.**",
+        "",
+        "| figure | value | denominator |",
+        "|---|---|---|",
+        f"| RAGAs faithfulness | {cell(faith)} | rows scored on the default arm |",
+        f"| RAGAs context precision | {cell(precision)} | as above |",
+        f"| RAGAs context recall | {cell(recall)} | as above |",
+        f"| section recall (free, deterministic) | {cell(section_recall)} "
+        f"| non-trivial target sections |",
+        f"| judge calls this run paid for | {judge_calls} | at k=5, six arms |",
+        f"| cells replayed from cache | {cache_replayed} | see the provenance table |",
+        "",
+        "**Response relevancy is deliberately absent from this list.** It is reported in the "
+        "RAGAs "
+        "table with its spread, and it is excluded from every pre-registered decision — "
+        "quoting it "
+        "as a headline number would be quoting a figure that moves between runs.",
+    ]
+    return "\n".join(lines)
