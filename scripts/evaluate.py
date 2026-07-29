@@ -44,7 +44,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from finbrief.config import Settings, get_settings, load_env, resolve_log_file
-from finbrief.evaluation import hypotheses, latency, pipeline, report, variants
+from finbrief.evaluation import (
+    deferrals,
+    hypotheses,
+    latency,
+    pipeline,
+    report,
+    tool_eval,
+    variants,
+)
 from finbrief.evaluation import judge as judging
 from finbrief.evaluation.arms import ABLATION_ARMS, SCORED_ARMS, SHIPPING_DEFAULT, Arm
 from finbrief.evaluation.cache import Cache
@@ -244,14 +252,22 @@ def run(args: argparse.Namespace) -> str:
         stages=stages,
         cache={kind: cache.stats(kind) for kind in cache.kinds()},
     )
-    sections = (*_findings_sections(cells, sink=sink), _headline(cells, cache))
+    sections = list(_findings_sections(cells, sink=sink))
+    # **The agent stage before the deferrals block, not after.** Two of the four deferrals read
+    # lines the live turns write, so reading the log first reported them as unmeasured while the
+    # run was about to produce exactly the samples they needed — which is how an ordering bug
+    # turns into an artifact that understates what the run measured.
+    if "agent" in stages:
+        sections.append(_agent_section(settings))
+    sections.append(_deferrals_block(sink))
+    sections.append(_headline(cells, cache))
     return report.render_report(
         provenance=provenance,
         golden=golden,
         cells=cells,
         arms=SCORED_ARMS,
         ablations=ABLATION_ARMS if args.ablations else (),
-        sections=sections,
+        sections=tuple(sections),
     )
 
 
@@ -280,9 +296,7 @@ def _findings_sections(
         ),
     ]
     sections.append(("## Latency and token spend", _latency_body(sink)))
-    sections.append(
-        ("## Deferred measurements — reported, or named as not run", report.deferrals_section())
-    )
+
     return tuple(sections)
 
 
@@ -299,6 +313,75 @@ def _headline(cells: Sequence[Cell], cache: Cache) -> tuple[str, str]:
             cache_replayed=replayed,
         ),
     )
+
+
+def _deferrals_block(sink: Path | None) -> tuple[str, str]:
+    """The four deferrals, each measured or explicitly named as not measured.
+
+    Layer 4's residue is computed here unconditionally, because it needs no run at all — regex
+    over a Guard. The two log-based rates need the `agent` stage's live turns; when those
+    lines are absent the rate renders as **not measured** rather than as a flattering zero.
+    """
+    from finbrief.security.advice import validate_answer
+    from finbrief.security.corpus import ADVICE_RESIDUE_PROBES
+
+    residue = deferrals.advice_residue(ADVICE_RESIDUE_PROBES, validate=validate_answer)
+    measured = {
+        "layer 4's residue — advice phrased so no rule matches": (
+            f"{residue.rate.render()} — {len(residue.residue)} of "
+            f"{residue.rate.total} hand-labelled recommendations were **not** refused"
+        )
+    }
+    try:
+        log = latency.load_log(sink)
+    except (latency.SinkMissing, FileNotFoundError):
+        log = None
+    if log is not None:
+        divergence = deferrals.divergence(log)
+        if divergence.overall.total:
+            measured["agent-vs-original query divergence rate"] = (
+                f"{divergence.overall.render()}; {divergence.first_turn.render()}; "
+                f"{divergence.follow_up.render()}"
+            )
+        brackets = deferrals.bracket_adherence(log)
+        if brackets.turns_with_sources:
+            measured["square-bracket rule adherence rate"] = (
+                f"{brackets.clean.render()} — {brackets.uncited} uncited, "
+                f"{brackets.unresolved} unresolved, {brackets.non_numeric} non-numeric"
+            )
+    body = report.deferrals_section(measured)
+    if residue.residue:
+        body += (
+            "\n\n**Layer 4's residue is the sharpest of the four, and it cost nothing to "
+            "measure.** The validator is a regex rule set behind a Guard, so what it "
+            "*misses* is "
+            "computable with no model and no live run — this deferral could have been closed "
+            "at "
+            "any point since T7. What it shows: the rules catch advice that announces itself "
+            "(`ADVICE_ANSWERS`, all refused, reported by the security suite) and refuse none "
+            "of "
+            "the recommendations that carry no imperative, no rating word, no price target "
+            "and no "
+            "position-sizing instruction. n is small and hand-authored, so this is a statement "
+            "about the rules' **generality**, not a 100%-evasion claim about indirect advice."
+        )
+    return ("## Deferred measurements — reported, or named as not run", body)
+
+
+def _agent_section(settings: Settings) -> tuple[str, str]:
+    """Run the tool-calling eval against the live agent (spec US-29).
+
+    A fresh thread per case, so the checkpointer's memory cannot answer case N from case N-1.
+    """
+    from finbrief.agent.agent import answer, build_agent, build_checkpointer
+
+    golden = load_golden_set()
+    cases = tool_eval.cases_from(golden)
+    agent = build_agent(settings=settings, checkpointer=build_checkpointer(settings))
+    ask = tool_eval.scripted_asker(answer, agent=agent, thread_prefix="t10-tool-eval")
+    outcomes = tool_eval.run_all(cases, ask=ask)
+    logger.info("tool eval: %d cases, %d scored", len(outcomes.outcomes), len(outcomes.scored))
+    return ("## Tool-calling eval — the selection layer", tool_eval.render(outcomes))
 
 
 def _latency_body(sink: Path | None) -> str:

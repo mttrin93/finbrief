@@ -74,7 +74,19 @@ class Provenance:
 
 
 #: Every stage a complete run executes. A rendered artifact naming fewer is banner-flagged.
-ALL_STAGES: tuple[str, ...] = ("resolve", "retrieve", "answer", "judge", "report")
+#: Every stage a complete run executes. `agent` is the live half — the tool-calling eval and the
+#: two deferrals that read what its turns write to the log — and it is in this tuple rather than
+#: optional so that a run without it is **flagged partial**, which is what an artifact missing
+#: the
+#: selection-layer numbers actually is.
+ALL_STAGES: tuple[str, ...] = (
+    "resolve",
+    "retrieve",
+    "answer",
+    "judge",
+    "agent",
+    "report",
+)
 
 
 def is_partial(provenance: Provenance) -> bool:
@@ -555,7 +567,7 @@ DEFERRALS: tuple[tuple[str, str, str], ...] = (
     (
         "square-bracket rule adherence rate",
         "T5 (ADR-0006 T7 amendment §4)",
-        "`citation_markers` over live agent turns",
+        "`citation_markers`, emitted by `app/Home.py` and by nothing else",
     ),
     (
         "layer 4's residue — advice phrased so no rule matches",
@@ -594,6 +606,25 @@ def deferrals_section(measured: Mapping[str, str] | None = None) -> str:
     for name, source, instrument in DEFERRALS:
         result = measured.get(name, "**not measured by this run**")
         lines.append(f"| {name} | {source} | {instrument} | {result} |")
+    if "square-bracket rule adherence rate" not in measured:
+        lines += [
+            "",
+            "**Why the bracket-rule rate is absent, and it is not for want of running the "
+            "agent.** `citation_markers` is emitted by `app/Home.py` — the *only* caller of "
+            "`security.markers.log_markers` — and not by `agent.answer`. So a harness that "
+            "drives "
+            "the agent directly, as the tool-calling eval above does, produces the turns and "
+            "none "
+            "of the lines. That is the same shape T8 found and fixed for `turn_id`: an "
+            "instrument "
+            "wired at the app is an instrument a harness cannot reach, and neutralising it "
+            "there "
+            "left every test green. Closing this needs the marker check moved to where the "
+            "answer "
+            "is produced rather than to where it is displayed, which is a change to shipped "
+            "code "
+            "and belongs in its own ticket rather than in a measurement run.",
+        ]
     if not measured:
         lines += [
             "",
