@@ -226,8 +226,8 @@ paragraph below is about, committed inside the amendment that warns against it (
 |---|---|---|---|
 | agent-vs-original query divergence rate | T4, §2 above | `agent_query.verbatim` in a live log | **100% (8/8)**, all first-searches |
 | bracket-rule adherence rate | T5 | `citation_markers` in a live log | **not measured** — emitted at the app, unreachable by a harness |
-| layer 4's residue — advice no rule matches | T7 | probes through the live agent + `validate_answer` | **100% (6/6)** not refused |
-| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **31% (22/70)** pairs fully supported |
+| layer 4's residue — advice no rule matches | T7 | probes through `validate_answer`, with `ADVICE_ANSWERS` as positive controls | **100% (6/6)** not refused, on a validator shown live by **10/10** controls refused |
+| faithfulness on markers that resolve but sit on unsupported claims | T3/T5 | per-sentence NLI against the *cited* chunk | **31% (22/70)** pairs fully supported — 8 with no support, 40 partial |
 
 Three of the four are measured and the fourth is named as unmeasurable by this instrument rather
 than as unrun: `citation_markers` is emitted by `app/Home.py` and by nothing else, so a harness that

@@ -331,6 +331,12 @@ def _relevancy_cell(bucket: Bucket, rows: Sequence[Cell]) -> str:
     every bucket prints its flagged count beside its mean, and the mean itself excludes them —
     otherwise the number is a mean over two different things and the caveat is printed about the
     wrong rows.
+
+    **That "nine" was one run's count, and the re-run's is eight** — a correction to the figure,
+    not to the fix, and a demonstration of why the fix was needed. The flag rides on the one
+    metric this harness cannot reproduce, so even the number of *flagged* cells is re-sampled
+    when the column is re-judged. A count taken from one run may not be quoted about another,
+    which is what the table's second ⚠ says about every number in this column.
     """
     if bucket is Bucket.TOOL_AUGMENTED:
         return f"not comparable — {_noncommittal(rows)}/{len(rows)} noncommittal"
@@ -394,6 +400,22 @@ def ragas_table(cells: Sequence[Cell], arms: Sequence[Arm]) -> str:
         "its spread, read as nothing else, and quoted nowhere. ADR-0005's falsification clause "
         "and its §4 re-examination trigger both rest on context precision and context recall, "
         "which are single-call metrics at temperature 0.01."
+    )
+    lines.append("")
+    lines.append(
+        "⚠ **This column is not comparable across runs, and a movement in it may not be read "
+        "as a change in the pipeline.** Every other number in this artifact is replayed from a "
+        "content-addressed cache and is reproducible cell for cell; this one is re-sampled "
+        "whenever it is re-judged, for the two reasons above. Measured, so the size is not a "
+        "guess: between two runs of the *same* cached contexts and the *same* answers, cells "
+        "carrying no exclusion moved by ±0.01–0.02, and a bucket mean over 4–7 questions moves "
+        "with them. Where a mean is also reported over fewer questions than the bucket holds "
+        "(`n=` below the bucket size, with the noncommittal count beside it), **two "
+        "effects are compounded and cannot be separated from these numbers**: excluding a "
+        "flagged answer is "
+        "a deliberate fix, and the rest is jitter. `n` is printed on every mean in this table "
+        "for that reason — a mean over 4 of 7 questions and a mean over 7 are not the same "
+        "measurement, and the noncommittal exclusion makes that difference per cell."
     )
     return "\n".join(lines)
 
@@ -972,12 +994,75 @@ def latency_section(cost: Any, spends: Sequence[Any], *, window: Any = None) -> 
     return "\n".join(lines)
 
 
+@dataclass(frozen=True, slots=True)
+class Determinism:
+    """What a re-paid retrieval stage proves about `retrieve()`, as numbers rather than prose.
+
+    **Emitted as cells because the README quotes them**, and a figure retyped into prose is a
+    figure that will disagree with its source — this repo's most repeated failure, and the
+    reason `tests/test_grounding_scope.py` binds the README's evaluation numbers to this file.
+    Prose in a README cannot be diffed against a measurement; a table row can.
+
+    The claim these support: the retrieval stage was recomputed from scratch (a changed cache
+    key), and every downstream cell still **replayed**. Those downstream keys are not
+    identifiers — the judge key carries the full text of every retrieved context and the answer
+    key carries the chunk ids plus a sha256 of the bodies — so a single changed character in any
+    chunk of any cell would have missed and been re-paid. `paid` is therefore the number that
+    matters, and it must be zero for the claim to hold.
+    """
+
+    retrieval_paid: int
+    judge_replayed: int
+    judge_paid: int
+    answer_replayed: int
+    answer_paid: int
+
+    @property
+    def body_keyed_replayed(self) -> int:
+        """Cells replayed on a key carrying the context bodies — judge and answer together."""
+        return self.judge_replayed + self.answer_replayed
+
+    @property
+    def reproduced(self) -> bool:
+        """Whether *every* body-keyed cell replayed, which is the whole claim."""
+        return self.judge_paid == 0 and self.answer_paid == 0
+
+    def rows(self) -> list[str]:
+        verdict = (
+            "**byte-identical contexts**, every arm"
+            if self.reproduced
+            else f"**NOT reproduced** — {self.judge_paid + self.answer_paid} cell(s) re-paid"
+        )
+        return [
+            f"| retrieval cells re-paid this run | {self.retrieval_paid} "
+            f"| recomputed from scratch, all arms |",
+            f"| cells replayed on context-body keys | {self.body_keyed_replayed} "
+            f"| {self.judge_replayed} judge + {self.answer_replayed} answer, "
+            f"{self.judge_paid + self.answer_paid} re-paid → {verdict} |",
+        ]
+
+
+def determinism_from(cache: Mapping[str, CacheStats]) -> Determinism:
+    """Read the determinism figures off this run's own cache counters."""
+    judge, answer, retrieval = (
+        cache.get(kind, CacheStats()) for kind in ("judge", "answer", "retrieval")
+    )
+    return Determinism(
+        retrieval_paid=retrieval.misses,
+        judge_replayed=judge.hits,
+        judge_paid=judge.misses,
+        answer_replayed=answer.hits,
+        answer_paid=answer.misses,
+    )
+
+
 def headline_section(
     cells: Sequence[Cell],
     *,
     default_arm: Arm,
     judge_calls: int,
     cache_replayed: int,
+    determinism: Determinism | None = None,
 ) -> str:
     """The figures T11's README quotes, in one place, each with its denominator.
 
@@ -1007,6 +1092,10 @@ def headline_section(
         f"| non-trivial target sections |",
         f"| judge calls this run paid for | {judge_calls} | at k=5, six arms |",
         f"| cells replayed from cache | {cache_replayed} | see the provenance table |",
+    ]
+    if determinism is not None:
+        lines.extend(determinism.rows())
+    lines += [
         "",
         "**Response relevancy is deliberately absent from this list.** It is reported in the "
         "RAGAs "

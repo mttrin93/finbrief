@@ -210,7 +210,13 @@ prompt.
   not hypothetical: three candidate models were unavailable on this account and fail-open made
   them read as the *fastest* rows in the benchmark, catching nothing.
 - **Novel advice phrasing is layer 4's blind spot**, exactly as a novel payload is layer 2's, and
-  there is no layer 5.
+  there is no layer 5. T10 measured the size of it: **100% (6/6) of hand-labelled recommendations
+  were not refused, on a validator shown live by 10/10 positive controls refused**. Both halves,
+  always together — the residue alone is equally consistent with a *dead* validator, since
+  `validate_answer` fails open by design and a fail-open also yields 100%. The controls are advice
+  the rules provably catch, and `deferrals.advice_residue` raises rather than reporting a rate if
+  none of them is. n is small and hand-authored, so this is a statement about the rules'
+  **generality**, not a 100%-evasion claim.
 - **A refused answer is still in the agent's memory.** The validator guards the surface, not the
   checkpointer: the answer has already been generated when it fires, so a follow-up in the same
   thread can reference text the reader never saw.
@@ -222,11 +228,16 @@ prompt.
   against the numbers this conversation has issued, and unresolvable ones are named beside the
   answer rather than silently stripped — a reader losing that evidence is worse than seeing it.
   But a marker that *resolves* can still sit on a claim its chunk does not support. That is
-  faithfulness, it needed a judge model and ground truth, and **T10 measured it**: of 70
-  `(sentence, marker)` pairs across 50 cited sentences on the shipping default, only 31% (22/70)
-  were fully supported by the chunk they name — 11 with no support at all, the rest partly. See
+  faithfulness, it needed a judge model and ground truth, and **T10 measured it**. Over 70
+  `(sentence, marker)` pairs across 50 cited sentences on the shipping default, the split is
+  **22 fully supported / 40 partly supported / 8 not supported** — a 31% full-support rate,
+  derived from that composition rather than quoted alone. **The middle bucket is the largest and
+  the interesting one**: a partly supported cited sentence has a marker that *resolves* and a
+  chunk that carries *some* of the claim, which is precisely what the citation register cannot
+  see and what whole-answer faithfulness scores as fine, since the claim is supported somewhere
+  in the context set. See
   [`docs/verification/evaluation.md`](./docs/verification/evaluation.md). Marker resolution is
-  enforced in code; marker support is measured, and low.
+  enforced in code; marker support is measured, and mostly partial.
 - **The homoglyph map is not the Unicode confusables table.** A lookalike outside it survives
   normalisation and reaches layer 3 — which is the layer that exists for what layers 1 and 2 miss.
 - **The Universe whitelist is an incidental extra**, not part of the argument: it happens to stop
@@ -375,7 +386,7 @@ requoted from [`docs/verification/evaluation.md`](docs/verification/evaluation.m
 Hybrid earns nothing detectable on any bucket. The point estimate on `exact-identifier` — the bucket
 hybrid exists to win — is **−0.087**. The one root-caused live case favours the simpler arm:
 `vector + normalisation` put the target chunk at rank 1 against `hybrid + translation`'s rank 2.
-Translation costs **3138 ms** p50 against a pre-registered budget of 1500 ms, and the budget is
+Translation costs **3212 ms** p50 against a pre-registered budget of 1500 ms, and the budget is
 recorded as missed and left unamended, because moving a number to wherever the measurement landed
 is pre-registration in reverse. ADR-0005's §4 re-examination trigger fired on **one** bucket of
 four, the other three excluded as too underpowered to resolve a gain at all — and its condition
@@ -393,6 +404,40 @@ small ones.
 None of that is a defect in the pipeline. It is a measurement that came back saying *we cannot tell*,
 reported as that instead of as a result — which is the whole reason the pre-registration and the
 artifact are separate things.
+
+### Which half of the pipeline is deterministic, measured on both sides
+
+Two findings from the same runs answer this precisely, and they point opposite ways — which is why
+they belong together rather than in separate sections.
+
+**Retrieval is exactly reproducible, and that is now the strongest empirical claim in the project.**
+A code review changed the retrieval cache key, so all **168** retrieval cells — 28 questions × six
+arms, baselines, translated arms and both planner-off ablations — were re-paid from scratch against
+the same collection. Everything downstream then **replayed**: **672 cells with zero misses**, being
+560 judge cells (all four metrics) and 112 answer cells. Those keys
+are not identifiers. The judge key carries the **full text of every retrieved context**; the answer
+key carries the chunk ids plus a **sha256 of the context bodies**. A single character different in
+any chunk of any cell, on any arm, and that cell would have missed and been re-paid. None did.
+
+This is the third independent confirmation and the first covering the **whole matrix** — the earlier
+two were partial, over the four scored arms. So: given the same collection and the same question,
+`retrieve()` returns the same chunks in the same order, byte for byte, on every configuration this
+project ships or ablates.
+
+**The planner is not, and the same runs measure that too.** ADR-0004 §9's n-repeat asks the planner
+for sub-queries five times per question at temperature 0. Three successive runs of that pass
+reported **0, 1 and 2 of 8** questions returning an identical set every time — the count is itself
+re-sampled, because the pass makes live planner calls and so inherits the variance it is measuring.
+**The conclusion is the same in all three and that is what makes it usable: 6, 7 and 8 of 8
+questions varied.** Quote the range, never one run's count. That is why the two `+translation` arms
+replay a recorded planner reply instead of calling it — without the replay those arms would report
+different numbers on a re-run with no code change.
+
+Together they locate the nondeterminism exactly: **it is in the model calls, not in the retrieval.**
+Everything between the query variants and the ranked chunks is reproducible; the planner that writes
+those variants is not, and neither is the judge that scores the answers — response relevancy is
+re-sampled every time it is judged, which is why the artifact fences that column off from every
+pre-registered decision and now states outright that it is not comparable across runs.
 
 ### What the evaluation actually established: a prompt is an instrument, not a control
 
@@ -433,6 +478,40 @@ ticker cannot be fetched. Every one of those is a constraint the model has no op
 decline. Where a constraint cannot be made structural — and the verbatim rule cannot, because the
 one edit it must permit is indistinguishable from the rewrite it forbids — the honest response is
 to instrument it and publish the rate, which is what `docs/verification/evaluation.md` does.
+
+### The other generalisable claim: a check that cannot fail, three times on one ticket
+
+The evaluation ticket produced three defects with one shape — **something asserted a result the
+code had not established** — and they are worth reading together because they look unrelated
+apart:
+
+| where | what it asserted | what it had established |
+|---|---|---|
+| `metrics.compare` | a verdict on each of 18 pre-registered comparisons | nothing: it tested a delta of means against the arms' own range, which is the largest delta those values permit, so it could not return anything but a null |
+| `tool_eval`'s control C3 | a pass, inside a published **100% over 10 scored cases** | nothing: with no expected tool, no forbidden tool and no argument, `passed` was `True` for every possible agent behaviour |
+| the judge stage's error path | `APIConnectionError: Connection error.` | nothing about the network: a client built once at process start was reused across the per-cell `asyncio.run` loops, and `httpx` raised `bound to a different event loop`, which the SDK renamed |
+
+The first two sat **inside published measurements**; the third was in an error path, which is why
+it cost three killed runs and a wrong diagnosis before the real exception surfaced. Two things kept
+it hidden, and both are ordinary good practice working against visibility: the **cache** meant every
+earlier run replayed the one metric that triggers it, so the path was never exercised; and the
+**retry** could self-heal it, so it failed at a different point every time.
+
+What follows is the rule this repo now applies to instrumentation as well as to code: **prefer a
+check that exercises the thing over one that describes it.** Every control in the tool eval is now
+driven against an agent that calls all three finance tools and asserted to fail; the comparator was
+replaced by an exact paired test that reports "we could not have seen it" as a third verdict; and
+the judge stage now runs every cell on one event loop, with a regression test that reproduces the
+condition. An instrument that cannot register a fault is not a check, and an exception a program
+*translates* is a claim like any other.
+
+The third one has a footnote worth keeping, because the first fix for it was wrong in an
+instructive way. Building a client per cell so none outlives its loop is the obvious repair, and it
+failed identically on the next run: `langchain_openai` caches the async HTTP client below this
+repo's constructor, so distinct model objects share one connection pool. The per-cell fix passed a
+test asserting exactly what it achieved — a fresh client per cell — and that fact was true and
+beside the point. **A test binds the layer it names**, and a fix aimed one layer above the defect
+can look correct until it is run.
 
 ### Three libraries, three that phone home by default
 

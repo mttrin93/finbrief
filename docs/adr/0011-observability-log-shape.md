@@ -177,3 +177,77 @@ exactly this reason, and the planner-variance pass — whose 40 live planner cal
 ADR-0005's budget "not measured" on the run that had just measured it. **Every pass that emits runs
 before anything that reads**, and `scripts/evaluate.py` now groups them that way with the rule
 written above the group.
+
+## Amendment (T10 second code review, #11): the harness's own error path asserted a network fault
+
+**Decision.** An error path is an instrument, and it is held to this ADR's instrument rule: what it
+reports has to be what happened. A wrapper that renames a local defect after a remote one sends
+every reader to the wrong system.
+
+**What happened.** Three consecutive full evaluation runs died in the judge stage, each after a
+different number of cells, with:
+
+```
+openai.APIConnectionError: Connection error.
+```
+
+`curl` to the provider returned HTTP 200 throughout. The third run printed the exception underneath
+it:
+
+```
+RuntimeError: <asyncio.locks.Event object at 0x…> is bound to a different event loop
+```
+
+`evaluation/judge.py`'s `score` calls `asyncio.run` — a fresh event loop **per cell** — while
+`scripts/evaluate.py` built one `ChatOpenAI` and one embeddings client at process start and passed
+them down every stage. `httpx` binds a pooled connection's `asyncio.Event` to the loop that first
+used it, so the moment a keep-alive connection survived into the next cell's loop, `anyio` raised
+and the OpenAI SDK caught it and re-raised it as a connection error. Nothing about it was the
+network.
+
+**Why it stayed hidden, which is the part worth recording.** Two reasons, and both are this repo's
+existing themes:
+
+1. **Every earlier run replayed the cells that trigger it.** Response relevancy is the only metric
+   that drives *both* clients, and the committed artifact was produced by a run reporting
+   `judge 560 replayed / 0 paid`. The cache — the thing that makes a killed run cheap — is also
+   what kept a latent defect out of every run that would have exposed it. A cell that is never
+   paid for is a code path that is never exercised.
+2. **The retry self-healed it.** `Event.wait` returns immediately when the flag is already set and
+   never reaches the loop check, so a `tenacity` retry after the raise could take the fast path and
+   the cell would pass. That is why three runs died at three different cell counts instead of on
+   the first cell, and it is why the regression test asserts the structural property with
+   `Future.get_loop()` rather than provoking the stdlib's raise: a test that inherits the
+   non-determinism is a test that does not pin the bug. (Measured — the first version of the double
+   scored 1.0 on the second loop.)
+
+**The fix, and the wrong turn on the way to it — which is the more useful half.** The obvious
+change is to build a client per cell so none outlives its loop. That was implemented, tested, and
+**it did not work**: a fourth run died exactly as the first three had. `langchain_openai` caches the
+async client *below* this repo's constructor — `_cached_async_httpx_client` is `@lru_cache`d on
+`(base_url, timeout, socket_options)`, all constant here — so two `build_judge()` calls return
+distinct `ChatOpenAI` objects sharing **one** `httpx.AsyncClient` and therefore one connection pool.
+Per-cell construction is defeated by a cache one layer down, and nothing at this layer can see it.
+
+So the loop stops being per-cell instead. `judging.score` runs every cell on **one** event loop
+(`_judging_loop`, a daemon thread, a seventh process singleton and therefore through
+`caching.build_once` like the other six), and `run.cached_map`'s worker threads reach it with
+`run_coroutine_threadsafe`. Concurrency is unchanged and the shared pool becomes an advantage rather
+than a hazard, because connections are now reused the way the library intends. This is the change
+originally noted as "better architecture, future work"; it turned out to be the only one available,
+which is why it is here and not on #12.
+
+**The generalisable part is not the asyncio detail.** It is that *a fix aimed one layer above the
+defect can be indistinguishable from a correct one until it is run.* The factory version passed a
+regression test that asserted exactly the property it established — a fresh client per cell — and
+that property was true and irrelevant, because the object being counted was not the object holding
+the state. A test can only bind the layer it names.
+
+**Third instance of this ticket's theme, and the first outside a measurement.** The other two were
+`metrics.compare`, a comparator that could not return anything but a null, and `tool_eval`'s C3, a
+control that could not fail — both *inside* published numbers (ADR-0002's T10 amendment §3). This
+one is in an error path, and it is the same defect in a different costume: **a check or a message
+that asserts something the code did not establish.** `compare` asserted a verdict it could not
+reach, C3 asserted a pass it could not withhold, and this asserted a network fault it never
+observed. The generalisation for the next one: an exception the code *translates* is a claim, and a
+claim needs the same adversarial reading as a measurement.

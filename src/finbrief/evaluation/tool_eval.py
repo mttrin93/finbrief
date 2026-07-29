@@ -263,6 +263,15 @@ def render(report: ToolReport) -> str:
         f"({_pct(without)} over the seven golden-set rows alone; the other three are controls "
         f"the golden set cannot express, because every row in it expects a tool).",
         "",
+        "**Every case in that denominator can fail, which was not true when this rate was "
+        "first published.** Control C3 declared no expected tool, no forbidden tool and no "
+        "argument, so its `passed` was `True` for every possible agent behaviour and the rate "
+        "was a claim about nine cases wearing a denominator of ten. Each control now forbids "
+        "the finance tools its note describes, and "
+        "`tests/test_eval_tool_eval.py::test_every_control_can_fail` scores each of them "
+        "against an agent scripted to call all three — a control whose `passed` survives that "
+        "fails the suite. The rate is unchanged; what changed is that it is now a rate.",
+        "",
         f"**Valuation pairing (#9's AC-1 hole): {paired}/{valuation}.** "
         f"`AGENT_SYSTEM_PROMPT` says a valuation question wants the quote *and* the peer "
         f"comparison, while `tool_expectation` records one tool per row — so this is measured "

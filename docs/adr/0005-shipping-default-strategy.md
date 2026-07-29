@@ -205,16 +205,22 @@ component still has not been separately measured, and now the reason is known an
 future revision should state the condition over buckets **with the power to resolve a gain** and
 require some minimum count of them, rather than over all four.
 
-**3. The ≤1.5 s budget is missed at 3138 ms, and it is recorded as missed and left unamended.**
+**3. The ≤1.5 s budget is missed at 3212 ms, and it is recorded as missed and left unamended.**
 
 | | ms | samples |
 |---|---:|---:|
-| planner's chat round, p50 | 1757 | 48 |
-| retrieval p50, translation on (planner enabled) | 1796 | 64 |
-| retrieval p50, translation off | 415 | 56 |
-| retrieval rounds translation adds, p50 | 1381 | — |
-| **total p50 added by translation** | **3138** | — |
+| planner's chat round, p50 | 1838 | 48 |
+| retrieval p50, translation on (planner enabled) | 1688 | 64 |
+| retrieval p50, translation off | 313 | 56 |
+| retrieval rounds translation adds, p50 | 1374 | — |
+| **total p50 added by translation** | **3212** | — |
 | this ADR's budget | 1500 | — |
+
+**This figure is re-measured on every measuring run and moves by ~10%.** Successive runs over the
+same cached cells reported 3138 ms and 3068 ms before this one; the pools are the same size (48
+planner rounds, 64 and 56 retrievals) and the difference is provider latency, not configuration.
+The budget is missed by more than 2× in every one of them, which is the only claim this ADR rests
+on it — a miss of that size does not depend on which run is quoted.
 
 **Not amended to the measured value, deliberately.** ADR-0006 revised its gate budget from 800 ms to
 1000 ms and that revision was earned: a figure cleared on eight of eight measured passes, with an
@@ -231,7 +237,9 @@ arms into the "translation on" pool, measuring the deterministic ticker form's c
 meant for the planner's round. Both are fixed (ADR-0011's T10 amendment;
 `latency.PLANNER_DISABLED_CAP`).
 
-3297 ms was the first correction and it over-corrected. It excluded translated retrievals by their
+3138 ms and 3068 ms were later runs of the same corrected instrument and are superseded only by
+recency, not by a defect — see the re-measurement note above. 3297 ms was the first correction and
+it over-corrected. It excluded translated retrievals by their
 **observed variant count**, which conflates *disabled by configuration* with *ran and returned
 less*: a planner that **refused** still paid for a full chat round, and dropping refusals removes
 the cheap retrievals from a median of the expensive ones — biasing the p50 upward and making this
@@ -239,7 +247,7 @@ miss look worse than it is. The exclusion now keys on the arm's own `max_sub_que
 retrieval line through `logging_setup.turn` (a scope that module's docstring had described the
 evaluation harness using and which the harness did not set). 3 lines moved back into the pool — two
 identified refusals and one unattributable agent-stage retrieval, which is kept because absence of
-evidence is not evidence of a disabled planner — and the figure fell 159 ms to 3138.
+evidence is not evidence of a disabled planner — and the figure fell 159 ms.
 
 **The direction of every correction here is worth stating: two made the number worse and one made it
 better, and none was chosen for that.**
@@ -258,8 +266,14 @@ across runs on this Universe and this model, step 2 was unnecessary caution and 
 flat claim was fine. Good outcome; not one to assume."* Measured over 5 repeats each on 8 sampled
 questions at temperature 0:
 
-**0 of 8 questions returned identical sub-queries on every repeat.** Modal share ran 20–60%; three
-questions produced **five distinct** sub-query sets in five attempts.
+**2 of 8 questions returned identical sub-queries on every repeat**, and that figure is itself
+re-sampled: three successive runs of the same pass reported **0, 1 and 2 of 8**. Modal share ran
+20–100%. The measurement is a live planner call repeated five times, so it carries the planner's own
+variance twice over — once in what it returns and once in how many repeats agree — and no single
+run's count should be quoted as a property of the planner.
+
+**The conclusion is the same in all three**, which is why it survives the noise: 6, 7 and 8 of 8
+questions varied. Whatever the exact count, most questions do not return a stable plan.
 
 So the resolve-once replay was **load-bearing, not caution**. Without it the two `+translation` arms
 would report different per-bucket numbers on a re-run with no code change — which is exactly the

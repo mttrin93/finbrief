@@ -39,9 +39,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from finbrief.caching import build_once
 
 #: Every metric name a pre-registered decision may **not** rest on.
 #:
@@ -176,6 +179,44 @@ def _metric(name: str, *, judge: Any, embeddings: Any) -> Any:
     raise KeyError(f"unknown metric {name!r}. Valid: {', '.join(METRICS)}")
 
 
+#: The one event loop every judged cell runs on — a **seventh** process-level singleton, and
+#: therefore through `caching.build_once` like the other six (CLAUDE.md). It is the only one
+#: that
+#: owns a *thread* rather than a client, so its confinement and its lifecycle are both stated
+#: rather than left to be inferred.
+#:
+#: **Confined to the harness, structurally and lazily.** `finbrief.evaluation` is imported by
+#: `scripts/evaluate.py` and by the tests, and by nothing under `app/` or elsewhere in the
+#: package — so the Streamlit app cannot reach this. And even if it could, `build_once`
+#: constructs on first *call*: importing this module starts no thread, so a future import from
+#: the app side would still cost nothing until something scored a cell. Both halves are asserted
+#: in `tests/test_eval_judge.py`, because "nothing imports it" is exactly the kind of claim that
+#: silently stops being true.
+#:
+#: **Never stopped, never joined, and that is a decision.** The loop must outlive the judge
+#: stage: `langchain_openai` caches the `httpx.AsyncClient` beneath the judge for the life of
+#: the process, so a loop closed between stages leaves that client bound to a dead one — which
+#: is the defect this exists to remove, reintroduced by tidying up. There is no correct place to
+#: close it that is not "at process exit", so it is a **daemon** thread and the interpreter ends
+#: it. That is acceptable *because this is a script*: `scripts/evaluate.py` is the only entry
+#: point, it writes its artifact and returns, and every paid cell is already durable in the
+#: cache
+#: before the process ends. It would not be acceptable in a long-lived server, and a caller that
+#: makes this library-like owes it an explicit shutdown.
+#:
+#: Checked rather than assumed, since this repo has twice shipped a handler dropped without
+#: closing: a process that scores cells and exits emits no `Task was destroyed but it is
+#: pending` and no unclosed-session `ResourceWarning` (measured under
+#: `-W error::ResourceWarning`).
+#: There is nothing pending at exit because `score` blocks on each cell's future — the loop is
+#: idle between cells by construction, not by luck.
+@build_once
+def _judging_loop() -> Any:
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, name="finbrief-judge-loop", daemon=True).start()
+    return loop
+
+
 def score(
     name: str, sample: JudgeSample, *, judge: Any, embeddings: Any = None
 ) -> float | None:
@@ -185,11 +226,40 @@ def score(
     answer it extracted no statements from, for instance). `None` and not `0.0`: an unscoreable
     row is an absence, and averaging it as zero would drag a bucket mean down by the number of
     rows the *judge* failed on rather than the number the pipeline failed on.
+
+    **Every cell runs on one shared loop, and `asyncio.run` per cell is the defect this
+    replaces** (code review of #11). `asyncio.run` builds and *closes* a fresh loop per call.
+    `httpx` binds a pooled connection's `asyncio.Event` to the loop that first used it, so the
+    moment a keep-alive connection survived into the next cell's loop `anyio` raised
+    `RuntimeError: <asyncio.locks.Event ...> is bound to a different event loop` — which the
+    OpenAI SDK catches and re-raises as **`APIConnectionError: Connection error.`**, a network
+    fault that was not a network fault. It killed three consecutive full runs at three different
+    cell counts, and `curl` returned HTTP 200 throughout.
+
+    **Constructing a client per cell does not fix it, and finding out why is what settled the
+    design.** `langchain_openai` caches the underlying async client itself:
+    `_cached_async_httpx_client` is `@lru_cache`d on `(base_url, timeout, socket_options)`, all
+    of which are constant here, so two `build_judge()` calls return distinct `ChatOpenAI`
+    objects sharing **one** `httpx.AsyncClient` and therefore one connection pool. A fourth run
+    died exactly as the first three did with per-cell construction in place. The client cannot
+    be made to not outlive a loop; the loop has to stop being per-cell.
+
+    So the loop is the singleton and the clients are ordinary arguments again. Concurrency is
+    unchanged — `run.cached_map`'s workers submit to that loop with `run_coroutine_threadsafe`,
+    which is the documented cross-thread entry point — and the shared pool is now an advantage
+    rather than a hazard, since connections are reused across cells the way the library intends.
+
+    It stayed hidden until this ticket because every earlier run replayed its relevancy cells
+    from cache, and relevancy is the only metric that drives both clients: the committed
+    artifact was produced by a run reporting `judge 560 replayed / 0 paid`.
     """
     import math
 
-    metric = _metric(name, judge=judge, embeddings=embeddings)
-    value = asyncio.run(metric.single_turn_ascore(sample.as_ragas_sample()))
+    async def scored() -> float | None:
+        metric = _metric(name, judge=judge, embeddings=embeddings)
+        return await metric.single_turn_ascore(sample.as_ragas_sample())
+
+    value = asyncio.run_coroutine_threadsafe(scored(), _judging_loop()).result()
     return None if value is None or math.isnan(value) else float(value)
 
 

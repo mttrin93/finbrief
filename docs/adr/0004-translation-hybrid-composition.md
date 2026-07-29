@@ -605,8 +605,15 @@ comment can, which is the bug class CLAUDE.md names; the fix is a rendered secti
 that makes real planner calls.
 
 **The answer, requoted from [`docs/verification/evaluation.md`](../verification/evaluation.md):
-0 of 8 sampled questions returned identical sub-queries across 5 repeats** at temperature 0. Modal
-share 20–60%; three questions produced five distinct sub-query sets in five attempts. So step 2 was
-**not** unnecessary caution — the resolve-once replay is load-bearing, and without it the two
+2 of 8 sampled questions returned identical sub-queries across 5 repeats** at temperature 0. Modal
+share 20–100%.
+
+**That count is re-sampled with the pass and moves**: three successive runs reported **0, 1 and 2 of
+8** stable. The pass makes live planner calls, so it inherits the variance it is measuring — a
+question that happens to agree five times in one run need not in the next, which is the finding
+restated at one remove. Quote the range, never a single run's count.
+
+**The conclusion is identical across all three**, and that is what makes it usable: 6, 7 and 8 of 8
+questions varied. So step 2 was **not** unnecessary caution — the resolve-once replay is load-bearing, and without it the two
 `+translation` arms would report different per-bucket numbers on a re-run with no code change. §9
 called that outcome "not one to assume", and it was right not to.

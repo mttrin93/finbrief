@@ -248,6 +248,7 @@ def run(args: argparse.Namespace) -> str:
 
     variant_set = _resolve(rows, settings=settings, cache=cache, run_stage="resolve" in stages)
     arms: tuple[Arm, ...] = SCORED_ARMS + (ABLATION_ARMS if args.ablations else ())
+
     # **Built whichever stages were asked for, because building is free and skipping is not.**
     # `--stage` is documented as "skipped stages replay from the cache", and gating the *judge*
     # on the flag implemented it as "skipped stages never happened": `--stage judge` filled
@@ -255,6 +256,12 @@ def run(args: argparse.Namespace) -> str:
     # re-runnable — rendered the whole RAGAs table empty over 560 cached judge cells (code
     # review of #11). The cache decides what costs anything; `replay_only` is what says a stage
     # may not pay.
+    # **One judge, one embeddings client, and one event loop under them** (code review of
+    # #11). These are process-lifetime again on purpose: `judging.score` runs every cell on a
+    # single shared loop, so the `httpx.AsyncClient` `langchain_openai` caches beneath them is
+    # bound once and reused the way the library intends. Building them per cell does *not* help
+    # — that client is `@lru_cache`d on `(base_url, timeout, socket_options)` below this layer,
+    # which a fourth killed run established.
     judge = judging.build_judge(settings)
     embeddings = judging.build_judge_embeddings(settings)
 
@@ -442,6 +449,11 @@ def _headline(cells: Sequence[Cell], cache: Cache) -> tuple[str, str]:
             default_arm=SHIPPING_DEFAULT,
             judge_calls=judge_calls,
             cache_replayed=replayed,
+            # Read off this run's own counters, so the determinism claim the README quotes is a
+            # measurement of the run that made it rather than a sentence someone typed.
+            determinism=report.determinism_from(
+                {kind: cache.stats(kind) for kind in cache.kinds()}
+            ),
         ),
     )
 
@@ -638,12 +650,22 @@ def _deferrals_block(
                 f"{brackets.unresolved} unresolved, {brackets.non_numeric} non-numeric"
             )
     if support is not None and support.rate.total:
+        # **The composition leads and the rate is derived from it** (#11, second review). "31%"
+        # collapses three outcomes into one, and the middle one is both the largest and the
+        # interesting one: a *partially* supported cited sentence is exactly what the marker
+        # validator cannot see — the marker resolves — and what whole-answer faithfulness scores
+        # as fine, because the claim is supported *somewhere* in the context set. Reporting the
+        # rate alone hides the finding inside its own denominator.
         measured[report.DEFERRAL_CITED_SUPPORT] = (
-            f"{support.rate.render()} over `(sentence, marker)` pairs across "
-            f"{support.sentences} cited sentence(s) — {support.unsupported} pair(s) with "
-            f"**no** support from the chunk they name, {support.partial} only partly supported "
-            f"(both count against the rate); {support.unresolvable} marker(s) pointed outside "
-            f"the retrieval; {support.unscored} pair(s) the judge did not score"
+            f"**{support.supported} fully supported / {support.partial} partly supported / "
+            f"{support.unsupported} not supported** over {support.rate.total} "
+            f"`(sentence, marker)` pair(s) across {support.sentences} cited sentence(s) — a "
+            f"{support.rate.rate:.0%} full-support rate, derived from that split rather than "
+            f"quoted alone. Partial support is the largest bucket and counts against the rate: "
+            f"the marker resolves and the chunk carries *some* of the claim, which neither the "
+            f"citation register nor whole-answer faithfulness can distinguish from a supported "
+            f"one. {support.unresolvable} marker(s) pointed outside the retrieval; "
+            f"{support.unscored} pair(s) the judge did not score"
         )
     body = report.deferrals_section(measured)
     if residue.residue:

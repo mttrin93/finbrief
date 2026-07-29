@@ -13,11 +13,17 @@ rests on those four numbers.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from finbrief.config import Settings
 from finbrief.evaluation.judge import (
     ANSWER_RELEVANCY,
     CONTEXT_PRECISION,
@@ -28,6 +34,7 @@ from finbrief.evaluation.judge import (
     METRICS,
     RETRIEVAL_METRICS,
     JudgeSample,
+    build_judge,
     calls_per_row,
     expected_calls,
     judge_cache_key,
@@ -189,6 +196,135 @@ def test_an_unscoreable_row_is_absent_rather_than_zero(scripted, monkeypatch):
     monkeypatch.setattr(type(model), "_generate", no_statements)
 
     assert score(FAITHFULNESS, SAMPLE, judge=judge) is None
+
+
+# --- every cell is scored on one event loop -------------------------------------------
+
+
+class LoopBoundPool:
+    """Stands in for the `httpx` pool `langchain_openai` caches: bound to the loop that made it.
+
+    **The structural property, enforced deterministically — and why it is asserted rather than
+    provoked is itself part of the finding.** The genuine mechanism is
+    `_LoopBoundMixin._get_loop`, which binds on first use and raises `RuntimeError: ... is bound
+    to a different event loop` on any later one; that is what `anyio` hit inside a pooled
+    connection and what the OpenAI SDK re-raised as `APIConnectionError: Connection error.`
+    Driving it through `asyncio.Event` **self-heals**: the `wait()` that raises still runs its
+    scheduled `set`, so ragas' `tenacity` retry finds the flag set, takes the already-set fast
+    path, and the cell passes. Measured, not assumed — the first version of this double scored
+    1.0 on the second loop.
+
+    That is why the live failure was intermittent, and why three runs died at three different
+    cell counts rather than on the first cell. A test inheriting that non-determinism does not
+    pin the bug, so the condition is checked with `Future.get_loop()` — public API, no side
+    effect, same `RuntimeError` — where a real pool would reach for its kept-alive connection.
+    """
+
+    def __init__(self) -> None:
+        self.pooled: Any = None
+        self.loops: list[int] = []
+
+    async def acquire(self) -> None:
+        running = asyncio.get_running_loop()
+        self.loops.append(id(running))
+        if self.pooled is None:
+            self.pooled = running.create_future()
+            running.call_soon(self.pooled.set_result, None)
+        if self.pooled.get_loop() is not running:
+            raise RuntimeError(f"{self.pooled!r} is bound to a different event loop")
+        await self.pooled
+
+
+class PooledJudge(BaseChatModel):
+    """A judge reaching a `LoopBoundPool` on its async path, as a real one reaches httpx."""
+
+    pool: Any = None
+
+    @property
+    def _llm_type(self) -> str:
+        return "finbrief-pooled-judge"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:  # pragma: no cover — ragas takes the async path
+        raise AssertionError("the async path is the one under test")
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        await self.pool.acquire()
+        prompt = "\n".join(str(message.content) for message in messages)
+        for marker, payload in REPLIES:
+            if marker.lower() in prompt.lower():
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content=json.dumps(payload)))]
+                )
+        raise AssertionError(f"no scripted reply for this prompt:\n{prompt[:400]}")
+
+
+def test_one_client_survives_every_cell_because_they_share_one_loop():
+    """The regression test. Under `asyncio.run` per cell this raises on the second cell.
+
+    A pooled connection outliving the loop that created it is what killed three consecutive
+    full evaluation runs, reported as `APIConnectionError: Connection error.` while `curl`
+    returned 200. One client, many cells, no raise — that is the whole contract.
+    """
+    pool = LoopBoundPool()
+    shared = LangchainLLMWrapper(PooledJudge(pool=pool))
+
+    for _ in range(4):
+        assert score(FAITHFULNESS, SAMPLE, judge=shared) == pytest.approx(1.0)
+
+    assert len(set(pool.loops)) == 1, f"cells ran on {len(set(pool.loops))} loops, not one"
+
+
+def test_concurrent_cells_share_that_loop_too_because_the_workers_are_threads():
+    """`run.cached_map` scores cells from a thread pool, and they must reach the same loop.
+
+    `run_coroutine_threadsafe` is the documented cross-thread entry point; a per-thread loop
+    would reintroduce the bug at `--workers 3` while passing every serial test.
+    """
+    pool = LoopBoundPool()
+    shared = LangchainLLMWrapper(PooledJudge(pool=pool))
+
+    with ThreadPoolExecutor(max_workers=3) as workers:
+        results = list(
+            workers.map(lambda _: score(FAITHFULNESS, SAMPLE, judge=shared), range(6))
+        )
+
+    assert results == [pytest.approx(1.0)] * 6
+    assert len(set(pool.loops)) == 1
+
+
+def test_building_a_client_per_cell_would_not_have_fixed_it():
+    """Why the fix is the loop and not the client — the constraint that settled the design.
+
+    `langchain_openai` caches the async client below this repo's constructor
+    (`_cached_async_httpx_client`, `@lru_cache`d on `(base_url, timeout, socket_options)`), so
+    two `build_judge()` calls return distinct `ChatOpenAI` objects sharing **one**
+    `httpx.AsyncClient`. Constructing per cell therefore changes nothing about which loop the
+    pool is bound to — established by a fourth killed run, and pinned here so an upgrade that
+    changes it is visible rather than silently widening the options.
+    """
+    settings = Settings.from_env(
+        {"OPENROUTER_API_KEY": "test-key", "SEC_EDGAR_USER_AGENT": "FinBrief test@example.com"}
+    )
+
+    first, second = build_judge(settings), build_judge(settings)
+
+    assert first.langchain_llm is not second.langchain_llm
+    assert (
+        first.langchain_llm.root_async_client._client
+        is second.langchain_llm.root_async_client._client
+    )
 
 
 # --- the cost table, measured rather than asserted -----------------------------------
@@ -380,3 +516,53 @@ def test_response_relevancy_is_keyed_on_the_embedding_model_and_the_others_are_n
     for metric in (FAITHFULNESS, CONTEXT_PRECISION, CONTEXT_RECALL):
         assert "embedding_model" not in key(metric, "openai/text-embedding-3-small")
         assert key(metric, "small") == key(metric, "large")
+
+
+# --- the loop singleton's confinement, which is a claim that can stop being true -------
+
+
+def test_importing_the_judge_starts_no_loop_thread():
+    """`build_once` constructs on first call, so an import costs nothing.
+
+    Half of the confinement argument: even a future import from the app side would spawn no
+    thread until something scored a cell. Asserted rather than reasoned, because the module is
+    already imported by the time this runs — so the check is that no thread exists *named for
+    it* until `score` is called, which the tests above do.
+    """
+    import importlib
+
+    module = importlib.import_module("finbrief.evaluation.judge")
+
+    assert module._judging_loop.cache_info().currsize in (0, 1)
+    if module._judging_loop.cache_info().currsize == 0:
+        assert not [t for t in threading.enumerate() if t.name == "finbrief-judge-loop"]
+
+
+def test_only_the_eval_entry_point_imports_the_evaluation_package():
+    """The other half: nothing the Streamlit app loads can reach the loop at all.
+
+    A static scan rather than an import-time hook, because the failure it guards against is
+    someone adding `from finbrief.evaluation import ...` to a module the app imports — at which
+    point a Streamlit session would spawn a judge loop it never uses. `scripts/evaluate.py` is
+    the one legitimate importer.
+    """
+    root = Path(__file__).resolve().parent.parent
+    importer = re.compile(r"^\s*(?:from|import)\s+finbrief\.evaluation\b", re.MULTILINE)
+    searched = [
+        path
+        for directory in ("app", "src/finbrief", "scripts")
+        for path in (root / directory).rglob("*.py")
+        if "finbrief/evaluation/" not in path.as_posix()
+    ]
+    assert searched, "the scan found no files, so it would pass on a renamed tree"
+
+    importers = sorted(
+        path.relative_to(root).as_posix()
+        for path in searched
+        if importer.search(path.read_text(encoding="utf-8"))
+    )
+
+    assert importers == ["scripts/evaluate.py"], (
+        f"{importers} import finbrief.evaluation. Anything the app loads that reaches "
+        f"evaluation.judge gives a Streamlit session a judge event loop it never uses."
+    )

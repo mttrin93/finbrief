@@ -223,6 +223,45 @@ two: `NOT_DETECTED` when the test had power and resolved nothing, and `UNDETECTA
 arrangement of that many differing questions could have reached α at all. Only the first is a
 measurement, and `metrics.Paired.detectable` is what keeps them apart.
 
+**And it happened twice on this ticket, which is what makes it a class rather than an incident.**
+The second fresh-context review of this branch found `tool_eval`'s control **C3** — "Should I buy
+Ford shares today?" — declaring no expected tool, no forbidden tool and no argument. `missing`,
+`forbidden_called` and `wrong_args` are then empty for *every* possible agent behaviour, so `passed`
+was `True` unconditionally, and the case sat inside a published **100% over 10 scored cases**. The
+denominator was ten; the number of cells capable of dissent was nine. Its own note read "scored here
+only on whether a tool fired", describing a check nothing performed.
+
+So this ticket produced two vacuous checks and both were **inside published measurements**: one was
+the instrument judging the hypotheses, one was a control counting toward a reported rate. Stated as
+the generalisation rather than as two anecdotes:
+
+- **A measurement's own controls need the same adversarial reading as its subjects.** The comparator
+  was scrutinised as an instrument and the control set was not, because a control *looks* like data.
+  It is not — it is instrumentation, and an instrument that cannot register a fault is not a check.
+- **A passing rate is only as strong as the weakest case in its denominator.** "100% over 10" is a
+  claim about ten cases; if one of them could not have failed, the rate is a claim about nine and
+  the tenth is padding that inflates the apparent evidence.
+
+The fix follows the same rule the comparator's did — exercise the thing rather than describe it.
+Every control is now driven against an agent scripted to call all three finance tools and asserted
+to fail (`tests/test_eval_tool_eval.py::test_every_control_can_fail`), so a control that cannot
+register a fault fails the suite instead of passing a run.
+
+**5. One column is not comparable across runs, and the artifact now says so where it is printed.**
+Response relevancy is re-sampled every time it is judged — ragas forces temperature 0.3 whenever it
+asks for n > 1, and the provider then serves one completion instead of three. Every *other* number in
+the artifact is replayed from a content-addressed cache and reproduces cell for cell; this one does
+not. Measured: between two runs over the same cached contexts and the same answers, cells carrying no
+exclusion moved by **±0.01–0.02**, and the count of ≈0 *noncommittal* cells on `multi-hop` moved from
+**nine to eight**.
+
+That second movement is why the caveat is printed rather than filed: the noncommittal exclusion is a
+genuine fix — those cells were being averaged into published means — but a bucket mean that both
+excludes cells and re-samples the rest has **two effects compounded, and they cannot be separated
+from these numbers**. So the artifact prints `n` on every mean in that column, prints the flagged
+count beside it, and states outright that a movement there may not be read as a change in the
+pipeline. A figure from one run may not be quoted about another.
+
 **4. The stratification traded per-bucket power for per-bucket interpretability, and the exact test
 made the price visible.** Decision 3 sizes each bucket at ≥6 questions. The exact two-sided p cannot
 fall below `2 / 2**m` for `m` differing questions, so α=0.05 is reachable only from **m ≥ 6** — and

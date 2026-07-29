@@ -309,10 +309,19 @@ def _figures(text: str) -> str:
     "figure",
     [
         "-0.087",  # H1's paired delta, the bucket hybrid exists to win
-        "3138",  # the p50 translation adds
+        "3212",  # the p50 translation adds
         "1500",  # ADR-0005's pre-registered budget
         "4/18",  # comparisons that carried a measurement
         "8/8",  # the agent-vs-original divergence rate
+        # The determinism result, which is a headline claim in the README and therefore has to
+        # be bound like every other. `report.Determinism` emits these as table cells for this
+        # reason — a prose assertion cannot be diffed against a measurement, and the artifact
+        # not carrying them parseably was the cheaper half of the problem to fix.
+        "168",  # retrieval cells re-paid from scratch, all six arms
+        "672",  # cells replayed on context-body keys, zero misses
+        # Layer 4's residue never appears without its controls, so both are bound.
+        "6/6",  # recommendations not refused
+        "10/10",  # positive controls refused, which is what makes the 6/6 a measurement
     ],
 )
 def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
@@ -327,8 +336,15 @@ def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
     readme = _figures(README.read_text(encoding="utf-8"))
     artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
 
-    assert figure in readme, f"the README no longer quotes {figure}; update this list too"
-    assert figure in artifact, (
+    # **Matched as a whole number, not as a substring**, which is the difference between a
+    # binding and a decoration: `"8" in text` is true of "18", "0.087" and every date, so a
+    # bare-substring check on a short figure is a check that cannot fail — this repo's named
+    # bug class, and it very nearly arrived inside the test written to prevent it.
+    def quotes(text: str) -> bool:
+        return re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", text) is not None
+
+    assert quotes(readme), f"the README no longer quotes {figure}; update this list too"
+    assert quotes(artifact), (
         f"the README quotes {figure} and the committed artifact does not. Re-run "
         f"`scripts/evaluate.py` and requote from the file it writes."
     )
@@ -342,3 +358,27 @@ def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
 
     assert TRANSLATION_LATENCY_BUDGET_MS == 1500.0
     assert f"{TRANSLATION_LATENCY_BUDGET_MS:.0f} ms" in README.read_text(encoding="utf-8")
+
+
+#: The cited-marker deferral's three-way split, which README and artifact both lead with.
+#:
+#: Bound as one phrase rather than as three numbers: `22`, `40` and `8` are each too short to
+#: match meaningfully on their own, and the *composition* is the finding anyway — the middle
+#: bucket is the largest and is what neither the citation register nor whole-answer faithfulness
+#: can see. A rate quoted without it reads as a simple failure rate, which it is not.
+CITED_MARKER_COMPOSITION = "22 fully supported / 40 partly supported / 8 not supported"
+
+
+def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
+    """The README leads with the split, and the artifact is where it comes from."""
+    readme = README.read_text(encoding="utf-8")
+    artifact = EVALUATION.read_text(encoding="utf-8")
+
+    assert CITED_MARKER_COMPOSITION in artifact, (
+        f"the artifact no longer renders {CITED_MARKER_COMPOSITION!r}. If the run moved those "
+        f"counts, requote the README from it and update this constant."
+    )
+    assert CITED_MARKER_COMPOSITION in readme, (
+        "the README must lead with the composition rather than the derived rate: a 31% "
+        "full-support rate hides that partial support is the largest bucket."
+    )

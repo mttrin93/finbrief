@@ -353,6 +353,10 @@ def judge_cells(
     does not stays `None`. That is the same absence a skipped metric already produces, which is
     why `--stage report` can now re-render an artifact from 560 cached judge cells instead of an
     empty table (code review of #11).
+
+    Every cell is scored on one shared event loop (`judging.score`): a pooled HTTP connection
+    may not cross a loop, and the client is cached below this layer so it cannot be rebuilt out
+    of the way.
     """
     version = judging.ragas_version()
     samples = [
