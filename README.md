@@ -479,9 +479,9 @@ decline. Where a constraint cannot be made structural — and the verbatim rule 
 one edit it must permit is indistinguishable from the rewrite it forbids — the honest response is
 to instrument it and publish the rate, which is what `docs/verification/evaluation.md` does.
 
-### The other generalisable claim: a check that cannot fail, three times on one ticket
+### The other generalisable claim: a check that cannot fail, five times on one ticket
 
-The evaluation ticket produced three defects with one shape — **something asserted a result the
+The evaluation ticket produced five defects with one shape — **something asserted a result the
 code had not established** — and they are worth reading together because they look unrelated
 apart:
 
@@ -490,12 +490,33 @@ apart:
 | `metrics.compare` | a verdict on each of 18 pre-registered comparisons | nothing: it tested a delta of means against the arms' own range, which is the largest delta those values permit, so it could not return anything but a null |
 | `tool_eval`'s control C3 | a pass, inside a published **100% over 10 scored cases** | nothing: with no expected tool, no forbidden tool and no argument, `passed` was `True` for every possible agent behaviour |
 | the judge stage's error path | `APIConnectionError: Connection error.` | nothing about the network: a client built once at process start was reused across the per-cell `asyncio.run` loops, and `httpx` raised `bound to a different event loop`, which the SDK renamed |
+| the figure-binding test itself | that every evaluation figure the README quotes is in the artifact | nothing, for short figures: it matched **substrings**, so `"8"` is satisfied by `18`, `0.087` or any date. Adding the cited-marker counts to it would have bound nothing |
+| "1324 tests green" on the inherited commit | that the suite passed | nothing CI had seen: that commit was pushed inside a later push, so the workflow only ever built the tip. It was green locally and red on the runner |
 
 The first two sat **inside published measurements**; the third was in an error path, which is why
 it cost three killed runs and a wrong diagnosis before the real exception surfaced. Two things kept
 it hidden, and both are ordinary good practice working against visibility: the **cache** meant every
 earlier run replayed the one metric that triggers it, so the path was never exercised; and the
 **retry** could self-heal it, so it failed at a different point every time.
+
+**The fourth is the one worth sitting with: it was inside the mechanism built to prevent the
+others.** `test_grounding_scope.py` exists because a figure retyped into prose disagrees with its
+source, and it binds the README's evaluation numbers to the committed artifact. It did so with
+`figure in text`. That is adequate for `3212` and `-0.087` and vacuous for anything short — and the
+moment the cited-marker composition (`22`, `40`, `8`) was added, the guard would have been asserting
+nothing while looking like the strictest check in the repo. It now matches on whole numbers
+(`(?<![\d.\-])…(?![\d])`), verified against `"8" in "the value is 18"`, and the composition is
+bound as one phrase because three short numbers cannot be bound separately. **A guard is code, and
+inherits every failure mode of the code it guards.**
+
+**The fifth is the same shape wearing process clothes.** "1324 tests green" was true on a laptop and
+untrue on the runner: `test_eval_pipeline` was the suite's only `from tests.fakes import`, which
+needs the repo root on `sys.path` where the other nine importers' `from fakes import` does not. A
+local pass is evidence about a local environment. The structural half of that gap is now closed —
+`test_no_test_imports_through_the_tests_package` forbids the spelling outright, so the two
+environments cannot disagree about it again. The other half is not closable by a test: GitHub runs
+one workflow per *push*, on the tip, so any commit pushed alongside a later one is never built on
+its own. **Treat a green local run as a hypothesis about CI, never as a result from it.**
 
 What follows is the rule this repo now applies to instrumentation as well as to code: **prefer a
 check that exercises the thing over one that describes it.** Every control in the tool eval is now

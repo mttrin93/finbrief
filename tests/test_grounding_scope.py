@@ -382,3 +382,30 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
         "the README must lead with the composition rather than the derived rate: a 31% "
         "full-support rate hides that partial support is the largest bucket."
     )
+
+
+def test_no_test_imports_through_the_tests_package():
+    """`from fakes import …`, never `from tests.fakes import …` — and the difference is CI.
+
+    There is no `tests/__init__.py`, so pytest puts *this directory* on `sys.path` and `fakes`
+    resolves anywhere. The `tests.` prefix additionally needs the **repo root** on the path,
+    which a local editable install happens to supply and a clean runner does not: one such
+    import sat in `test_eval_pipeline.py`, passed on the author's machine, and failed CI with
+    `ModuleNotFoundError: No module named 'tests'`.
+
+    Forbidden by a scan rather than fixed once, because "green locally" and "green in CI" are
+    different claims and this is the difference that made them differ. A convention followed by
+    nine of ten importers is not a convention — it is a coin flip that has come up heads nine
+    times.
+    """
+    offenders = sorted(
+        f"{path.name}:{number}"
+        for path in Path(__file__).resolve().parent.glob("*.py")
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if re.match(r"^\s*(?:from|import)\s+tests\.", line)
+    )
+
+    assert not offenders, (
+        f"{offenders} import through the `tests.` package. Spell it `from fakes import …`: "
+        f"the prefixed form needs the repo root on sys.path, which CI does not provide."
+    )

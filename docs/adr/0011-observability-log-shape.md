@@ -251,3 +251,43 @@ that asserts something the code did not establish.** `compare` asserted a verdic
 reach, C3 asserted a pass it could not withhold, and this asserted a network fault it never
 observed. The generalisation for the next one: an exception the code *translates* is a claim, and a
 claim needs the same adversarial reading as a measurement.
+
+## Amendment (T10 close-out, #11): the guard and the green run, instances four and five
+
+Two more of the same defect surfaced closing this ticket, and both are recorded here rather than
+waved at because of *where* they sat.
+
+**Four: the guard was about to make an unverifiable claim of its own.**
+`tests/test_grounding_scope.py` is the mechanism this repo built against retyped figures — it binds
+the README's evaluation numbers to the committed artifact, so a run that moves a number fails the
+suite instead of leaving the README asserting the old one. It compared with `figure in text`.
+Substring containment is adequate for `3212` and `-0.087`, and **vacuous for any short figure**:
+`"8"` is satisfied by `18`, by `0.087`, by a date. Closing this ticket added the cited-marker
+composition — `22`, `40`, `8` — to that list, and had it shipped, the strictest-looking check in the
+repo would have been binding nothing at all.
+
+It now matches whole numbers (`(?<![\d.\-])…(?![\d])`), checked against `"8" in "the value is 18"`
+returning false, and the composition is bound as a single phrase because three short numbers cannot
+be bound individually. **A guard is code and inherits every failure mode of the code it guards** —
+which is the generalisation, and the reason this is the first instance recorded *inside* the
+mechanism rather than in the thing it watches.
+
+**Five: a green test run that CI had never seen.** The inherited commit was reported as "1324 tests
+green". It was, locally. On the runner two tests failed with `ModuleNotFoundError: No module named
+'tests'`: `test_eval_pipeline` held the suite's only `from tests.fakes import`, and that spelling
+needs the **repo root** on `sys.path` where the other nine importers' `from fakes import` needs only
+the directory pytest already adds. A local editable install supplies the root; a clean checkout does
+not.
+
+**Why it was not caught, and what is now structural.** The workflow is configured correctly
+(`on: push: branches: ["**"]`). GitHub runs one workflow per *push event*, on that push's tip — and
+that commit was pushed alongside a later one, so it was never built on its own. That half is not
+closable by a test, and is recorded as a standing caution: **a green local run is a hypothesis about
+CI, not a result from it.** The half that *is* closable now is:
+`test_no_test_imports_through_the_tests_package` forbids the `tests.` spelling outright, so the two
+environments can no longer disagree about it. A convention nine of ten importers follow is not a
+convention; it is a coin that has landed heads nine times.
+
+**Both belong in this ADR** for the reason the masked `APIConnectionError` does: they are claims a
+program made that it had not established. One was made by a test, one by a person reading a test's
+output. The subject changes; the shape does not.
