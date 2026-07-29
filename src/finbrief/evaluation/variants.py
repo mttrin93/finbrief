@@ -109,6 +109,45 @@ class ResolvedPlan:
         )
 
 
+class RecordingPlanner(BaseChatModel):
+    """Delegates to the real planner and keeps its reply — so the resolve pass logs properly.
+
+    **The fix for a hole this harness created.** `resolve_plan` first called `model.invoke`
+    itself and then re-ran `translate()` over the reply through a `ReplayPlanner`. That
+    captured the reply but made the **paid** planner call outside
+    `query_translation.translate`, which is the only place a `query_translation` event is
+    emitted — so the real call's latency and token counts were never recorded, and the only
+    lines in the log came from replays, which report no spend. The log then carried 322
+    `query_translation` lines and **zero** with token counts, and `latency.translation_cost`
+    correctly refused to compute ADR-0005's budget from it.
+
+    Wrapping instead of bypassing means the resolve pass runs the shipped code path:
+    `translate()` invokes this, this invokes the real model, and the event `translate()`
+    writes is a measurement of the actual call. One code path, which is what CLAUDE.md asks
+    for everywhere else and what the first version quietly gave up.
+    """
+
+    inner: BaseChatModel
+    reply: str = ""
+
+    @property
+    def _llm_type(self) -> str:
+        return "finbrief-recording-planner"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        result = self.inner._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        # Kept so `resolve_plan` can persist it. Assigning to a pydantic field on a model that
+        # is not frozen, which is the same mechanism `ReplayPlanner.invocations` uses.
+        self.reply = result.generations[0].message.text()
+        return result
+
+
 class ReplayPlanner(BaseChatModel):
     """A chat model that returns one recorded reply, so an arm's variants are not resampled.
 
@@ -209,16 +248,11 @@ def resolve_plan(
     and reconstructing it: a reply cannot be recovered from the variants it produced, since
     the parser drops lines.
     """
-    reply = model.invoke(
-        [
-            _system_message(max_sub_queries),
-            _human_message(question),
-        ]
-    )
-    text = reply.text
+    recorder = RecordingPlanner(inner=model)
     variants = query_translation.translate(
-        question, model=ReplayPlanner(reply=text), max_sub_queries=max_sub_queries
+        question, model=recorder, max_sub_queries=max_sub_queries
     )
+    text = recorder.reply
     return ResolvedPlan(
         question_id=question_id,
         question=question,
@@ -227,20 +261,6 @@ def resolve_plan(
         planner_model=planner_model,
         max_sub_queries=max_sub_queries,
     )
-
-
-def _system_message(max_sub_queries: int) -> BaseMessage:
-    from langchain_core.messages import SystemMessage
-
-    from finbrief.prompts import query_translation_prompt
-
-    return SystemMessage(query_translation_prompt(max_sub_queries))
-
-
-def _human_message(question: str) -> BaseMessage:
-    from langchain_core.messages import HumanMessage
-
-    return HumanMessage(question)
 
 
 def verify_replay(plans: Sequence[ResolvedPlan]) -> None:

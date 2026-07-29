@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from finbrief.config import RetrievalStrategy, Settings
 from finbrief.evaluation.arms import HYBRID_TRANSLATED, VECTOR_TRANSLATED
@@ -270,3 +271,46 @@ def test_agreement_over_no_repeats_reports_no_share_rather_than_dividing_by_zero
     result = PlannerAgreement(question_id="E1", repeats=0, distinct=())
 
     assert result.modal_share == 0.0
+
+
+def test_the_resolve_pass_goes_through_the_real_translate_so_its_call_is_logged(caplog):
+    # **The hole this closes.** `resolve_plan` used to call the model itself and then replay
+    # the reply, so the *paid* call happened outside `query_translation.translate` — the only
+    # place a `query_translation` event is emitted. The log then held 322 of those lines and
+    # **zero** with token counts, so `latency.translation_cost` refused to compute ADR-0005's
+    # budget from it. Asserted on the event, because the event is what was missing.
+    import logging
+
+    from finbrief.evaluation.variants import RecordingPlanner
+
+    inner = ReplayPlanner(reply=REPLY)
+    recorder = RecordingPlanner(inner=inner)
+
+    with caplog.at_level(logging.INFO, logger="finbrief.retrieval.query_translation"):
+        plan = resolve_plan(
+            "E1",
+            QUESTION,
+            model=recorder,
+            max_sub_queries=3,
+            planner_model="openai/gpt-4o-mini",
+        )
+
+    assert inner.invocations == 1, "the real planner was not reached"
+    assert plan.reply == REPLY, "the reply was not recorded"
+    emitted = [r for r in caplog.records if getattr(r, "event", None) == "query_translation"]
+    assert len(emitted) == 1, (
+        "the paid planner call emitted no query_translation event, so its latency and tokens "
+        "are unmeasurable and ADR-0005's cost half cannot be computed"
+    )
+
+
+def test_the_recorder_returns_what_the_inner_model_returned():
+    # It must not alter the reply on the way past: the persisted text is what the arms replay.
+    from finbrief.evaluation.variants import RecordingPlanner
+
+    recorder = RecordingPlanner(inner=ReplayPlanner(reply="- one\n- two\n"))
+
+    reply = recorder.invoke([HumanMessage("anything")])
+
+    assert reply.text == "- one\n- two\n"
+    assert recorder.reply == "- one\n- two\n"
