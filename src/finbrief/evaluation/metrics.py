@@ -33,17 +33,35 @@ in that order, and the order is a finding rather than a preference.
   `recall_trivial` (ADR-0002 amendment) marks rows every one of whose sections holds ≤ 4 chunks.
   `recall_trivial_sections` marks the partial case, so a multi-section row contributes its
   non-trivial sections and is not credited for the ones it could not miss.
-- **A difference smaller than the per-question spread is not a result.** `compare` returns
-  `WITHIN_SPREAD` rather than a direction, because with 7 questions per bucket a mean difference
-  inside the spread of its own inputs is not evidence — and because #5 measured the embedding
-  call as reproducible only to ~0.0009, so a delta at four decimals is API noise wearing a
-  finding's clothes.
+- **A difference the sample cannot resolve is not a result.** `compare` returns `NOT_DETECTED`
+  rather than a direction, because with 7 questions per bucket a small mean difference is not
+  evidence — and because #5 measured the embedding call as reproducible only to ~0.0009, so a
+  delta at four decimals is API noise wearing a finding's clothes.
+
+**The instrument reports when it could not have detected anything, and that is the whole
+point of this module's second revision.** The first version compared a difference of *means*
+against `basis` — the larger of the two arms' raw per-question **range**. Because each arm's
+mean is bounded by that arm's own min and max, the largest delta the observed values permit is
+`max(cand.max − base.min, base.max − cand.min)`; and when two arms score the *same* questions
+under near-identical configurations, that quantity **equals the range**. The test was
+`abs(delta) <= basis`, so it could not fail. All 18 pre-registered comparisons in the first
+committed artifact — six hypotheses, eight falsification-clause cells, four re-examination
+trigger cells — were rendered as verdicts by a test that was mathematically incapable of
+returning anything else (ADR-0002's T10 amendment §3 records it). The pre-registration was
+sound; the instrument judging it was not.
+
+So this version does three things the first did not: it pairs on the **question** rather than
+comparing two ranges, it settles direction with an **exact** test rather than a bound nobody
+derived, and `Paired.detectable` states whether the test could have reached `PAIRED_ALPHA` at
+this effective n **at all**. A verdict from an undetectable comparison is reported as
+undetectable, because "we could not have seen it" is a third claim and neither of the other
+two.
 """
 
 from __future__ import annotations
 
 import statistics
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -220,17 +238,202 @@ class Verdict(StrEnum):
 
     BETTER = "better"
     WORSE = "worse"
-    #: The difference is no larger than the spread of the questions it is a mean over, so the
-    #: sample cannot tell the two arms apart. **Not** "equal" and not "tied": the arms may
-    #: genuinely differ, and this says only that these 7 questions do not show it.
-    WITHIN_SPREAD = "within spread"
+    #: The paired test did not resolve a difference at `PAIRED_ALPHA`, so the sample cannot
+    #: tell the two arms apart. **Not** "equal" and not "tied": the arms may genuinely differ,
+    #: and this says only that these 7 questions do not show it.
+    NOT_DETECTED = "not detected"
+    #: The test could not have resolved a difference of *any* size at this effective n — the
+    #: exact two-sided p has a floor of `2 / 2**effective_n`, above `PAIRED_ALPHA` for n < 6.
+    #: Separate from `NOT_DETECTED` because a null result from an instrument that had no chance
+    #: of firing is not evidence of absence, and reporting it as one is the defect this module's
+    #: docstring records.
+    UNDETECTABLE = "undetectable at this n"
     #: One side has no number at all.
     UNDETERMINED = "undetermined"
 
 
+#: Two-sided significance level for the paired exact test.
+#:
+#: Not in `config.py` deliberately, on the same grounds as the ingestion thresholds: it is an
+#: assertion about what this harness is willing to call a difference, calibrated against the
+#: golden set's ~7 questions per bucket, and an env-overridable alpha is a knob for tuning a
+#: verdict after seeing it.
+PAIRED_ALPHA = 0.05
+
+
+def minimum_detectable_pairs(alpha: float = PAIRED_ALPHA) -> int:
+    """The fewest differing questions at which the exact test can reach `alpha` at all.
+
+    Derived rather than written down: the two-sided exact p cannot go below `2 / 2**m`, so this
+    walks m upward until it can. Six at α=0.05. A typed constant here would be a number that
+    silently stops matching `PAIRED_ALPHA` the day anyone moves it.
+    """
+    m = 1
+    while 2 / 2**m > alpha:
+        m += 1
+    return m
+
+
+def tolerated_minority_signs(pairs: int, alpha: float = PAIRED_ALPHA) -> int:
+    """How many of `pairs` differences may point *against* the majority and still reach `alpha`.
+
+    **This is the number that says what the design can resolve**, and it is bleaker than the
+    p-floor alone suggests: at exactly `minimum_detectable_pairs()` differing questions the
+    answer is **zero** — the effect has to be perfectly unanimous — and at seven it is one. So a
+    bucket of ~7 questions can only ever resolve a near-unanimous effect, whatever its size.
+    ADR-0002 sized the buckets at ≥6 against a different kind of test, and this is the
+    consequence, derived here so the artifact states it rather than leaving it to be inferred
+    from a p-value.
+
+    `-1` when no arrangement of `pairs` differences can reach `alpha`.
+    """
+    if 2 / 2**pairs > alpha:
+        return -1
+    tolerated = -1
+    for flips in range(pairs + 1):
+        # Flip the smallest-magnitude differences first: that is the arrangement most favourable
+        # to significance, so it is the ceiling on what any real data could tolerate.
+        deltas = [float(rank + 1) for rank in range(pairs)]
+        for index in range(flips):
+            deltas[index] = -deltas[index]
+        p_value = signed_rank_p(deltas)
+        if p_value is None or p_value > alpha:
+            break
+        tolerated = flips
+    return tolerated
+
+
+@dataclass(frozen=True, slots=True)
+class Paired:
+    """The same questions under two arms, aligned by question id — the unit of comparison.
+
+    Paired rather than two independent summaries because the arms score the **same** golden-set
+    rows: the per-question difference removes the question's own difficulty, which is the term
+    that dominates the raw spread. A bucket whose questions range over 0.63 can still have
+    every paired difference inside 0.05, and only the paired form can see that.
+
+    `dropped` counts questions where either arm had no number, for the reason
+    `observability.events.Samples` returns `absent`: a paired n the caller did not choose is a
+    denominator they cannot weigh.
+    """
+
+    question_ids: tuple[str, ...]
+    #: `candidate − baseline`, one per question both arms scored.
+    deltas: tuple[float, ...]
+    dropped: int
+
+    @property
+    def n(self) -> int:
+        """Questions both arms scored."""
+        return len(self.deltas)
+
+    @property
+    def effective_n(self) -> int:
+        """Questions whose score actually *differed* — what the signed-rank test ranks.
+
+        A zero difference carries no sign, so it contributes nothing to the test. Reported
+        because it, and not `n`, is the denominator the p-value was computed against.
+        """
+        return sum(1 for delta in self.deltas if delta != 0.0)
+
+    @property
+    def mean_delta(self) -> float | None:
+        return statistics.fmean(self.deltas) if self.deltas else None
+
+    @property
+    def delta_range(self) -> tuple[float, float] | None:
+        """min and max of the paired differences — the effect size's own spread."""
+        if not self.deltas:
+            return None
+        return (min(self.deltas), max(self.deltas))
+
+    @property
+    def detectable(self) -> bool:
+        """Whether the exact test could reach `PAIRED_ALPHA` at this effective n at all.
+
+        The two-sided exact p-value cannot go below `2 / 2**effective_n` — every rank on one
+        side is the most extreme assignment there is — so below 6 differing questions no
+        arrangement of the data can produce a significant result. **This property is the fix
+        for the defect in the module docstring**: it makes "the instrument had no chance"
+        representable instead of indistinguishable from "the arms are the same".
+        """
+        n = self.effective_n
+        return n > 0 and 2 / 2**n <= PAIRED_ALPHA
+
+
+def paired(
+    baseline: Mapping[str, float | None], candidate: Mapping[str, float | None]
+) -> Paired:
+    """Align two arms' per-question scores, keeping only questions both arms scored.
+
+    Keyed on question id rather than on position: the cells arrive per arm and a filtered or
+    reordered arm would otherwise pair question 3's score with question 5's, which is a
+    comparison of nothing that looks exactly like a comparison.
+    """
+    ids, deltas, dropped = [], [], 0
+    for question_id in sorted(set(baseline) | set(candidate)):
+        before, after = baseline.get(question_id), candidate.get(question_id)
+        if before is None or after is None:
+            dropped += 1
+            continue
+        ids.append(question_id)
+        deltas.append(after - before)
+    return Paired(question_ids=tuple(ids), deltas=tuple(deltas), dropped=dropped)
+
+
+def _midranks(values: Sequence[float]) -> tuple[float, ...]:
+    """Ranks of `values`, ties sharing their average rank. Always multiples of 0.5."""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    position = 0
+    while position < len(order):
+        end = position
+        while end + 1 < len(order) and values[order[end + 1]] == values[order[position]]:
+            end += 1
+        shared = (position + end) / 2 + 1
+        for index in order[position : end + 1]:
+            ranks[index] = shared
+        position = end + 1
+    return tuple(ranks)
+
+
+def signed_rank_p(deltas: Sequence[float]) -> float | None:
+    """Exact two-sided Wilcoxon signed-rank p for `deltas`, or `None` when none differ.
+
+    **Exact, by enumerating the null distribution rather than approximating it.** At n=7 a
+    normal approximation is not defensible — that was the review's constraint — so the null is
+    built by convolution over the signed ranks: under the null every sign assignment is equally
+    likely, so the distribution of `W+` is the count of assignments reaching each rank sum. That
+    is O(n · ΣR) and exact for every n this harness sees.
+
+    Two honest caveats, stated because a p-value's assumptions are part of the measurement:
+    tied `|delta|` values take midranks, which makes the null mildly approximate (the standard
+    treatment, and the alternative — dropping ties — discards data at an n that cannot spare
+    it); and zero differences are excluded, which is why `Paired.effective_n` is reported
+    beside every p.
+    """
+    nonzero = [delta for delta in deltas if delta != 0.0]
+    if not nonzero:
+        return None
+    # Doubled so midranks (always multiples of 0.5) index an integer convolution exactly.
+    ranks = [int(round(rank * 2)) for rank in _midranks([abs(d) for d in nonzero])]
+    counts = {0: 1}
+    for rank in ranks:
+        nxt: dict[int, int] = {}
+        for total, count in counts.items():
+            nxt[total] = nxt.get(total, 0) + count  # this rank signed negative
+            nxt[total + rank] = nxt.get(total + rank, 0) + count  # signed positive
+        counts = nxt
+    observed = sum(rank for rank, delta in zip(ranks, nonzero, strict=True) if delta > 0)
+    universe = 2 ** len(ranks)
+    at_or_below = sum(c for total, c in counts.items() if total <= observed) / universe
+    at_or_above = sum(c for total, c in counts.items() if total >= observed) / universe
+    return min(1.0, 2 * min(at_or_below, at_or_above))
+
+
 @dataclass(frozen=True, slots=True)
 class Comparison:
-    """One arm against another on one metric in one bucket, with the verdict's own basis."""
+    """One arm against another on one metric in one bucket, with the test that settled it."""
 
     metric: str
     bucket: Bucket
@@ -238,19 +441,20 @@ class Comparison:
     candidate_arm: str
     baseline: Summary
     candidate: Summary
+    pairs: Paired
+    #: `None` when no question's score differed, so there was nothing to rank.
+    p_value: float | None
     verdict: Verdict
 
     @property
     def delta(self) -> float | None:
-        if self.baseline.mean is None or self.candidate.mean is None:
-            return None
-        return self.candidate.mean - self.baseline.mean
+        """The paired mean difference — the effect size the verdict is about.
 
-    @property
-    def basis(self) -> float | None:
-        """The spread the verdict was judged against — the larger of the two arms'."""
-        spreads = [s for s in (self.baseline.spread, self.candidate.spread) if s is not None]
-        return max(spreads) if spreads else None
+        The mean of the per-question differences, which for a complete pairing equals the
+        difference of the two means and for a partial one is the honest version of it: the
+        difference of means over *different* question subsets is not a difference.
+        """
+        return self.pairs.mean_delta
 
 
 def compare(
@@ -261,29 +465,30 @@ def compare(
     candidate_arm: str,
     baseline: Summary,
     candidate: Summary,
+    pairs: Paired,
 ) -> Comparison:
-    """Judge `candidate` against `baseline`, refusing to call a within-spread difference.
+    """Judge `candidate` against `baseline` on the paired per-question differences.
 
-    The rule #11 fixes in one sentence — "no threshold at four decimals" — implemented as a
-    comparison against the *measured* spread of the questions rather than against a constant
-    nobody derived. A bucket whose 7 questions range over 0.4 cannot support a claim about a
-    mean difference of 0.05, and saying so is the honest reading of ADR-0005's own reasoning
-    for making its falsification clause directional ("with ~6 questions per bucket, a tight
-    numeric margin would be false precision").
+    Three outcomes and not two, which is the correction this module's docstring records. The
+    exact signed-rank test settles direction; `Paired.detectable` decides whether a null result
+    is `NOT_DETECTED` ("these questions do not show it") or `UNDETECTABLE` ("no arrangement of
+    this many differing questions could have shown it"). `baseline` and `candidate` are still
+    carried so the artifact can print each arm's own mean and spread beside the delta, but no
+    verdict rests on them — a difference of means judged against a range of raw observations is
+    the test that could not fail.
     """
-    delta = (
-        None
-        if baseline.mean is None or candidate.mean is None
-        else candidate.mean - baseline.mean
-    )
-    spreads = [s for s in (baseline.spread, candidate.spread) if s is not None]
-    basis = max(spreads) if spreads else None
-    if delta is None or basis is None:
+    if not pairs.n:
         verdict = Verdict.UNDETERMINED
-    elif abs(delta) <= basis:
-        verdict = Verdict.WITHIN_SPREAD
+        p_value = None
     else:
-        verdict = Verdict.BETTER if delta > 0 else Verdict.WORSE
+        p_value = signed_rank_p(pairs.deltas)
+        mean_delta = pairs.mean_delta or 0.0
+        if not pairs.detectable:
+            verdict = Verdict.UNDETECTABLE
+        elif p_value is not None and p_value <= PAIRED_ALPHA:
+            verdict = Verdict.BETTER if mean_delta > 0 else Verdict.WORSE
+        else:
+            verdict = Verdict.NOT_DETECTED
     return Comparison(
         metric=metric,
         bucket=bucket,
@@ -291,6 +496,8 @@ def compare(
         candidate_arm=candidate_arm,
         baseline=baseline,
         candidate=candidate,
+        pairs=pairs,
+        p_value=p_value,
         verdict=verdict,
     )
 

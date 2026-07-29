@@ -2,8 +2,14 @@
 
 Seam: `Retrieval` in, ratios out — pure, so every case below is a hand-built retrieval rather
 than a run. The tests that matter most are the negative ones: an absent target rank, an
-unreachable recall ceiling, a trivial row, and a difference smaller than its own spread. Each
-is a number this harness could have printed and would have been wrong to.
+unreachable recall ceiling, a trivial row, and a difference the paired sample cannot resolve.
+Each is a number this harness could have printed and would have been wrong to.
+
+**One test here exists because the instrument it guards was tautological.** `compare`'s first
+version judged a difference of means against the raw per-question *range*, which a difference of
+means over shared questions cannot exceed —
+`test_the_comparison_that_could_not_fail_now_fires` is the regression, built from the exact arm
+summaries the first committed artifact reported for H1.
 """
 
 from __future__ import annotations
@@ -12,12 +18,17 @@ import pytest
 
 from finbrief.evaluation.loader import Bucket, load_golden_set
 from finbrief.evaluation.metrics import (
+    PAIRED_ALPHA,
     Summary,
     Verdict,
     compare,
     leakage_precision,
+    minimum_detectable_pairs,
+    paired,
     score_row,
+    signed_rank_p,
     summarise,
+    tolerated_minority_signs,
 )
 from finbrief.ingestion.model import Section
 from finbrief.retrieval.retrieve import Context, Retrieval
@@ -278,53 +289,118 @@ def test_summarise_can_exclude_whole_trivial_rows(golden):
     assert summarise([trivial, ordinary], "chunk_recall").total == 2
 
 
-def test_a_difference_inside_the_spread_is_not_called_a_win():
-    # **The rule #11 states as "no threshold at four decimals".** These two arms differ by
-    # 0.05 in the mean over questions that themselves range across 0.6, so 7 questions cannot
-    # tell them apart — and #5 measured the embedding call as reproducible only to ~0.0009,
-    # which is the floor under any comparison at all.
-    baseline = Summary.of([0.2, 0.5, 0.8])
-    candidate = Summary.of([0.25, 0.55, 0.85])
-
-    result = compare(
-        "chunk_recall",
+def a_comparison(baseline: list[float], candidate: list[float], *, metric="chunk_recall"):
+    """Two arms over the *same* questions — the pairing `compare` is built on."""
+    keys = [f"q{index}" for index in range(len(baseline))]
+    return compare(
+        metric,
         Bucket.SEMANTIC,
         baseline_arm="vector",
         candidate_arm="hybrid",
-        baseline=baseline,
-        candidate=candidate,
+        baseline=Summary.of(baseline),
+        candidate=Summary.of(candidate),
+        pairs=paired(
+            dict(zip(keys, baseline, strict=True)),
+            dict(zip(keys, candidate, strict=True)),
+        ),
     )
 
-    assert result.delta == pytest.approx(0.05)
-    assert result.basis == pytest.approx(0.6)
-    assert result.verdict is Verdict.WITHIN_SPREAD
 
-
-def test_a_difference_larger_than_the_spread_is_a_direction():
-    baseline = Summary.of([0.10, 0.12, 0.11])
-    candidate = Summary.of([0.80, 0.82, 0.81])
-
-    result = compare(
-        "chunk_recall",
-        Bucket.EXACT_IDENTIFIER,
-        baseline_arm="vector",
-        candidate_arm="hybrid",
-        baseline=baseline,
-        candidate=candidate,
+def test_a_difference_the_paired_sample_cannot_resolve_is_not_called_a_win():
+    # **The rule #11 states as "no threshold at four decimals".** Seven questions whose paired
+    # differences straddle zero cannot resolve a direction — and #5 measured the embedding call
+    # as reproducible only to ~0.0009, which is the floor under any comparison at all.
+    result = a_comparison(
+        [0.2, 0.5, 0.8, 0.3, 0.6, 0.4, 0.7],
+        [0.3, 0.4, 0.9, 0.2, 0.7, 0.3, 0.8],
     )
 
-    assert result.verdict is Verdict.BETTER
-    assert result.delta == pytest.approx(0.7)
+    assert result.verdict is Verdict.NOT_DETECTED
+    assert result.p_value is not None and result.p_value > PAIRED_ALPHA
+    assert result.pairs.n == 7
+
+
+def test_the_comparison_that_could_not_fail_now_fires():
+    """The regression for the defect ADR-0002's T10 amendment §3 records.
+
+    These are H1's own arm summaries from the first committed artifact: means 0.858 and 0.771
+    over per-question values spanning [0.500, 1.000] and [0.367, 1.000]. The old test compared
+    |Δ| = 0.087 against a *range* of 0.633 and returned "within spread" — as it did for all 18
+    pre-registered comparisons, because a difference of means over shared questions is bounded
+    by that range and so could never exceed it. The paired instrument has to be able to reach a
+    direction on data the old one could not, and this asserts it on a consistent within-arm
+    shift the old basis would have swallowed whole.
+    """
+    baseline = [0.500, 0.667, 0.750, 0.858, 0.900, 1.000, 1.000]
+    candidate = [value - 0.087 for value in baseline]
+
+    result = a_comparison(baseline, candidate)
+
+    # Every question moved the same way, so the direction is resolvable at n=7 — the old
+    # range-based basis (0.633) exceeded the largest delta the data could produce and could not.
+    assert result.verdict is Verdict.WORSE
+    assert result.pairs.effective_n == 7
+    assert result.delta == pytest.approx(-0.087)
+
+
+def test_a_null_result_the_test_had_no_power_for_is_undetectable_not_undetected():
+    # The third outcome, and the one the first artifact could not express: at three differing
+    # questions the exact two-sided p has a floor of 2/2**3 = 0.25, so no arrangement of the
+    # data could reach 0.05. "We could not have seen it" is not "the arms are the same".
+    result = a_comparison([0.1, 0.2, 0.3], [0.9, 0.8, 0.7])
+
+    assert result.verdict is Verdict.UNDETECTABLE
+    assert result.pairs.detectable is False
+    assert result.pairs.effective_n == 3
+    # The effect is enormous and consistent; only the sample size stops it being a finding.
+    assert result.delta == pytest.approx(0.6)
+
+
+def test_detectability_turns_on_at_six_differing_questions():
+    # An equality, not a bound: 2/2**5 = 0.0625 > 0.05 and 2/2**6 = 0.03125 <= 0.05, so six is
+    # the exact point at which the instrument can return anything at all.
+    five = paired({f"q{i}": 0.0 for i in range(5)}, {f"q{i}": 1.0 for i in range(5)})
+    six = paired({f"q{i}": 0.0 for i in range(6)}, {f"q{i}": 1.0 for i in range(6)})
+
+    assert five.detectable is False
+    assert six.detectable is True
+
+
+def test_zero_differences_are_excluded_from_the_test_and_counted():
+    # A question both arms scored identically carries no sign, so it cannot enter a signed-rank
+    # test — and `effective_n` is the denominator the p was computed against, so it is reported.
+    pairs = paired(
+        {"a": 0.5, "b": 0.5, "c": 0.5},
+        {"a": 0.5, "b": 0.5, "c": 0.9},
+    )
+
+    assert pairs.n == 3
+    assert pairs.effective_n == 1
+    assert signed_rank_p(pairs.deltas) == pytest.approx(1.0)
+
+
+def test_the_exact_p_matches_the_hand_computed_null():
+    # Seven differences all positive: exactly one of the 2**7 sign assignments is at least as
+    # extreme, so the two-sided p is 2/128. Asserted as an equality against arithmetic done by
+    # hand, because a p-value from an unverified implementation is a number nobody can weigh.
+    assert signed_rank_p([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) == pytest.approx(2 / 128)
+    # And the same magnitudes with mixed signs are not extreme at all.
+    assert signed_rank_p([0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7]) > PAIRED_ALPHA
+
+
+def test_pairing_drops_a_question_only_one_arm_scored_and_says_so():
+    # A mean over one subset minus a mean over another is not a difference. The dropped count is
+    # reported for the reason `Samples.absent` is.
+    pairs = paired({"a": 0.5, "b": None, "c": 0.4}, {"a": 0.9, "b": 0.9, "c": None})
+
+    assert pairs.question_ids == ("a",)
+    assert pairs.dropped == 2
 
 
 def test_a_worse_candidate_is_named_worse():
-    result = compare(
-        "chunk_recall",
-        Bucket.EXACT_IDENTIFIER,
-        baseline_arm="vector",
-        candidate_arm="hybrid",
-        baseline=Summary.of([0.80, 0.82, 0.81]),
-        candidate=Summary.of([0.10, 0.12, 0.11]),
+    result = a_comparison(
+        [0.80, 0.82, 0.81, 0.79, 0.83, 0.78, 0.84],
+        [0.10, 0.12, 0.11, 0.09, 0.13, 0.08, 0.14],
     )
 
     assert result.verdict is Verdict.WORSE
@@ -340,6 +416,7 @@ def test_a_comparison_with_a_missing_side_is_undetermined_not_zero():
         candidate_arm="hybrid",
         baseline=Summary.of([None]),
         candidate=Summary.of([0.5]),
+        pairs=paired({"a": None}, {"a": 0.5}),
     )
 
     assert result.verdict is Verdict.UNDETERMINED
@@ -382,3 +459,36 @@ def test_section_precision_credits_a_trivial_section(golden):
 
 def test_section_precision_is_absent_for_an_empty_retrieval(golden):
     assert score_row(golden.row("S1"), a_retrieval(), arm="v", k=5).section_precision is None
+
+
+def test_the_power_floor_is_derived_from_alpha_and_not_written_down():
+    # Six at alpha=0.05, and derived: 2/2**5 = 0.0625 > 0.05 >= 2/2**6 = 0.03125. A typed
+    # constant would stop matching PAIRED_ALPHA the day anyone moved it.
+    floor = minimum_detectable_pairs()
+
+    assert floor == 6
+    assert 2 / 2 ** (floor - 1) > PAIRED_ALPHA
+    assert 2 / 2**floor <= PAIRED_ALPHA
+
+
+def test_at_the_power_floor_the_effect_must_be_perfectly_unanimous():
+    """What the design can actually resolve, and it is bleaker than the p-floor alone says.
+
+    At exactly `minimum_detectable_pairs()` differing questions **no** difference may point
+    against the majority; at seven, exactly one may. So a bucket of ~7 questions resolves only
+    a near-unanimous effect, at any effect size — the design consequence the artifact's power
+    audit states, asserted here as equalities so it cannot drift.
+    """
+    assert tolerated_minority_signs(5) == -1, "no result is reachable below the floor"
+    assert tolerated_minority_signs(6) == 0
+    assert tolerated_minority_signs(7) == 1
+    assert tolerated_minority_signs(8) == 2
+
+
+def test_a_five_of_seven_effect_is_unresolvable_however_large_it_is():
+    # The concrete consequence: a difference of 0.2 holding on five of seven questions is not
+    # weakly supported, it is *unresolvable*. This is the case the audit's prose names.
+    deltas = [0.2, 0.2, 0.2, 0.2, 0.2, -0.05, -0.05]
+
+    assert signed_rank_p(deltas) > PAIRED_ALPHA
+    assert tolerated_minority_signs(7) == 1, "two minority signs is one too many at n=7"

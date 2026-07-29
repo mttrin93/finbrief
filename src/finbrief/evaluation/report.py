@@ -11,7 +11,10 @@ subset,
   resisted`.
 - **Every bucket mean is rendered with its spread and its n**, never alone. With 7 questions per
   bucket a bare mean invites a comparison the sample cannot support.
-- **A difference inside the spread is printed as "within spread", not as a delta with a sign.**
+- **A difference the paired test does not resolve is printed as "not detected", not as a delta
+  with a sign — and one it could never have resolved is printed as "undetectable".** The two are
+  separate columns' worth of claim: see `metrics`' module docstring for the defect that made
+  them one.
 - **An absence is printed as a word, never as a number.** `—` for a metric that was not defined,
   with the count of absences beside the mean, because "we cannot say" and "it scored zero" are
   different claims.
@@ -36,7 +39,15 @@ from finbrief.evaluation.judge import (
     METRICS,
 )
 from finbrief.evaluation.loader import Bucket, GoldenSet
-from finbrief.evaluation.metrics import Comparison, Summary, Verdict, summarise
+from finbrief.evaluation.metrics import (
+    PAIRED_ALPHA,
+    Comparison,
+    Summary,
+    Verdict,
+    minimum_detectable_pairs,
+    summarise,
+    tolerated_minority_signs,
+)
 from finbrief.evaluation.pipeline import Cell
 
 #: The free metrics, and the column heading each gets — **section-level first**, because that
@@ -70,7 +81,20 @@ class Provenance:
     golden_set_rows: int
     #: Which stages this run actually executed. A run missing one is a partial run.
     stages: tuple[str, ...]
+    #: Rows in the committed golden set, so `golden_set_rows` can be compared against it.
+    #: Defaults to `golden_set_rows` — a checkpointed caller that predates this field is saying
+    #: nothing about subsetting, and the honest absence value is "not subset" rather than a
+    #: fabricated total (CLAUDE.md's `from_payload` rule).
+    golden_set_total: int | None = None
+    #: Whether the two planner-off ablation arms were scored.
+    ablations_run: bool = True
     cache: Mapping[str, CacheStats] = field(default_factory=dict)
+
+    @property
+    def subset_rows(self) -> bool:
+        """Whether this run scored fewer rows than the committed golden set holds."""
+        total = self.golden_set_total
+        return total is not None and self.golden_set_rows < total
 
 
 #: Every stage a complete run executes. A rendered artifact naming fewer is banner-flagged.
@@ -90,13 +114,52 @@ ALL_STAGES: tuple[str, ...] = (
 
 
 def is_partial(provenance: Provenance) -> bool:
-    """Whether this run skipped a stage a complete one would have run."""
-    return set(provenance.stages) != set(ALL_STAGES)
+    """Whether this run covered less than a complete one, by any of the three ways it can.
+
+    **Three flags subset a run and only one of them used to reach this function.** `--stage` was
+    checked; `--rows` and `--no-ablations` were not, so a two-question smoke — the mode the
+    `--rows` help text is *for* — rendered every hypothesis, both pre-registered decisions and
+    the headline block with no banner and wrote them straight over the committed artifact, and
+    `--no-ablations` dropped ADR-0004 §7's ablation and ADR-0005 §2's falsification channel
+    leaving no trace in the file at all. `_resolve` already refused to let a partial run
+    overwrite `golden_variants.json` for exactly this reason; the artifact had no equivalent.
+    """
+    return (
+        set(provenance.stages) != set(ALL_STAGES)
+        or provenance.subset_rows
+        or not provenance.ablations_run
+    )
+
+
+def missing_coverage(provenance: Provenance) -> tuple[str, ...]:
+    """What a partial run left out, named — never just "this run was partial"."""
+    gaps = []
+    skipped = [stage for stage in ALL_STAGES if stage not in provenance.stages]
+    if skipped:
+        gaps.append(f"stages not executed: {', '.join(skipped)}")
+    if provenance.subset_rows:
+        gaps.append(
+            f"scored {provenance.golden_set_rows} of the golden set's "
+            f"{provenance.golden_set_total} rows"
+        )
+    if not provenance.ablations_run:
+        gaps.append(
+            "ablation arms not scored, so ADR-0004 §7's ablation and ADR-0005 §2's "
+            "falsification channel are absent"
+        )
+    return tuple(gaps)
 
 
 def fmt(value: float | None, *, places: int = 3) -> str:
     """A number, or the absence marker — never a zero standing in for one."""
     return ABSENT if value is None else f"{value:.{places}f}"
+
+
+def effect_cell(comparison: Comparison) -> str:
+    """The paired effect size and the exact p — the numbers a verdict is a summary of."""
+    delta = ABSENT if comparison.delta is None else f"{comparison.delta:+.3f}"
+    p_value = ABSENT if comparison.p_value is None else f"p={comparison.p_value:.3f}"
+    return f"Δ {delta}, {p_value}"
 
 
 def cell(summary: Summary, *, places: int = 3) -> str:
@@ -116,15 +179,20 @@ def cell(summary: Summary, *, places: int = 3) -> str:
 
 
 def verdict_cell(comparison: Comparison) -> str:
-    """A comparison as text, printing no signed delta where the sample cannot support one."""
+    """A comparison's verdict, carrying the n whenever the n is what the verdict is about.
+
+    `undetectable` on its own reads as a property of the two arms; it is a property of the
+    sample, and the effective n is what says so. That confusion is the one the three-outcome
+    split exists to remove — see `metrics`' module docstring.
+    """
     if comparison.verdict is Verdict.UNDETERMINED:
         return "undetermined (a side has no number)"
-    if comparison.verdict is Verdict.WITHIN_SPREAD:
-        return f"within spread (Δ {comparison.delta:+.3f}, spread {fmt(comparison.basis)})"
-    return (
-        f"{comparison.verdict.value} "
-        f"(Δ {comparison.delta:+.3f} > spread {fmt(comparison.basis)})"
-    )
+    if comparison.verdict is Verdict.UNDETECTABLE:
+        return (
+            f"{comparison.verdict.value} (effective n={comparison.pairs.effective_n}, "
+            f"{effect_cell(comparison)})"
+        )
+    return f"{comparison.verdict.value} ({effect_cell(comparison)})"
 
 
 def _by_bucket(cells: Sequence[Cell], arm_name: str) -> Mapping[Bucket, tuple[Cell, ...]]:
@@ -248,9 +316,8 @@ def render_report(
         "",
     ]
     if is_partial(provenance):
-        missing = [stage for stage in ALL_STAGES if stage not in provenance.stages]
         parts += [
-            f"> ## ⚠ PARTIAL RUN — stages not executed: {', '.join(missing)}",
+            "> ## ⚠ PARTIAL RUN — " + "; ".join(missing_coverage(provenance)),
             ">",
             "> This artifact was rendered from a subset of the pipeline, so it is **not** a "
             "whole "
@@ -385,23 +452,41 @@ def decisions_section(clauses: Sequence[Any], trigger: Any, *, default_arm_label
         "### Falsification clause (ADR-0005) — translation, per bucket",
         "",
         "Fires only when translation is worse on **both** context precision **and** context "
-        "recall within a bucket, each by more than its own per-question spread. Directional "
-        "and "
-        "two-sided by design: with ~7 questions per bucket a tight numeric margin would be "
-        "false "
-        "precision, and dropping a pre-registered default on half the evidence would be worse "
-        "than keeping it.",
+        "recall within a bucket, each resolved as worse by the paired exact signed-rank test. "
+        "Directional and two-sided by design: with ~7 questions per bucket a tight numeric "
+        "margin would be false precision, and dropping a pre-registered default on half the "
+        "evidence would be worse than keeping it.",
         "",
-        "| bucket | context precision | context recall | clause |",
-        "|---|---|---|---|",
+        "**The `could fire` column is the one to read first.** A clause that does not fire "
+        "on a bucket whose sample could not have fired it is not evidence for the default it "
+        "protects — and that is what this table reported on all four buckets in the first "
+        "committed run, under a test that could not return anything but a null (ADR-0002's T10 "
+        "amendment §3). Where `could fire` is **no**, the row is a statement about the sample, "
+        "not about translation.",
+        "",
+        "| bucket | context precision | context recall | could fire | clause |",
+        "|---|---|---|---|---|",
     ]
     for clause in clauses:
         state = "**FIRES**" if clause.fires else "does not fire"
+        power = "yes" if clause.could_fire else "**no**"
         lines.append(
-            f"| {clause.bucket.value} | {clause.precision.value} | {clause.recall.value} "
-            f"| {state} |"
+            f"| {clause.bucket.value} | {verdict_cell(clause.precision)} "
+            f"| {verdict_cell(clause.recall)} | {power} | {state} |"
         )
     fired = [c.bucket.value for c in clauses if c.fires]
+    # **"Too few differing questions" and "no numbers at all" are separate sentences.** Both
+    # make `could_fire` false, and saying "the paired sample resolves no difference of any size"
+    # about a bucket that produced no sample would be an absence reported as a measurement — the
+    # rule this whole module is built on.
+    powerless = [
+        c.bucket.value
+        for c in clauses
+        if not c.could_fire and c.precision.pairs.n and c.recall.pairs.n
+    ]
+    unmeasured = [
+        c.bucket.value for c in clauses if not (c.precision.pairs.n and c.recall.pairs.n)
+    ]
     lines += [
         "",
         (
@@ -411,33 +496,79 @@ def decisions_section(clauses: Sequence[Any], trigger: Any, *, default_arm_label
             else f"**Outcome: the clause does not fire on any bucket, so the pre-committed "
             f"default stands: {default_arm_label}.**"
         ),
+        *(
+            [
+                "",
+                f"**How much of that outcome is evidence: the clause could not have fired on "
+                f"{', '.join(powerless)}.** On those buckets too few questions differ between "
+                f"the arms for the exact test to resolve a difference of any size, so the "
+                f"default survives them by default rather than on their evidence. The clause "
+                f"is carried by the buckets marked `yes`, and by nothing else.",
+            ]
+            if powerless
+            else []
+        ),
+        *(
+            [
+                "",
+                f"**No comparable numbers on {', '.join(unmeasured)}** — a stage that would "
+                f"have produced them did not run, which is an absence and not a null result. "
+                f"The clause is not evidence either way there.",
+            ]
+            if unmeasured
+            else []
+        ),
         "",
         "### Re-examination trigger (ADR-0005 §4) — the strategy axis",
         "",
         "Fires on an **absence of gain**, not on a loss: if `hybrid − vector` at equal "
-        "translation is within per-question spread on *every* bucket, the dominance argument "
-        "is "
-        "re-argued rather than defended and `vector + translation` becomes a live candidate "
-        "for "
-        "the default. Registered before any number existed, because a default kept because its "
+        "translation resolves no gain on *every* bucket, the dominance argument is re-argued "
+        "rather than defended and `vector + translation` becomes a live candidate for the "
+        "default. Registered before any number existed, because a default kept because its "
         "marginal component was never separately measured is p-hacking in the other direction.",
         "",
-        "| bucket | hybrid − vector, both +translation |",
-        "|---|---|",
+        "**Firing on an absence puts the whole weight on the instrument's power**, which is "
+        "why a bucket that could not have resolved a gain is excluded from the determination "
+        "rather than counted as an absence of one. In the first committed run every bucket "
+        "returned a "
+        "null unconditionally and this trigger fired on that tautology (ADR-0002's T10 "
+        "amendment §3).",
+        "",
+        "| bucket | hybrid − vector, both +translation | n (differing) |",
+        "|---|---|---:|",
     ]
-    for bucket, verdict in trigger.per_bucket.items():
-        lines.append(f"| {bucket.value} | {verdict.value} |")
+    for bucket, comparison in trigger.per_bucket.items():
+        pairs = comparison.pairs
+        lines.append(
+            f"| {bucket.value} | {verdict_cell(comparison)} | {pairs.n} ({pairs.effective_n}) |"
+        )
     lines += [
         "",
         (
-            "**Outcome: the trigger FIRES — hybrid adds nothing beyond spread on any settled "
-            "bucket, so ADR-0005's dominance argument is re-argued rather than defended.**"
-            if trigger.fires
-            else "**Outcome: the trigger does not fire.** Hybrid's contribution exceeds "
-            "per-question spread on at least one bucket, so the dominance argument stands as "
-            "argued."
+            (
+                "**Outcome: the trigger FIRES — on every bucket with the power to resolve one, "
+                "hybrid's gain is not detected, so ADR-0005's dominance argument is re-argued "
+                "rather than defended.**"
+                if trigger.fires
+                else "**Outcome: the trigger does not fire.** Hybrid's contribution is "
+                "resolved as a gain on at least one bucket, so the dominance argument stands "
+                "as argued."
+            )
+            if trigger.evaluable
+            else "**Outcome: the trigger cannot be evaluated on this run.** No bucket's paired "
+            "sample could resolve a difference of any size, so this run says nothing about "
+            "whether hybrid earns its place — which is a different finding from either firing "
+            "or not firing, and the one ADR-0005 §4 has to be re-run to settle."
         ),
     ]
+    if trigger.undetectable:
+        names = ", ".join(bucket.value for bucket in trigger.undetectable)
+        lines += [
+            "",
+            f"Undetectable on: {names}. Those buckets' paired differences are too few to reach "
+            f"significance at any effect size, so they are excluded from the determination "
+            f"above rather than read as absences of gain.",
+        ]
     if trigger.undetermined:
         names = ", ".join(bucket.value for bucket in trigger.undetermined)
         lines += [
@@ -450,10 +581,201 @@ def decisions_section(clauses: Sequence[Any], trigger: Any, *, default_arm_label
     return "\n".join(lines)
 
 
-def latency_section(cost: Any, spends: Sequence[Any]) -> str:
+#: How each verdict class should be read. Two of the four are **not** measurements, and the
+#: artifact says so in the table rather than trusting a reader to infer it from a p-value.
+_VERDICT_READING: Mapping[Verdict, str] = {
+    Verdict.BETTER: "a measured difference",
+    Verdict.WORSE: "a measured difference",
+    Verdict.NOT_DETECTED: "**a measurement**: the test had power here and resolved nothing",
+    Verdict.UNDETECTABLE: "**not a measurement**: too few differing questions for any result",
+    Verdict.UNDETERMINED: "**not a measurement**: a side produced no number",
+}
+
+
+def power_audit_section(
+    comparisons: Sequence[tuple[str, Comparison]], *, bucket_floor: int
+) -> str:
+    """Every pre-registered comparison split by whether the instrument could see anything.
+
+    **The distinction this section keeps is that `undetectable` and `not detected` are different
+    claims and only the second is a measurement.** The first committed artifact had one word for
+    both — and, under the range-based comparator, *all 18* comparisons were of the first kind
+    while reading as the second (ADR-0002's T10 amendment §3).
+
+    It also states the design consequence, derived rather than asserted: ADR-0002 sized the
+    buckets at ≥6 questions, and the exact paired test's floor is
+    `metrics.minimum_detectable_pairs()` differing questions with
+    `metrics.tolerated_minority_signs()` allowed to point the other way. At that floor the
+    tolerance is zero, so this design can only ever resolve a near-unanimous effect, whatever
+    its magnitude — a finding about the experiment rather than about retrieval, found after the
+    fact, and printed because a reader cannot recover it from the p-values.
+    """
+    floor = minimum_detectable_pairs()
+    counts: dict[Verdict, int] = {}
+    for _, comparison in comparisons:
+        counts[comparison.verdict] = counts.get(comparison.verdict, 0) + 1
+    measurements = sum(
+        count
+        for verdict, count in counts.items()
+        if verdict in (Verdict.BETTER, Verdict.WORSE, Verdict.NOT_DETECTED)
+    )
+    lines = [
+        f"Every pre-registered comparison in this artifact — the {len(comparisons)} cells of "
+        f"the hypotheses table, the falsification clause and the re-examination trigger — "
+        f"sorted by **whether the instrument could have seen a difference at all**. "
+        f"`undetectable` and `not detected` are different claims and only the second is a "
+        f"measurement; the first committed run had one word for both, and under the "
+        f"range-based comparator every cell was of the first kind while reading as the second.",
+        "",
+        "| verdict | cells | how to read it |",
+        "|---|---:|---|",
+    ]
+    for verdict in Verdict:
+        if verdict in counts:
+            lines.append(
+                f"| {verdict.value} | {counts[verdict]} | {_VERDICT_READING[verdict]} |"
+            )
+    lines += [
+        "",
+        f"**{measurements} of {len(comparisons)} cells carry a measurement.** The rest are "
+        f"statements about the sample.",
+        "",
+        "### The design consequence, and it is a finding about the experiment",
+        "",
+        f"ADR-0002 sized each bucket at **≥{bucket_floor} questions**. The exact paired "
+        f"signed-rank test's two-sided p cannot fall below `2 / 2**m` for `m` differing "
+        f"questions, so it reaches α={PAIRED_ALPHA} only from **m ≥ {floor}** — and the number "
+        f"of differences allowed to point *against* the majority at each m is what decides "
+        f"what the design can actually resolve:",
+        "",
+        "| differing questions | lowest reachable p | minority signs tolerated |",
+        "|---:|---:|---:|",
+    ]
+    for pairs in range(floor - 1, bucket_floor + 3):
+        tolerated = tolerated_minority_signs(pairs)
+        reachable = 2 / 2**pairs
+        lines.append(
+            f"| {pairs} | {reachable:.4f} | "
+            + ("none — no result possible" if tolerated < 0 else str(tolerated))
+            + " |"
+        )
+    lines += [
+        "",
+        f"So at the floor of {floor} differing questions the effect must be **perfectly "
+        f"unanimous**, and at 7 exactly one question may disagree. **This design can only "
+        f"resolve near-unanimous effects, at any effect size.** A real difference of 0.2 that "
+        f"holds on five of seven questions is invisible to it — not weakly supported, "
+        "*unresolvable*.",
+        "",
+        "That is a property of the bucket size, not of the test: an exact test is the right "
+        "instrument at this n precisely because it refuses to claim what the sample cannot "
+        "support, and a normal approximation over seven paired differences would have "
+        "returned a confident-looking number instead. The conclusion is that **ADR-0002's "
+        "stratification traded per-bucket power for per-bucket interpretability**, and the "
+        "per-bucket A/B is therefore a screen for large unanimous effects rather than a test "
+        "of small ones. "
+        "Raising it is a golden-set sizing decision and belongs to whoever revises ADR-0002, "
+        "not to a measurement run.",
+    ]
+    return "\n".join(lines)
+
+
+def planner_variance_section(agreements: Sequence[Any], *, repeats: int) -> str:
+    """ADR-0004 §9 step 3 — the planner's stability, reported on its own and never as an arm's.
+
+    Separate from every A/B table by §9's own instruction: the planner's variance "is a real
+    property of the shipped path and belongs in the report — but it is not a property of the
+    fusion strategy and must not be folded into that strategy's error bars, or the strategy
+    comparison inherits noise from a component it is not about."
+    """
+    stable = [a for a in agreements if a.identical]
+    lines = [
+        f"Each question's planner call repeated **{repeats}×** at temperature 0, comparing the "
+        f"sub-queries it returned. This is ADR-0004 §9's step 3, and it exists to answer §9's "
+        f'own falsifiable prediction: *"if the n-repeat finds the planner returns identical '
+        f"sub-queries across runs on this Universe and this model, step 2 was unnecessary "
+        f'caution"* — step 2 being the resolve-once replay every `+translation` arm above '
+        f"depends on.",
+        "",
+        "Reported here and **nowhere else**, per §9: this is the planner's variance, not the "
+        "fusion strategy's, and folding it into an arm's spread would make the strategy "
+        "comparison inherit noise from a component it is not about.",
+        "",
+        "| question | identical across repeats | distinct sub-query sets | modal share |",
+        "|---|---|---:|---:|",
+    ]
+    for agreement in agreements:
+        lines.append(
+            f"| {agreement.question_id} | {'yes' if agreement.identical else '**no**'} "
+            f"| {len(agreement.distinct)} | {agreement.modal_share:.0%} |"
+        )
+    lines += [
+        "",
+        f"**{len(stable)} of {len(agreements)} sampled questions returned identical "
+        f"sub-queries on every repeat.**"
+        + (
+            " On this evidence §9's prediction holds and the resolve-once replay was caution "
+            "rather than necessity — worth keeping, since it costs nothing and the alternative "
+            "is unfalsifiable, but the arms are not being stabilised against a drift that "
+            "happens."
+            if len(stable) == len(agreements) and agreements
+            else " Where a question varies, the replay is load-bearing: without it those arms "
+            "would report a different number on a re-run with no code change, which is exactly "
+            "what §9 registered."
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def leakage_section(leakages: Sequence[Any]) -> str:
+    """ADR-0004 §11's mention leakage, per arm, over the rows that carry labelled probes.
+
+    The other sign of §7's filer-precision prediction, and an issue comment on #11 asks for it
+    by name: cross-filer mention leakage is "a known BM25 precision cost this matrix has to
+    quantify, not a bug to fix first". It was computed by `metrics.leakage_precision` and
+    rendered nowhere, which left the labelled probes in the golden set unused.
+    """
+    lines = [
+        "`known_false_positives` in the golden set labels chunks that are a **correct lexical "
+        'match** for a question and the **wrong grounding** — the NVDA chunk reading "our '
+        'agreement with *Microsoft* could delay or prevent a change in control" against a '
+        "question about Microsoft (ADR-0004 §11). BM25 admitting them is the precision cost "
+        "hybrid pays for its recall, so it is reported per arm rather than averaged into the "
+        "bucket means, where a labelled probe and an ordinary row would be indistinguishable.",
+        "",
+        "| arm | rows | chunks retrieved | labelled leaks | leakage-free precision |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for leakage in leakages:
+        lines.append(
+            f"| {leakage.arm} | {leakage.rows} | {leakage.retrieved} | {leakage.leaked} "
+            f"| {fmt(leakage.precision)} |"
+        )
+    lines += [
+        "",
+        "Rows nobody enumerated false positives for contribute no evidence either way and "
+        "are excluded rather than counted clean (`metrics.leakage_precision`): including them "
+        "would dilute every rate towards 1.0 with rows that were never probed.",
+    ]
+    return "\n".join(lines)
+
+
+def latency_section(cost: Any, spends: Sequence[Any], *, window: Any = None) -> str:
     """ADR-0005's ≤1.5s p50 budget, and the token counts, both from the log."""
     verdict = "within budget" if cost.within_budget else "**over budget**"
     lines = [
+        *(
+            [
+                f"**These figures are the measuring run of {window.recorded_at}'s**, replayed: "
+                f"this artifact was re-rendered from the cache, which appends no log lines, so "
+                f"the window read is the one that run recorded beside the cells "
+                f"(`latency.Window`). The numbers belong to the run that produced the cached "
+                f"cells above — not to a fresh timing, and not to the sink's whole history.",
+                "",
+            ]
+            if window is not None and getattr(window, "replayed", False)
+            else []
+        ),
         "Measured from the persisted event log (`FINBRIEF_LOG_FILE`), not from a stopwatch: a "
         "stopwatch around `retrieve()` cannot split the planner's chat round from the "
         "retrieval "
@@ -462,8 +784,8 @@ def latency_section(cost: Any, spends: Sequence[Any]) -> str:
         "| | ms | samples |",
         "|---|---:|---:|",
         f"| planner's chat round, p50 | {cost.planner_p50_ms:.0f} | {cost.planner_samples} |",
-        f"| retrieval p50, translation on | {cost.retrieval_translated_p50_ms:.0f} "
-        f"| {cost.translated_samples} |",
+        f"| retrieval p50, translation on (planner planning) "
+        f"| {cost.retrieval_translated_p50_ms:.0f} | {cost.translated_samples} |",
         f"| retrieval p50, translation off | {cost.retrieval_untranslated_p50_ms:.0f} "
         f"| {cost.untranslated_samples} |",
         f"| retrieval rounds translation adds, p50 | {cost.retrieval_delta_p50_ms:.0f} | — |",
@@ -484,6 +806,13 @@ def latency_section(cost: Any, spends: Sequence[Any]) -> str:
         "honest "
         "reconstruction of what the shipped path pays; it is not a single timing of a live "
         "turn.",
+        "",
+        f"**The translated pool is the arms that actually plan, not every arm carrying "
+        f"`translation: true`.** Four of the six do; the two ablation arms add only the "
+        f"deterministic ticker form, so averaging them in measures a cheaper operation than "
+        f"the budget is about. {cost.planner_off_lines} retrieval line(s) were excluded on "
+        f"that ground (`latency.PLANNED_VARIANTS_FLOOR`) — which also excludes a turn whose "
+        f"planner refused, so this is translation's cost *when it produces sub-queries*.",
         "",
         "| metered event | input tokens | output tokens | lines | unmetered lines |",
         "|---|---:|---:|---:|---:|",
@@ -558,24 +887,37 @@ def headline_section(
 #: not happen is the third option *without* the sentence"). Three of the four need live agent
 #: turns, which is a different and nondeterministic instrument from the chain these tables
 #: measure.
+#: The four deferral names, **exported so the producer and the renderer cannot disagree.**
+#:
+#: `scripts/evaluate.py` builds a `{name: result}` mapping and `deferrals_section` looks each
+#: name up; the names were literals in both files, so a reword in either silently
+#: rendered **not measured by this run** for a deferral that *was* measured — the same
+#: fails-open-on-a-typo shape `prompts.py` calls out about a label written twice, and the same
+#: failure mode as the ADR-0003 table that said "not measured" after three of four had been.
+#: Constants because a name is a key here, not prose.
+DEFERRAL_DIVERGENCE = "agent-vs-original query divergence rate"
+DEFERRAL_BRACKETS = "square-bracket rule adherence rate"
+DEFERRAL_ADVICE_RESIDUE = "layer 4's residue — advice phrased so no rule matches"
+DEFERRAL_CITED_SUPPORT = "faithfulness on markers that resolve but sit on unsupported claims"
+
 DEFERRALS: tuple[tuple[str, str, str], ...] = (
     (
-        "agent-vs-original query divergence rate",
+        DEFERRAL_DIVERGENCE,
         "T4 (ADR-0003 amendment §2)",
         "`agent_query.verbatim` over live agent turns",
     ),
     (
-        "square-bracket rule adherence rate",
+        DEFERRAL_BRACKETS,
         "T5 (ADR-0006 T7 amendment §4)",
         "`citation_markers`, emitted by `app/Home.py` and by nothing else",
     ),
     (
-        "layer 4's residue — advice phrased so no rule matches",
+        DEFERRAL_ADVICE_RESIDUE,
         "T7 (ADR-0006 T7 amendment §4)",
         "advice probes through the live agent and `security.advice.validate_answer`",
     ),
     (
-        "faithfulness on markers that resolve but sit on unsupported claims",
+        DEFERRAL_CITED_SUPPORT,
         "T3/T5",
         "per-sentence NLI against the *cited* chunk, not the whole context set",
     ),
@@ -606,7 +948,7 @@ def deferrals_section(measured: Mapping[str, str] | None = None) -> str:
     for name, source, instrument in DEFERRALS:
         result = measured.get(name, "**not measured by this run**")
         lines.append(f"| {name} | {source} | {instrument} | {result} |")
-    if "square-bracket rule adherence rate" not in measured:
+    if DEFERRAL_BRACKETS not in measured:
         lines += [
             "",
             "**Why the bracket-rule rate is absent, and it is not for want of running the "

@@ -13,6 +13,16 @@ failed there ("BM25 on the retained original already nails exact-identifier"), t
 root-caused, and the ADR came out stronger with a mechanism attached to its replacement. Nothing
 here is scored on how many predictions survived.
 
+**But a prediction the sample could not settle is not refuted, and that distinction cost this
+module its first four verdicts.** "No effect detected at n=7" and "no effect" are different
+claims, and `Outcome.confirmed` collapsed the first into the second — so H1, H2, H3 and H6 were
+published as **refuted** on null results, H2 while its paired delta ran +0.103 in the predicted
+direction and while ADR-0004 §6's live root-caused case stood unreconciled beside it. The
+instrument underneath was worse than underpowered: it could not return anything else
+(`metrics`' module docstring; ADR-0002's T10 amendment §3). The verdict vocabulary is now
+four-valued — confirmed, refuted, `not detected (n=…)`, `undetectable (effective n=…)` — and a
+directional prediction is refuted only by a measured difference in the *other* direction.
+
 **Nothing rests on response relevancy.** It is non-reproducible by construction
 (`judge.EXCLUDED_FROM_HYPOTHESES`), so `_check_metric` refuses to build a prediction on it
 rather than trusting whoever writes the next one to remember.
@@ -37,7 +47,7 @@ from finbrief.evaluation.judge import (
     EXCLUDED_FROM_HYPOTHESES,
 )
 from finbrief.evaluation.loader import Bucket
-from finbrief.evaluation.metrics import Summary, Verdict, compare
+from finbrief.evaluation.metrics import Comparison, Summary, Verdict, compare, paired
 from finbrief.evaluation.pipeline import Cell
 
 
@@ -134,7 +144,7 @@ PREDICTIONS: tuple[Prediction, ...] = (
         metric=CONTEXT_PRECISION,
         baseline=VECTOR_TRANSLATED,
         candidate=HYBRID_TRANSLATED,
-        expected=Verdict.WITHIN_SPREAD,
+        expected=Verdict.NOT_DETECTED,
     ),
     Prediction(
         id="H5",
@@ -149,7 +159,7 @@ PREDICTIONS: tuple[Prediction, ...] = (
         metric=CONTEXT_PRECISION,
         baseline=VECTOR_TRANSLATED,
         candidate=HYBRID_TRANSLATED,
-        expected=Verdict.WITHIN_SPREAD,
+        expected=Verdict.NOT_DETECTED,
     ),
     Prediction(
         id="H6",
@@ -176,83 +186,141 @@ def _summarise(cells: Sequence[Cell], arm: Arm, bucket: Bucket, metric: str) -> 
     )
 
 
+def _by_question(
+    cells: Sequence[Cell], arm: Arm, bucket: Bucket, metric: str
+) -> dict[str, float | None]:
+    """One arm's scores in one bucket, keyed by question id — what `metrics.paired` aligns."""
+    return {
+        cell.question_id: cell.judged.get(metric)
+        for cell in cells
+        if cell.arm == arm.name and cell.bucket is bucket
+    }
+
+
+def _compare(
+    cells: Sequence[Cell], baseline: Arm, candidate: Arm, bucket: Bucket, metric: str
+) -> Comparison:
+    """The one place a comparison is built, so every decision uses the same instrument."""
+    return compare(
+        metric,
+        bucket,
+        baseline_arm=baseline.name,
+        candidate_arm=candidate.name,
+        baseline=_summarise(cells, baseline, bucket, metric),
+        candidate=_summarise(cells, candidate, bucket, metric),
+        pairs=paired(
+            _by_question(cells, baseline, bucket, metric),
+            _by_question(cells, candidate, bucket, metric),
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Outcome:
     """A prediction, what the run measured, and whether it survived."""
 
     prediction: Prediction
-    measured: Verdict
-    delta: float | None
-    spread: float | None
-    baseline: Summary
-    candidate: Summary
+    comparison: Comparison
+
+    @property
+    def measured(self) -> Verdict:
+        return self.comparison.verdict
 
     @property
     def confirmed(self) -> bool | None:
         """`True` confirmed, `False` refuted, `None` when the run could not settle it.
 
-        Three-valued on purpose: "the sample could not tell" is not "the prediction was wrong",
-        and collapsing them would let an undetermined cell be reported as a refutation.
+        Three-valued on purpose, and **`None` now covers the common case as well as the rare
+        one**. It always covered `UNDETERMINED` — one side with no number at all — but the
+        instrument's real "the sample could not tell" verdict is `NOT_DETECTED`, and collapsing
+        that into `False` reported a null result as a refutation. It did so for four of six
+        predictions in the first committed artifact (ADR-0002's T10 amendment §3): `Verdict`'s
+        own docstring said the arms "may genuinely differ", and this property threw that away
+        one line later. A directional prediction is refuted by a *measured difference in the
+        other direction*, and by nothing else.
         """
-        if self.measured is Verdict.UNDETERMINED:
+        if self.measured in (
+            Verdict.UNDETERMINED,
+            Verdict.NOT_DETECTED,
+            Verdict.UNDETECTABLE,
+        ):
             return None
         return self.measured is self.prediction.expected
 
     @property
     def verdict_text(self) -> str:
-        if self.confirmed is None:
+        """The verdict column's word, with the denominator that earns it.
+
+        `not detected (n=7)` carries its n because that is the claim's whole content: the same
+        words at n=700 would be a strong result about an absent effect and at n=7 are a
+        statement about the sample.
+        """
+        if self.measured is Verdict.UNDETERMINED:
             return "undetermined"
+        if self.measured is Verdict.UNDETECTABLE:
+            return f"undetectable (effective n={self.comparison.pairs.effective_n})"
+        if self.measured is Verdict.NOT_DETECTED:
+            return f"not detected (n={self.comparison.pairs.n})"
         return "confirmed" if self.confirmed else "refuted"
 
 
 def outcomes(cells: Sequence[Cell]) -> tuple[Outcome, ...]:
     """Each prediction against what this run measured."""
-    results = []
-    for prediction in PREDICTIONS:
-        baseline = _summarise(cells, prediction.baseline, prediction.bucket, prediction.metric)
-        candidate = _summarise(
-            cells, prediction.candidate, prediction.bucket, prediction.metric
+    return tuple(
+        Outcome(
+            prediction=prediction,
+            comparison=_compare(
+                cells,
+                prediction.baseline,
+                prediction.candidate,
+                prediction.bucket,
+                prediction.metric,
+            ),
         )
-        comparison = compare(
-            prediction.metric,
-            prediction.bucket,
-            baseline_arm=prediction.baseline.name,
-            candidate_arm=prediction.candidate.name,
-            baseline=baseline,
-            candidate=candidate,
-        )
-        results.append(
-            Outcome(
-                prediction=prediction,
-                measured=comparison.verdict,
-                delta=comparison.delta,
-                spread=comparison.basis,
-                baseline=baseline,
-                candidate=candidate,
-            )
-        )
-    return tuple(results)
+        for prediction in PREDICTIONS
+    )
 
 
 def as_report_entries(results: Sequence[Outcome]) -> tuple[Mapping[str, Any], ...]:
-    """`report.hypothesis_section`'s rows: prediction, then measurement, then verdict."""
+    """`report.hypothesis_section`'s rows: prediction, then measurement, then verdict.
+
+    The measurement cell names the **paired** delta, the exact p, and the effective n, because
+    those three are the claim. A prediction that expected no difference is annotated as
+    *consistent* rather than confirmed: ADR-0002 decision 4 registered the tie as a prediction
+    and it deserves to be readable as one, but a null result at n=7 does not confirm a tie — the
+    verdict column keeps one vocabulary and the nuance sits with the numbers.
+    """
     entries = []
     for outcome in results:
         prediction = outcome.prediction
-        delta = "—" if outcome.delta is None else f"{outcome.delta:+.3f}"
-        spread = "—" if outcome.spread is None else f"{outcome.spread:.3f}"
+        pairs = outcome.comparison.pairs
+        delta = "—" if outcome.comparison.delta is None else f"{outcome.comparison.delta:+.3f}"
+        span = pairs.delta_range
+        p_value = outcome.comparison.p_value
+        p_text = "—" if p_value is None else f"p={p_value:.3f}"
+        measurement = (
+            f"{prediction.metric.replace('_', ' ')} on `{prediction.bucket.value}`, "
+            f"{prediction.candidate.name} − {prediction.baseline.name}: "
+            f"paired Δ {delta}"
+            + ("" if span is None else f" [{span[0]:+.3f}…{span[1]:+.3f}]")
+            + f", exact signed-rank {p_text}, n={pairs.n} "
+            f"({pairs.effective_n} differing) → **{outcome.measured.value}** "
+            f"(baseline {_mean(outcome.comparison.baseline)}, "
+            f"candidate {_mean(outcome.comparison.candidate)})"
+        )
+        if prediction.expected is Verdict.NOT_DETECTED and outcome.measured in (
+            Verdict.NOT_DETECTED,
+            Verdict.UNDETECTABLE,
+        ):
+            measurement += (
+                " — the prediction was of *no* difference, so this is **consistent** with it "
+                "rather than a confirmation of it"
+            )
         entries.append(
             {
                 "prediction": f"**{prediction.id}** {prediction.text} "
                 f"<br>*{prediction.source}*",
-                "measurement": (
-                    f"{prediction.metric.replace('_', ' ')} on `{prediction.bucket.value}`, "
-                    f"{prediction.candidate.name} − {prediction.baseline.name}: "
-                    f"Δ {delta} against per-question spread {spread} → "
-                    f"**{outcome.measured.value}** "
-                    f"(baseline {_mean(outcome.baseline)}, "
-                    f"candidate {_mean(outcome.candidate)})"
-                ),
+                "measurement": measurement,
                 "verdict": outcome.verdict_text,
             }
         )
@@ -270,17 +338,32 @@ class FalsificationClause:
     The clause: **if translation is worse on *both* context precision *and* context recall
     within any bucket, the default drops to `hybrid-only`** and the contradiction is written
     up as a finding. Directional and two-sided by design — with ~7 questions per bucket a
-    tight numeric margin would be false precision — so this fires only when both metrics move
-    against translation by more than their own spread.
+    tight numeric margin would be false precision — so this fires only when the paired exact
+    test resolves both metrics as worse under translation.
+
+    `could_fire` sits beside `fires` because the two are different claims and the first
+    artifact reported only the second.
     """
 
     bucket: Bucket
-    precision: Verdict
-    recall: Verdict
+    precision: Comparison
+    recall: Comparison
 
     @property
     def fires(self) -> bool:
-        return self.precision is Verdict.WORSE and self.recall is Verdict.WORSE
+        return self.precision.verdict is Verdict.WORSE and self.recall.verdict is Verdict.WORSE
+
+    @property
+    def could_fire(self) -> bool:
+        """Whether this bucket's sample could have fired the clause at all.
+
+        **Reported beside `fires`, and that is the point.** A clause that does not fire on a
+        bucket where it *could not have* fired is not evidence for the default it protects —
+        which is what the first committed artifact reported on all four buckets (ADR-0002's T10
+        amendment §3). Both metrics have to be able to resolve a difference, since the clause
+        needs both to be `WORSE`.
+        """
+        return self.precision.pairs.detectable and self.recall.pairs.detectable
 
 
 def falsification_clause(cells: Sequence[Cell]) -> tuple[FalsificationClause, ...]:
@@ -289,26 +372,16 @@ def falsification_clause(cells: Sequence[Cell]) -> tuple[FalsificationClause, ..
     Held at `hybrid` on both sides, because the clause is about *translation*: comparing across
     strategies would let a strategy effect drop the default for translation's supposed sin.
     """
-    results = []
-    for bucket in Bucket:
-        verdicts = {}
-        for metric in (CONTEXT_PRECISION, CONTEXT_RECALL):
-            verdicts[metric] = compare(
-                metric,
-                bucket,
-                baseline_arm=HYBRID_ONLY.name,
-                candidate_arm=HYBRID_TRANSLATED.name,
-                baseline=_summarise(cells, HYBRID_ONLY, bucket, metric),
-                candidate=_summarise(cells, HYBRID_TRANSLATED, bucket, metric),
-            ).verdict
-        results.append(
-            FalsificationClause(
-                bucket=bucket,
-                precision=verdicts[CONTEXT_PRECISION],
-                recall=verdicts[CONTEXT_RECALL],
-            )
+    return tuple(
+        FalsificationClause(
+            bucket=bucket,
+            precision=_compare(
+                cells, HYBRID_ONLY, HYBRID_TRANSLATED, bucket, CONTEXT_PRECISION
+            ),
+            recall=_compare(cells, HYBRID_ONLY, HYBRID_TRANSLATED, bucket, CONTEXT_RECALL),
         )
-    return tuple(results)
+        for bucket in Bucket
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,35 +396,59 @@ class ReexaminationTrigger:
     the other direction.
     """
 
-    per_bucket: Mapping[Bucket, Verdict]
+    per_bucket: Mapping[Bucket, Comparison]
 
     @property
     def fires(self) -> bool:
-        settled = [v for v in self.per_bucket.values() if v is not Verdict.UNDETERMINED]
-        if not settled:
+        """Fires when every bucket that *could* resolve a gain failed to find one.
+
+        **`UNDETECTABLE` buckets are excluded rather than counted as absences of gain**, and
+        that is the correction ADR-0002's T10 amendment §3 records. This trigger fires on an
+        absence, so an instrument with no power feeds it directly: under the old range-based
+        test every bucket returned "within spread" no matter what the data said, and the trigger
+        fired on a tautology. A bucket that could not have seen a gain is not evidence that
+        there was none.
+        """
+        evidence = [
+            comparison.verdict
+            for comparison in self.per_bucket.values()
+            if comparison.verdict not in (Verdict.UNDETERMINED, Verdict.UNDETECTABLE)
+        ]
+        if not evidence:
             return False
-        return all(v is Verdict.WITHIN_SPREAD for v in settled)
+        return all(verdict is Verdict.NOT_DETECTED for verdict in evidence)
+
+    @property
+    def evaluable(self) -> bool:
+        """Whether any bucket carried enough power for the trigger to mean anything."""
+        return any(comparison.pairs.detectable for comparison in self.per_bucket.values())
 
     @property
     def undetermined(self) -> tuple[Bucket, ...]:
         """Buckets the run could not settle — named, because they weaken the conclusion."""
         return tuple(
             bucket
-            for bucket, verdict in self.per_bucket.items()
-            if verdict is Verdict.UNDETERMINED
+            for bucket, comparison in self.per_bucket.items()
+            if comparison.verdict is Verdict.UNDETERMINED
+        )
+
+    @property
+    def undetectable(self) -> tuple[Bucket, ...]:
+        """Buckets whose sample could not have resolved a gain of any size."""
+        return tuple(
+            bucket
+            for bucket, comparison in self.per_bucket.items()
+            if comparison.verdict is Verdict.UNDETECTABLE
         )
 
 
 def reexamination_trigger(cells: Sequence[Cell]) -> ReexaminationTrigger:
     """ADR-0005 §4, on context precision at equal translation (both `+translation`)."""
-    per_bucket = {}
-    for bucket in Bucket:
-        per_bucket[bucket] = compare(
-            CONTEXT_PRECISION,
-            bucket,
-            baseline_arm=VECTOR_TRANSLATED.name,
-            candidate_arm=HYBRID_TRANSLATED.name,
-            baseline=_summarise(cells, VECTOR_TRANSLATED, bucket, CONTEXT_PRECISION),
-            candidate=_summarise(cells, HYBRID_TRANSLATED, bucket, CONTEXT_PRECISION),
-        ).verdict
-    return ReexaminationTrigger(per_bucket=per_bucket)
+    return ReexaminationTrigger(
+        per_bucket={
+            bucket: _compare(
+                cells, VECTOR_TRANSLATED, HYBRID_TRANSLATED, bucket, CONTEXT_PRECISION
+            )
+            for bucket in Bucket
+        }
+    )
