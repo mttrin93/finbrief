@@ -5,6 +5,7 @@ environment or a local `.env`.
 """
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,7 @@ from finbrief.config import (
     RetrievalStrategy,
     Settings,
     get_settings,
+    resolve_log_file,
     resolve_log_level,
 )
 
@@ -251,6 +253,23 @@ def test_the_log_level_error_lists_only_levels_it_accepts():
 
 def test_a_blank_log_level_falls_back_to_info():
     assert resolve_log_level({"LOG_LEVEL": "   "}) == logging.INFO
+
+
+# --- The observability sink (T8, #10) -------------------------------------------------
+
+
+def test_the_log_file_is_off_unless_a_path_is_named():
+    # Default *off*, which is what keeps the hermetic suite from writing files: conftest
+    # strips `FINBRIEF_`, so every test resolves this path and must resolve it to nothing.
+    assert resolve_log_file({}) is None
+    assert resolve_log_file({"FINBRIEF_LOG_FILE": ""}) is None
+    assert resolve_log_file({"FINBRIEF_LOG_FILE": "   "}) is None
+
+
+def test_a_named_log_file_resolves_to_that_path():
+    assert resolve_log_file({"FINBRIEF_LOG_FILE": "data/events.jsonl"}) == Path(
+        "data/events.jsonl"
+    )
 
 
 # --------------------------------------------------------------------------------------

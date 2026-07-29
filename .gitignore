@@ -16,6 +16,12 @@ chroma/
 .cache/
 data/
 
+# Observability sink (FINBRIEF_LOG_FILE, T8). The recommended path is data/events.jsonl, which
+# the rule above already covers; the filename is named separately so pointing the sink somewhere
+# else does not silently make a live run's log committable. These lines carry a blocked question's
+# normalised text (config.GATE_LOGGED_INPUT_MAX_CHARS) and are a run artifact, never a source file.
+events.jsonl
+
 # Tooling
 .pytest_cache/
 .ruff_cache/

@@ -22,9 +22,10 @@ import os
 import sys
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, TextIO
 
-from finbrief.config import load_env, resolve_log_level
+from finbrief.config import ConfigError, load_env, resolve_log_file, resolve_log_level
 
 #: The package logger everything under `finbrief.*` propagates to.
 PACKAGE_LOGGER = "finbrief"
@@ -68,31 +69,78 @@ class JsonLinesFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+def _file_handler(path: Path) -> logging.FileHandler:
+    """Open the append-only sink at `path`, creating its parent directory.
+
+    The parent is created because the recommended path lives under `data/`, which does not
+    exist in a fresh clone. Every failure becomes a `ConfigError` so an unwritable path lands
+    in `app/Home.py`'s configuration banner beside the missing key and the bad `LOG_LEVEL`,
+    rather than as a traceback out of the logging machinery on the first event of a run.
+
+    **Append, never truncate.** `app/Home.py` reconfigures on every rerun and tomorrow's run
+    reconfigures in a new process; truncating on open would discard the latency samples
+    ADR-0005's p50 is measured from, and discard them silently.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Opened eagerly (`delay` left at its default) so a bad path fails *here*, inside this
+        # `try` — a deferred open fails on the first event instead, in a different frame, with
+        # no configuration banner in front of it.
+        return logging.FileHandler(path, mode="a", encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(
+            f"FINBRIEF_LOG_FILE={str(path)!r} cannot be opened for appending: {exc}"
+        ) from exc
+
+
 def configure_logging(
-    level: int | None = None, *, stream: TextIO | None = None
+    level: int | None = None, *, stream: TextIO | None = None, path: Path | None = None
 ) -> logging.Logger:
-    """Install the JSON-lines handler on the `finbrief` logger. Idempotent.
+    """Install the JSON-lines handlers on the `finbrief` logger. Idempotent.
 
     Scoped to the package logger rather than the root so Streamlit's own logging is left
     alone, and `propagate=False` so records are not also printed by the root handler.
+
+    `path` is the persistence half T8 (#10) added, and it is **off unless named** — see
+    `config.resolve_log_file` for why the default is nothing rather than a path. When it is
+    named the sink is installed *beside* the stream rather than instead of it, and both
+    handlers share **one** `JsonLinesFormatter` instance: the console and the file T10 reads
+    back cannot then disagree about a line, and the copy that would have disagreed is the one
+    nobody is looking at.
     """
-    if level is None:
+    if level is None or path is None:
         # Resolved before anything is mutated, so a bad `LOG_LEVEL` raises `ConfigError`
         # for the caller's config banner rather than half-configuring the logger.
         load_env()
-        level = resolve_log_level(os.environ)
+        level = resolve_log_level(os.environ) if level is None else level
+        path = resolve_log_file(os.environ) if path is None else path
 
     logger = logging.getLogger(PACKAGE_LOGGER)
-    handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
-    handler.setFormatter(JsonLinesFormatter())
+    formatter = JsonLinesFormatter()
+    handlers: list[logging.Handler] = [
+        logging.StreamHandler(stream if stream is not None else sys.stderr)
+    ]
+    # Opened before the swap, for the reason in `_file_handler`: a `ConfigError` here must
+    # leave the caller's existing logger intact rather than a half-configured one.
+    if path is not None:
+        handlers.append(_file_handler(path))
+    for handler in handlers:
+        handler.setFormatter(formatter)
 
     with _CONFIGURE_LOCK:
         logger.setLevel(level)
         logger.propagate = False
-        # `propagate=False` already claims sole ownership of this logger, and nothing else
-        # in the package installs a handler on it, so clearing is the whole swap.
+        # `propagate=False` already claims sole ownership of this logger, and nothing else in
+        # the package installs a handler on it, so clearing is the whole swap — but a cleared
+        # handler is not a closed one. `StreamHandler.close` leaves its stream alone (which is
+        # why a buffer a test configured into stays readable afterwards) while
+        # `FileHandler.close` closes the file: without this, naming the sink leaked one file
+        # descriptor per Streamlit rerun, and the app reconfigures on every rerun by design.
+        for replaced in logger.handlers:
+            replaced.close()
         logger.handlers.clear()
-        logger.addHandler(handler)
+        for handler in handlers:
+            logger.addHandler(handler)
     return logger
 
 

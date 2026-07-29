@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
 from types import MappingProxyType
 
 from dotenv import load_dotenv
@@ -754,3 +755,24 @@ def resolve_log_level(env: Mapping[str, str]) -> int:
         valid = ", ".join(sorted(levels))
         raise ConfigError(f"LOG_LEVEL={raw!r} is not a log level. Use one of: {valid}.")
     return levels[raw]
+
+
+def resolve_log_file(env: Mapping[str, str]) -> Path | None:
+    """Resolve `FINBRIEF_LOG_FILE` — where the JSON-lines sink appends, or `None` for nowhere.
+
+    Independent of `Settings` for the same reason `resolve_log_level` is: the sink is installed
+    before a key is validated, so a config failure is still recorded by the run that failed.
+
+    **Unset means off, and that is load-bearing rather than timid.** `configure_logging` is
+    called with no arguments by all four entry points, `tests/conftest.py` strips every
+    `FINBRIEF_` variable, and a path-shaped default would therefore have the hermetic suite
+    appending to a file in the working directory on every run. The cost of default-off is that
+    the sink has to be *turned on* where the data matters — `.env.example`, the README's
+    evaluation-run instructions and T11's demo walkthrough all name it, because a log nobody
+    enables is an instrument that ships and never runs (T8, #10).
+
+    No default path is offered here on purpose: naming one in code and another in `.env.example`
+    is two sources of truth for one string. `.env.example` is the one a reader acts on.
+    """
+    raw = _raw(env, "FINBRIEF_LOG_FILE")
+    return Path(raw) if raw else None
