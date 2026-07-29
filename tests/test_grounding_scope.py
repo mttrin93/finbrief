@@ -269,3 +269,24 @@ def test_the_readme_names_both_latency_budgets():
 
     assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in readme
     assert f"{GATE_LATENCY_BUDGET_MS} ms" in readme
+
+
+def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
+    """The one user-derived field in the log, and the figure bounding it.
+
+    Written after T8 added a *second* hardcoded `500` to the README — the switches list already
+    carried one, and the "Recording a run" section repeated it. Two copies of a constant in
+    prose is the shape that drifts, and a README figure is the copy a reader acts on. So the
+    second mention names `config.GATE_LOGGED_INPUT_MAX_CHARS` instead of the number, and this
+    test binds the remaining one (issue #10 review).
+    """
+    from finbrief.config import GATE_LOGGED_INPUT_MAX_CHARS
+
+    readme = README.read_text(encoding="utf-8")
+
+    # An equality on the figure, not a bound: `"500" in readme` would pass on any prose that
+    # happened to contain the digits, which is the accident `test_the_readme_names_both_latency
+    # _budgets` documents for the gate budget.
+    assert f"{GATE_LOGGED_INPUT_MAX_CHARS} characters" in readme
+    # And exactly once, so the copy that drifts cannot be reintroduced quietly.
+    assert readme.count(f"{GATE_LOGGED_INPUT_MAX_CHARS} characters") == 1

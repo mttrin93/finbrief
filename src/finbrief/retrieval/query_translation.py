@@ -34,6 +34,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from finbrief.config import TICKER_BY_COMPANY_NAME
 from finbrief.observability.logging_setup import log_event
+from finbrief.observability.tokens import usage_fields
 from finbrief.prompts import query_translation_prompt
 
 logger = logging.getLogger(__name__)
@@ -224,12 +225,17 @@ def translate(question: str, *, model: BaseChatModel, max_sub_queries: int) -> t
     if ticker_form is not None:
         variants.append(ticker_form)
     added: tuple[str, ...] = ()
+    # No keys at all when the planner did not run, which is the honest shape: at
+    # `max_sub_queries=0` translation reduces to the deterministic ticker form and asks a model
+    # nothing, so its spend is not zero-that-was-measured but nothing-to-measure.
+    usage: dict[str, int] = {}
     if max_sub_queries > 0:
         reply = model.invoke(
             [SystemMessage(query_translation_prompt(max_sub_queries)), HumanMessage(question)]
         )
         added = sub_queries(reply.text, known=variants, limit=max_sub_queries)
         variants.extend(added)
+        usage = usage_fields(reply)
     log_event(
         logger,
         "query_translation",
@@ -245,5 +251,10 @@ def translate(question: str, *, model: BaseChatModel, max_sub_queries: int) -> t
         question_chars=len(question),
         sub_query_chars=[len(sub_query) for sub_query in added],
         latency_ms=round((time.perf_counter() - started) * 1000),
+        # The planner's own spend, and the reason it is logged *here* rather than folded into
+        # the answering path's: ADR-0005 judges translation on a cost budget, and the cost it
+        # adds is this call. A total that mixed it with generation could not answer the
+        # question the ADR asks.
+        **usage,
     )
     return tuple(variants)

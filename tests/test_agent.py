@@ -16,6 +16,11 @@ survive the round trip would restart citation numbering at `[1]` in production o
 
 from __future__ import annotations
 
+import io
+import json
+import logging
+import threading
+
 from fakes import ScriptedChatModel, a_headline_source, a_quote_source
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -29,6 +34,8 @@ from finbrief.agent.agent import (
 )
 from finbrief.config import TICKER_MAX_CHARS, Settings
 from finbrief.llm import build_chat_model
+from finbrief.observability.logging_setup import configure_logging, turn
+from finbrief.tools import search_filings as search_filings_module
 from finbrief.tools.finance import (
     FINANCE_TOOL_NAMES,
     NEWS_TOOL_NAME,
@@ -801,3 +808,159 @@ def test_an_unreadable_days_argument_is_refused_gracefully_by_the_tool_node(
     assert "valid integer" in reply.content
     assert turn.text.startswith("How many days"), "the model recovered inside the same turn"
     assert turn.cards == (), "and no card was fabricated for a call that never ran"
+
+
+# --- The turn identifier, through the real tool executor (T8, #10) ---------------------
+
+
+def test_the_turn_id_reaches_a_retrieval_line_inside_the_tool_node(tmp_path, filings_store):
+    """`logging_setup.turn` has to survive LangGraph's tool node, and only this can say so.
+
+    The whole value of the identifier is that a `retrieval` line — which carries per-chunk
+    provenance and, deliberately, no question — can be attributed to the question that caused
+    it. That line is emitted deep inside `retrieve()`, called from the tool, called from the
+    tool node, which LangGraph is free to run on another thread. A `ContextVar` propagates
+    into a thread only if whatever spawns it copies the context, and "LangChain copies the
+    context" is exactly the class of claim CLAUDE.md says to exercise rather than assert.
+
+    So this drives the **real** loop and reads the **real** log line.
+    """
+    stream = io.StringIO()
+    logger = configure_logging(logging.DEBUG, stream=stream)
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_search("Tesla supply chain risk"), AIMessage("Tesla flags concentration [1].")],
+    )
+
+    with turn("golden-semantic-04:hybrid+translation"):
+        answer(TESLA_QUESTION, thread_id="t-1", agent=agent)
+    logger.handlers.clear()
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    retrievals = [line for line in lines if line["event"] == "retrieval"]
+    assert retrievals, "the tool ran and `retrieve()` logged"
+    assert all(
+        line.get("turn_id") == "golden-semantic-04:hybrid+translation" for line in retrievals
+    ), "a retrieval line with no turn id is provenance nothing can attribute"
+
+
+def test_both_searches_of_one_step_carry_the_same_turn_id(tmp_path, filings_store, monkeypatch):
+    """Two concurrent searches, one turn — and the thread boundary is asserted, not assumed.
+
+    This is the case order-based correlation gets wrong and nothing catches: LangGraph hands
+    every call in a step the same state and then runs them concurrently, so two `retrieval`
+    lines arrive from two executions of the tool and both belong to one question.
+
+    The spy is not decoration. A `ContextVar` is trivially visible to a same-thread callee, so
+    if LangGraph ever ran a step's tools inline this test would keep passing while proving
+    nothing about propagation — the vacuous-assertion shape CLAUDE.md names. Measured here:
+    both calls land on threads that are **not** this one, and on **two different** ones.
+
+    The distinctness is asserted rather than merely observed, and it used not to be: the check
+    was `len(threads) == 2`, which counts *calls*. Two searches serialised onto one worker
+    thread would satisfy it — `[X, X]` is two entries — so the premise this docstring states
+    was one the assertion did not hold down (issue #10 review). Prefer an equality over a
+    bound, and assert the premise a test rests on.
+    """
+    threads: list[int] = []
+    inner = search_filings_module.retrieve
+
+    def spy(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(search_filings_module, "retrieve", spy)
+    stream = io.StringIO()
+    logger = configure_logging(logging.DEBUG, stream=stream)
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_fan_out("Tesla supply chain risk", "Ford supply chain risk"),
+            AIMessage("Both flag concentration [1][4]."),
+        ],
+    )
+
+    with turn("t-1:turn-1"):
+        answer("Compare Tesla and Ford on supply chain.", thread_id="t-1", agent=agent)
+    logger.handlers.clear()
+
+    assert len(threads) == 2, f"two searches in one step, two tool calls — got {threads}"
+    assert len(set(threads)) == 2, (
+        f"the premise: two *distinct* threads, so the fan-out really was concurrent — {threads}"
+    )
+    assert threading.get_ident() not in threads, (
+        "the premise: the tool node ran both searches off this thread, so the context "
+        "really did have to cross a thread boundary"
+    )
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    retrievals = [line for line in lines if line["event"] == "retrieval"]
+    assert len(retrievals) == 2, "two searches in one step, two retrievals"
+    assert {line.get("turn_id") for line in retrievals} == {"t-1:turn-1"}
+
+
+def test_a_turn_id_is_absent_rather_than_null_outside_a_turn(tmp_path, filings_store):
+    # Every ingest line and every script line is emitted outside a turn. `null` on all of them
+    # would be a key that says nothing a missing key does not, and `read_events` reads either
+    # as `None` — so the cheaper shape wins.
+    stream = io.StringIO()
+    logger = configure_logging(logging.DEBUG, stream=stream)
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [a_search("Tesla supply chain risk"), AIMessage("Tesla flags concentration [1].")],
+    )
+
+    answer(TESLA_QUESTION, thread_id="t-1", agent=agent)
+    logger.handlers.clear()
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert lines, "the turn emitted something"
+    assert all("turn_id" not in line for line in lines)
+
+
+def test_the_turn_line_totals_the_loops_own_calls(tmp_path, filings_store):
+    """A tool-using turn is several paid completions, and no single reply is its cost.
+
+    Scoped to *this* turn, which is the half a sum could get wrong invisibly: the checkpointer
+    replays every earlier turn's `AIMessage`, so an unscoped total bills the newest question for
+    the whole conversation and grows with it.
+    """
+    stream = io.StringIO()
+    configure_logging(logging.DEBUG, stream=stream)
+    metered = AIMessage(
+        "Tesla flags concentration [1].",
+        usage_metadata={"input_tokens": 900, "output_tokens": 40, "total_tokens": 940},
+    )
+    unmetered = AIMessage("Its debt is in the MD&A [4].")
+    agent, _ = an_agent(
+        tmp_path,
+        filings_store,
+        [
+            a_search("Tesla risk factors", "call-1"),
+            metered,
+            a_search("Tesla debt", "call-2"),
+            unmetered,
+        ],
+    )
+
+    answer(TESLA_QUESTION, thread_id="t-1", agent=agent)
+    answer(FOLLOW_UP, thread_id="t-1", agent=agent)
+    logging.getLogger("finbrief").handlers.clear()
+
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    first, second = [line["fields"] for line in lines if line["event"] == "agent_turn"]
+    # The scripted `a_search` messages report no usage either, so turn 1 metered exactly one
+    # of its two calls — which is the denominator `<field>_calls` exists to state, per field
+    # rather than per reply (issue #10 review).
+    assert (
+        first["calls"],
+        first["input_tokens"],
+        first["input_tokens_calls"],
+        first["output_tokens"],
+        first["output_tokens_calls"],
+    ) == (2, 900, 1, 40, 1)
+    # Turn 2's own calls reported nothing, so its spend is absent — *not* turn 1's total
+    # carried forward, which is what an unscoped sum would have reported here.
+    assert "input_tokens" not in second

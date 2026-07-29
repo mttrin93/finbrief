@@ -46,7 +46,14 @@ from finbrief.config import (
     get_settings,
 )
 from finbrief.finance.ratios import Metric, Unit
-from finbrief.observability.logging_setup import configure_logging
+from finbrief.observability.logging_setup import configure_logging, log_event
+
+# Aliased, and the alias is the point: this module already binds `turn` at module scope — the
+# replay loop's `if (turn := message.get("turn"))` walrus, holding an `AgentTurn`. Importing the
+# context manager under its own name shadowed it from the *second* rerun onwards and the page
+# died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
+# would not have.
+from finbrief.observability.logging_setup import turn as log_turn
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -809,150 +816,186 @@ for message in st.session_state.messages:
             st.caption(DISCLAIMER)
 
 if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
-    # The input-validation half of user story 21, and the only door a human types through.
-    # Checked before the question is appended to the transcript, so an over-long paste does not
-    # become part of a conversation nothing will answer — and before the agent, because the
-    # cheapest refusal is the one that costs no tokens. What arrives at this length is a paste
-    # rather than a question, often a document with instructions in it, which is ADR-0006's
-    # problem and cheaper to refuse here than to classify.
-    if len(prompt) > MAX_QUESTION_CHARS:
-        st.error(
-            f"That question is {len(prompt):,} characters, and FinBrief takes at most "
-            f"{MAX_QUESTION_CHARS:,}. Ask a shorter question — or paste the part you actually "
-            f"want an answer about.",
-            icon=":material/text_fields:",
-        )
-        st.stop()
+    # **One turn, one identifier, on every event this block emits** (T8, #10). The gate's
+    # screening, the retrievals the agent's tool ran, the validator's verdict and the marker
+    # check all land on separate lines with nothing else in common: a `retrieval` line carries
+    # per-chunk provenance and, deliberately, no question. Without this the only correlation
+    # available to T10 (#11) is position in the file, which is wrong the moment the model asks
+    # for two searches in one step and asserted by nothing either way.
+    #
+    # `thread_id` first so a whole conversation's lines can be cut out together, then a fresh
+    # suffix because `thread_id` is per *conversation* — reusing it alone would collapse every
+    # turn of a thread into one bucket. Derived from a UUID and the session id, never from what
+    # was typed: these lines are kept.
+    with log_turn(f"{st.session_state.thread_id}:{uuid.uuid4().hex[:8]}"):
+        # The input-validation half of user story 21, and the only door a human types through.
+        # Checked before the question is appended to the transcript, so an over-long paste does
+        # not become part of a conversation nothing will answer — and before the agent, because
+        # the cheapest refusal is the one that costs no tokens. What arrives at this length is a
+        # paste rather than a question, often a document with instructions in it, which is
+        # ADR-0006's problem and cheaper to refuse here than to classify.
+        if len(prompt) > MAX_QUESTION_CHARS:
+            st.error(
+                f"That question is {len(prompt):,} characters, and FinBrief takes at most "
+                f"{MAX_QUESTION_CHARS:,}. Ask a shorter question — or paste the part you "
+                f"actually want an answer about.",
+                icon=":material/text_fields:",
+            )
+            st.stop()
 
-    # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door a
-    # human types through, which is what the front door is about; a gate inside the agent loop
-    # would also screen the *model's* tool arguments as if an analyst had typed them, and a gate
-    # inside `rag.answer_question` would put a model call in front of the measured chain
-    # ADR-0003 keeps clean. `screen` never raises — a classifier outage fails open onto the
-    # other three layers — so there is no branch here for the gate itself failing.
-    screening = screen(prompt)
+        # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door
+        # a human types through, which is what the front door is about; a gate inside the agent
+        # loop would also screen the *model's* tool arguments as if an analyst had typed them,
+        # and a gate inside `rag.answer_question` would put a model call in front of the
+        # measured chain ADR-0003 keeps clean. `screen` never raises — a classifier outage fails
+        # open onto the other three layers — so there is no branch here for the gate itself
+        # failing.
+        screening = screen(prompt)
 
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(as_markdown(prompt))
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(as_markdown(prompt))
 
-    if screening.blocked:
-        # The refusal is rendered as an ordinary assistant turn and stored as one, so it replays
-        # identically and reads exactly like the persona's own refusal. **Deliberately not
-        # labelled as a gate hit**: which layer fired and which pattern matched are in the
-        # gate-trigger log for a reviewer, and an attacker told which rule they tripped is an
-        # attacker told how to phrase the next attempt.
-        #
-        # It never reaches `answer()`, so the payload never enters the checkpointer — the
-        # display transcript holds a turn the agent has no memory of, which is the intended
-        # asymmetry: a follow-up cannot build on a question that was refused.
+        if screening.blocked:
+            # The refusal is rendered as an ordinary assistant turn and stored as one, so it
+            # replays identically and reads exactly like the persona's own refusal.
+            # **Deliberately not labelled as a gate hit**: which layer fired and which pattern
+            # matched are in the gate-trigger log for a reviewer, and an attacker told which
+            # rule they tripped is an attacker told how to phrase the next attempt.
+            #
+            # It never reaches `answer()`, so the payload never enters the checkpointer — the
+            # display transcript holds a turn the agent has no memory of, which is the intended
+            # asymmetry: a follow-up cannot build on a question that was refused.
+            with st.chat_message("assistant"):
+                st.markdown(as_markdown(INJECTION_REFUSAL))
+                st.caption(DISCLAIMER)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": INJECTION_REFUSAL}
+            )
+            st.stop()
+
         with st.chat_message("assistant"):
-            st.markdown(as_markdown(INJECTION_REFUSAL))
-            st.caption(DISCLAIMER)
-        st.session_state.messages.append({"role": "assistant", "content": INJECTION_REFUSAL})
-        st.stop()
+            try:
+                # A `status` rather than a spinner, because with four tools the wait has *parts*
+                # and naming them is user story 14. Each step is written into the container as
+                # the model asks for the call, so the list persists for the whole wait instead
+                # of one label replacing another — and the reader can see that a full brief
+                # really did fetch four things. Still starts at "Thinking…": the agent decides
+                # whether to call anything, so a label naming retrieval would describe a step
+                # some turns skip.
+                with st.status("Thinking…", expanded=True) as status:
 
-    with st.chat_message("assistant"):
-        try:
-            # A `status` rather than a spinner, because with four tools the wait has *parts* and
-            # naming them is user story 14. Each step is written into the container as the model
-            # asks for the call, so the list persists for the whole wait instead of one label
-            # replacing another — and the reader can see that a full brief really did fetch four
-            # things. Still starts at "Thinking…": the agent decides whether to call anything,
-            # so a label naming retrieval would describe a step some turns skip.
-            with st.status("Thinking…", expanded=True) as status:
+                    def note(step: Step) -> None:
+                        label = step_label(step)
+                        status.update(label=label)
+                        st.write(label)
 
-                def note(step: Step) -> None:
-                    label = step_label(step)
-                    status.update(label=label)
-                    st.write(label)
-
-                reply = answer(
-                    prompt,
-                    thread_id=st.session_state.thread_id,
-                    agent=shared_agent(),
-                    on_step=note,
+                    reply = answer(
+                        prompt,
+                        thread_id=st.session_state.thread_id,
+                        agent=shared_agent(),
+                        on_step=note,
+                    )
+                    status.update(label="Answered", state="complete", expanded=False)
+            except GraphRecursionError:
+                # The **generation tier** of PLAN §2's tiered handling: a failure of the
+                # answering loop itself rather than of a data source. The agent ran out of
+                # steps, which reads to a user as the app hanging and then dying — so it gets
+                # its own message naming the cause and the action, where the generic branch
+                # below would print LangGraph's own "Recursion limit of N reached" with
+                # `MAX_AGENT_STEPS` in place of N.
+                status.update(label="Gave up", state="error", expanded=False)
+                st.error(
+                    "That question took more tool calls than FinBrief allows in one turn. "
+                    "Ask it in two parts — the filings half first, then the figures — or "
+                    "name a company.",
+                    icon=":material/repeat_on:",
                 )
-                status.update(label="Answered", state="complete", expanded=False)
-        except GraphRecursionError:
-            # The **generation tier** of PLAN §2's tiered handling: a failure of the answering
-            # loop itself rather than of a data source. The agent ran out of steps, which reads
-            # to a user as the app hanging and then dying — so it gets its own message naming
-            # the cause and the action, where the generic branch below would print LangGraph's
-            # own "Recursion limit of N reached" with `MAX_AGENT_STEPS` in place of N.
-            status.update(label="Gave up", state="error", expanded=False)
-            st.error(
-                "That question took more tool calls than FinBrief allows in one turn. Ask it "
-                "in two parts — the filings half first, then the figures — or name a company.",
-                icon=":material/repeat_on:",
-            )
-        except Exception as exc:  # noqa: BLE001 — the last resort, and it names no internals
-            # The exception *type*, not its message. A client error string can carry a request
-            # URL, and a request URL can carry an API key — the same reason `log_event` never
-            # records one (`observability/logging_setup.py`). The detail goes to the log, where
-            # it is already structured; the reader gets something actionable instead.
-            logger.exception("chat_turn_failed")
-            status.update(label="Failed", state="error", expanded=False)
-            st.error(
-                f"FinBrief could not answer that ({type(exc).__name__}). Try again — and if it "
-                f"keeps happening, the server log has the detail.",
-                icon=":material/error:",
-            )
-        else:
-            # **The output validator (ADR-0006 layer 4).** The one layer whose input the
-            # attacker does not choose: an ordinary question can be answered with a
-            # recommendation nobody asked for, and a *successful* indirect injection — arriving
-            # through retrieved text that never passed the front door — shows up here or nowhere
-            # (user story 15, 17).
-            advice = validate_answer(reply.text)
-            if advice.refused:
-                # The refusal replaces the answer **and its panels**. Nothing else is rendered:
-                # the cards and the sources panel are the provenance *of an answer*, and there
-                # is no answer — a sources panel under a refusal invites a reader to think the
-                # refusal was grounded in them.
+            # Broad by intent — the last resort, and it names no internals (`noqa: BLE001`).
+            # The prose sits here rather than inline because the reindent this block needed put
+            # the inline version over 96 characters, and shortening it silently dropped a word
+            # (issue #10 review): a line long enough to need rewrapping gets rewrapped, never
+            # trimmed.
+            except Exception as exc:  # noqa: BLE001
+                # The exception *type*, not its message. A client error string can carry a
+                # request URL, and a request URL can carry an API key — the same reason
+                # `log_event` never records one (`observability/logging_setup.py`). The detail
+                # goes to the log, where it is already structured; the reader gets something
+                # actionable instead.
                 #
-                # A stated consequence, not a hidden one: `answer()` has already run, so the
-                # text this refuses is in the checkpointer and a follow-up can reference it.
-                # This layer guards the surface, not the memory. Recorded in ADR-0006's T7
-                # amendment and in the README's limitations.
-                st.markdown(as_markdown(ADVICE_REFUSAL))
+                # Through `log_event` rather than `logger.exception`, which was this codebase's
+                # only bypass of the single emitter — and so the only line carrying no
+                # `turn_id`, on precisely the turn whose provenance a reader wants. The
+                # traceback still travels, in the envelope's `error`.
+                log_event(
+                    logger,
+                    "chat_turn_failed",
+                    level=logging.ERROR,
+                    exc_info=True,
+                    error_type=type(exc).__name__,
+                )
+                status.update(label="Failed", state="error", expanded=False)
+                st.error(
+                    f"FinBrief could not answer that ({type(exc).__name__}). Try again — and "
+                    f"if it keeps happening, the server log has the detail.",
+                    icon=":material/error:",
+                )
+            else:
+                # **The output validator (ADR-0006 layer 4).** The one layer whose input the
+                # attacker does not choose: an ordinary question can be answered with a
+                # recommendation nobody asked for, and a *successful* indirect injection —
+                # arriving through retrieved text that never passed the front door — shows up
+                # here or nowhere (user story 15, 17).
+                advice = validate_answer(reply.text)
+                if advice.refused:
+                    # The refusal replaces the answer **and its panels**. Nothing else is
+                    # rendered: the cards and the sources panel are the provenance *of an
+                    # answer*, and there is no answer — a sources panel under a refusal invites
+                    # a reader to think the refusal was grounded in them.
+                    #
+                    # A stated consequence, not a hidden one: `answer()` has already run, so the
+                    # text this refuses is in the checkpointer and a follow-up can reference it.
+                    # This layer guards the surface, not the memory. Recorded in ADR-0006's T7
+                    # amendment and in the README's limitations.
+                    st.markdown(as_markdown(ADVICE_REFUSAL))
+                    st.caption(DISCLAIMER)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": ADVICE_REFUSAL}
+                    )
+                    st.stop()
+
+                st.markdown(as_markdown(reply.text))
+                # The citation-marker check (T3's finding, #5): every `[n]` against every number
+                # this *conversation* has issued, not just this turn's — see `issued_ranks`.
+                # Logged on every turn that renders an answer rather than only on a violation,
+                # so T10 (#11) has a denominator for the rate. **Not every turn**: the layer-4
+                # branch above `st.stop()`s first, so a refused answer contributes to neither
+                # numerator nor denominator — which is the right denominator anyway, since the
+                # markers of an answer no reader saw are not a marker-resolution rate about
+                # anything.
+                report = markers(
+                    reply.text, ranks=issued_ranks() | {c.rank for c in reply.contexts}
+                )
+                log_markers(
+                    report, thread_id=st.session_state.thread_id, sources=len(reply.contexts)
+                )
+                render_marker_note(report)
+                render_tool_cards(reply.cards)
+                render_sources(reply.contexts, searched=reply.searched)
+                render_how_i_answered(reply.searches)
+                # `used_tools` direct here, unlike the replay path above: this object was built
+                # by *this* process, so it cannot predate the current shape.
+                render_context_reuse_note(used_tools=reply.used_tools)
                 st.caption(DISCLAIMER)
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": ADVICE_REFUSAL}
+                    {
+                        "role": "assistant",
+                        "content": reply.text,
+                        # The whole turn, because the panels need four facts about it and two of
+                        # them — the query variants each search ran, and the tool cards — belong
+                        # to the call rather than to any chunk. Display data, not memory: the
+                        # checkpointer remains the agent's memory of record (ADR-0008), and
+                        # nothing here is ever read back into a conversation.
+                        "turn": reply,
+                    }
                 )
-                st.stop()
-
-            st.markdown(as_markdown(reply.text))
-            # The citation-marker check (T3's finding, #5): every `[n]` against every number
-            # this *conversation* has issued, not just this turn's — see `issued_ranks`. Logged
-            # on every turn that renders an answer rather than only on a violation, so T10 (#11)
-            # has a denominator for the rate. **Not every turn**: the layer-4 branch above
-            # `st.stop()`s first, so a refused answer contributes to neither numerator nor
-            # denominator — which is the right denominator anyway, since the markers of an
-            # answer no reader saw are not a marker-resolution rate about anything.
-            report = markers(
-                reply.text, ranks=issued_ranks() | {c.rank for c in reply.contexts}
-            )
-            log_markers(
-                report, thread_id=st.session_state.thread_id, sources=len(reply.contexts)
-            )
-            render_marker_note(report)
-            render_tool_cards(reply.cards)
-            render_sources(reply.contexts, searched=reply.searched)
-            render_how_i_answered(reply.searches)
-            # `used_tools` direct here, unlike the replay path above: this object was built by
-            # *this* process, so it cannot predate the current shape.
-            render_context_reuse_note(used_tools=reply.used_tools)
-            st.caption(DISCLAIMER)
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": reply.text,
-                    # The whole turn, because the panels need four facts about it and two of
-                    # them — the query variants each search ran, and the tool cards — belong to
-                    # the call rather than to any chunk. Display data, not memory: the
-                    # checkpointer remains the agent's memory of record (ADR-0008), and nothing
-                    # here is ever read back into a conversation.
-                    "turn": reply,
-                }
-            )

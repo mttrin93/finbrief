@@ -101,6 +101,15 @@ def classify(
     of a word, which is the one this module cannot distinguish from a jailbroken classifier and
     therefore must not read charitably. Nothing about the reply is logged except whether it
     parsed: the reply is one token and the *question* is user content.
+
+    **This call's token spend is deliberately unmeasured** (T8, #10; ADR-0011). #10's AC-1 asks
+    for token counts, `observability/tokens.py` meters the other three model call sites, and
+    this is the fourth — so the omission is a decision and is recorded *here*, in the file a
+    reader opens to ask why. The return type is a bare `Verdict`: metering means either widening
+    it, and with it every caller and the `model=` seam the suite drives, or emitting a second
+    per-turn event duplicating `input_gate` — for the cheapest call in the system, one word out.
+    An unscored criterion reads as a passed one, so: the gate's token spend is not captured, by
+    choice, and `finbrief.observability.tokens` is where the other three are.
     """
     settings = settings or get_settings()
     chat = model if model is not None else classifier_model(settings)

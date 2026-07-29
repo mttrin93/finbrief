@@ -44,6 +44,7 @@ from finbrief.agent.citations import citation_register
 from finbrief.config import TICKER_MAX_CHARS, Settings, get_settings
 from finbrief.llm import build_chat_model
 from finbrief.observability.logging_setup import log_event
+from finbrief.observability.tokens import usage_total
 from finbrief.prompts import AGENT_SYSTEM_PROMPT
 from finbrief.retrieval.query_translation import added_variants
 from finbrief.retrieval.retrieve import Context, Retrieval
@@ -413,6 +414,16 @@ def answer(
         question_chars=len(question),
         answer_chars=len(turn.text),
         latency_ms=round((time.perf_counter() - started) * 1000),
+        # The turn's spend (#10's AC-1), summed across the loop's *own* calls: a tool-using
+        # turn is several paid completions and no single reply is its cost. Scoped to
+        # `_this_turn` for the same reason the cards and searches are — the checkpointer
+        # replays every earlier turn, and totalling those again would bill this turn for the
+        # whole conversation.
+        #
+        # The planner's call is deliberately not in here: it is logged on its own
+        # `query_translation` line, because ADR-0005 judges translation on the cost *it* adds.
+        # A reader wanting the full per-turn spend joins the two lines on `turn_id`.
+        **usage_total(message for message in this_turn if isinstance(message, AIMessage)),
     )
     return turn
 
