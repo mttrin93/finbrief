@@ -50,6 +50,18 @@ single log line.** What the return value does *not* carry is exactly three thing
   adds) and the agent loop (`agent_turn`, summed over this turn's calls only). Absent, never
   zero: a provider that reports no `usage` block did not perform a free call.
 
+**The other consumer the story names, and why it needs nothing here.** User story 31 asks for
+these logs "so that evaluation **and the security analysis** read from real data", and the scope
+observation above narrows that to T10 — so the narrowing is stated rather than left as a silent
+substitution. `security/report.py` renders its artifact from in-process `Screening` and
+`GateResult` objects and already owns the median over them; every figure it publishes is a
+measurement of the run that is producing the artifact, so there is no *past* run for it to
+re-examine and no cross-process join for it to make. It therefore reads no log line, by the same
+"where they overlap the return value is authoritative" rule below. What the sink adds for the
+security half is not an input but a record: a live run's gate-trigger lines, `layer`, `rule` and
+the bounded normalised text, kept after the process that screened them has gone. That is the
+half `--gate-only` cannot produce and the half an artifact does not retain.
+
 **What this ADR declines**, so a later reader does not mistake absence for oversight:
 
 - **The gate classifier's tokens.** `classify()` returns a bare `Verdict`, so metering it means

@@ -855,7 +855,13 @@ def test_both_searches_of_one_step_carry_the_same_turn_id(tmp_path, filings_stor
     The spy is not decoration. A `ContextVar` is trivially visible to a same-thread callee, so
     if LangGraph ever ran a step's tools inline this test would keep passing while proving
     nothing about propagation — the vacuous-assertion shape CLAUDE.md names. Measured here:
-    both calls land on threads that are **not** this one.
+    both calls land on threads that are **not** this one, and on **two different** ones.
+
+    The distinctness is asserted rather than merely observed, and it used not to be: the check
+    was `len(threads) == 2`, which counts *calls*. Two searches serialised onto one worker
+    thread would satisfy it — `[X, X]` is two entries — so the premise this docstring states
+    was one the assertion did not hold down (issue #10 review). Prefer an equality over a
+    bound, and assert the premise a test rests on.
     """
     threads: list[int] = []
     inner = search_filings_module.retrieve
@@ -880,7 +886,11 @@ def test_both_searches_of_one_step_carry_the_same_turn_id(tmp_path, filings_stor
         answer("Compare Tesla and Ford on supply chain.", thread_id="t-1", agent=agent)
     logger.handlers.clear()
 
-    assert len(threads) == 2 and threading.get_ident() not in threads, (
+    assert len(threads) == 2, f"two searches in one step, two tool calls — got {threads}"
+    assert len(set(threads)) == 2, (
+        f"the premise: two *distinct* threads, so the fan-out really was concurrent — {threads}"
+    )
+    assert threading.get_ident() not in threads, (
         "the premise: the tool node ran both searches off this thread, so the context "
         "really did have to cross a thread boundary"
     )

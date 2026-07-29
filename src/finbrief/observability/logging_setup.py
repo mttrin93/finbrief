@@ -186,11 +186,6 @@ def turn(turn_id: str) -> Iterator[str]:
         _TURN_ID.reset(token)
 
 
-def current_turn() -> str | None:
-    """The turn in scope, or `None`. For a caller that has to *pass* the id somewhere."""
-    return _TURN_ID.get()
-
-
 def log_event(
     logger: logging.Logger,
     event: str,

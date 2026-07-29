@@ -97,7 +97,6 @@ class EventLog:
     #: samples to it would be worse than skipping it — but skipping in silence would let a
     #: half-unreadable file present as a complete one.
     malformed: int
-    path: Path
 
     def of(self, *names: str) -> tuple[Event, ...]:
         """Every event whose name is one of `names`, in the order it was written."""
@@ -107,9 +106,17 @@ class EventLog:
     def samples(self, name: str, field: str) -> Samples:
         """`field` across every `name` line — the values present, and how many were not.
 
-        The unit T10 measures a budget from: `samples("retrieval", "latency_ms")` for
-        ADR-0005's translation budget, `samples("input_gate", "latency_ms")` for ADR-0006's,
-        `samples("agent_query", "verbatim")` for the divergence rate.
+        The unit T10 measures a budget from: `samples("input_gate", "latency_ms")` for
+        ADR-0006's ≤1s budget, `samples("agent_query", "verbatim")` for the divergence rate.
+
+        **ADR-0005's budget takes two calls, not one**, and naming only the first here was
+        misleading (issue #10 review). Its clause is "≤1.5s p50 *added by* translation", and
+        `retrieval.latency_ms` is timed from before the translate branch — it is the whole
+        retrieval, so on its own it answers a different question. The split ADR-0011 calls the
+        interesting half is `samples("query_translation", "latency_ms")`, the planner's chat
+        round alone; `samples("retrieval", "latency_ms")` compared across the `translation`
+        arms gives the total the planner's round is part of. A harness stopwatch can produce
+        the second and never the first, which is why the log carries both.
         """
         selected = self.of(name)
         present = tuple(event.fields[field] for event in selected if field in event.fields)
@@ -150,7 +157,7 @@ def read_events(path: Path | str) -> EventLog:
                 malformed += 1
             else:
                 events.append(parsed)
-    return EventLog(events=tuple(events), malformed=malformed, path=path)
+    return EventLog(events=tuple(events), malformed=malformed)
 
 
 def _event(line: str) -> Event | None:
