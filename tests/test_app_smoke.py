@@ -8,6 +8,7 @@ behaviour (ADR-0008).
 """
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from finbrief.config import MAX_QUESTION_CHARS, PEERS
 from finbrief.finance.news import Headline
 from finbrief.finance.ratios import compare
 from finbrief.ingestion.model import Section
+from finbrief.observability.events import read_events
+from finbrief.observability.logging_setup import log_event
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -526,6 +529,100 @@ def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsy
     (failure,) = [line for line in lines if line.get("event") == "chat_turn_failed"]
     assert failure["level"] == "ERROR"
     assert "upstream refused" in failure["error"], "the traceback travels, in one JSON object"
+
+
+def test_a_real_turn_tags_every_line_it_emits_with_one_turn_id(
+    app, monkeypatch, capsys, tmp_path
+):
+    """The `turn_id` join, asserted where it actually runs (issue #10 review).
+
+    `app/Home.py` is the **only** production caller of `logging_setup.turn`, and nothing
+    exercised it: neutralising the `with log_turn(...)` block left all 1028 tests passing.
+    Everything else about the identifier was covered — `test_agent.py` proves a `ContextVar`
+    crosses LangGraph's tool executor, `test_event_log.py` round-trips it through the envelope —
+    but each of those sets the turn *itself*, so together they proved propagation and never
+    wiring. A correlation feature untested at its one real call site is the
+    check-that-cannot-fail shape this ticket is otherwise built around.
+
+    Two kinds of line are asserted together on purpose. `input_gate` is emitted by the real
+    `screen()` inside the block, so it needs no help. `retrieval` and `rag_answer` come from the
+    stubbed engine calling the **real** `log_event` — what is faked is the engine, as everywhere
+    in this file, not the emitter and not the context. That is what proves a callee several
+    frames down sees the scope the page opened.
+    """
+    engine_logger = logging.getLogger("finbrief.rag")
+
+    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+        # Exactly the two events T10 joins on a turn: provenance, and the answer's spend.
+        log_event(engine_logger, "retrieval", hits=2, latency_ms=640)
+        log_event(engine_logger, "rag_answer", contexts=2, latency_ms=910)
+        return a_turn()
+
+    monkeypatch.setattr(agent, "answer", answer_and_emit)
+    app.run()
+    capsys.readouterr()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    # Through the real reader as well as the real emitter, because `by_turn()` is the surface
+    # T10 uses and CLAUDE.md pairs the two halves deliberately.
+    sink = tmp_path / "events.jsonl"
+    sink.write_text(
+        "".join(
+            f"{line}\n" for line in capsys.readouterr().err.splitlines() if line.startswith("{")
+        ),
+        encoding="utf-8",
+    )
+    log = read_events(sink)
+
+    emitted = {event.event for event in log.events}
+    assert {"input_gate", "retrieval", "rag_answer"} <= emitted, (
+        f"the turn ran and logged; got {sorted(emitted)}"
+    )
+    # One id, and an *equality* over the whole set rather than "they match where present": a
+    # line that carried no turn id at all would satisfy any looser check.
+    tagged = {event.event: event.turn_id for event in log.events}
+    ids = set(tagged.values())
+    assert len(ids) == 1, f"one turn, one identifier — got {tagged}"
+    (turn_id,) = ids
+    assert turn_id is not None, "an untagged line is provenance nothing can attribute"
+    assert turn_id.startswith(f"{app.session_state.thread_id}:"), (
+        "the id names the thread it belongs to, so a log line leads back to a conversation"
+    )
+    # And the whole turn is one group under the join surface, not several.
+    assert set(log.by_turn()) == {turn_id}
+
+
+def test_a_second_question_gets_its_own_turn_id(app, monkeypatch, capsys, tmp_path):
+    # The other half of the join: per *turn*, not per session. One id across a conversation
+    # would make `by_turn()` a synonym for `thread_id` and lose the distinction the whole
+    # identifier exists for — two searches in one step belong together, two turns do not.
+    engine_logger = logging.getLogger("finbrief.rag")
+
+    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+        log_event(engine_logger, "retrieval", hits=2)
+        return a_turn()
+
+    monkeypatch.setattr(agent, "answer", answer_and_emit)
+    app.run()
+    capsys.readouterr()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+    app.chat_input[0].set_value("And its debt?").run()
+
+    sink = tmp_path / "events.jsonl"
+    sink.write_text(
+        "".join(
+            f"{line}\n" for line in capsys.readouterr().err.splitlines() if line.startswith("{")
+        ),
+        encoding="utf-8",
+    )
+    log = read_events(sink)
+
+    retrievals = [event.turn_id for event in log.of("retrieval")]
+    assert len(retrievals) == 2, f"two turns, two retrievals — got {retrievals}"
+    assert len(set(retrievals)) == 2, f"each turn gets its own identifier — got {retrievals}"
+    assert all(t is not None for t in retrievals)
 
 
 def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
