@@ -1971,6 +1971,211 @@ def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp
 
 
 # --------------------------------------------------------------------------------------
+# The panel does not disappear mid-turn (#13, manual testing)
+# --------------------------------------------------------------------------------------
+#
+# **The bug and the reason the tests below are shaped the way they are.** The slot the meter
+# renders into is created in the sidebar and was filled only at the end of the script, after the
+# turn. `st.empty()` does not reserve space — it enqueues an `Empty` delta that *clears* the
+# node the previous run drew there — so the panel blinked out for the whole of the wait it
+# exists to describe. The three panels beside it never moved: they are rendered inline.
+#
+# `AppTest` cannot observe a mid-run screen: it runs the script to completion and a slot holds
+# only its last fill. So the fix is pinned at two seams instead of at the moment.
+#   * **Order** — the meter reads the log before the turn and again after it. That is the fix
+#     itself, and `test_the_meter_is_read_before_the_turn_as_well_as_after` asserts it as an
+#     equality on the call sequence.
+#   * **Contents** — every state renders the panel, including the one where a turn has started
+#     and written no total. Seeded through the real emitter, asserted through the real panel.
+# What is *not* covered, said plainly rather than implied: the `answering` caption's own
+# wording. It is rendered only by the eager fill, which the settled fill replaces inside the
+# same run, so no assertion on the element tree can reach it.
+# `test_the_sidebar_can_see_a_submitted_question` pins the framework behaviour it depends on,
+# which is the half that could break under us.
+
+
+def test_the_meter_is_read_before_the_turn_as_well_as_after(app, monkeypatch, tmp_path):
+    """The ordering that keeps the panel on screen while a turn is being answered.
+
+    Recorded at the two seams rather than inferred from the source: `conversation_spend` is what
+    the panel calls to read the log, so a fill is a call, and `agent.answer` is the turn.
+    Against the old code this list is `["turn", "meter"]` — one fill, after the wait.
+
+    `conversation_spend` is patched on the module rather than on `app/Home.py`, because
+    `AppTest` re-executes the page on every run: the `from ... import conversation_spend`
+    therefore happens *inside* the run and picks the patch up, which a patch on an
+    already-imported module attribute would not.
+    """
+    from finbrief.observability import spend as spend_module
+
+    real = spend_module.conversation_spend
+    order = []
+
+    def recording_spend(log, *, thread_id):
+        order.append("meter")
+        return real(log, thread_id=thread_id)
+
+    def recording_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+        order.append("turn")
+        return a_turn()
+
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    monkeypatch.setattr(spend_module, "conversation_spend", recording_spend)
+    monkeypatch.setattr(agent, "answer", recording_answer)
+
+    app.run()
+    # Twice on a run with no turn in it as well, and deliberately: the eager fill is
+    # unconditional, so there is no rerun — a panel opening, a button click — on which the
+    # sidebar briefly has a hole where the panel was. The old code filled once, at the end.
+    assert order == ["meter", "meter"], f"filled on the way in and on the way out; got {order}"
+
+    order.clear()
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    # **An equality, not `order[0] == "meter"`.** A bound is satisfied by three fills and by a
+    # missing one at the end, and the second fill is what makes the figures include this turn —
+    # so both halves of the fix are in this one line (CLAUDE.md — prefer an equality).
+    assert order == ["meter", "turn", "meter"], (
+        f"the panel is filled before the wait and again once the turn is logged; got {order}"
+    )
+
+
+def in_flight(app, monkeypatch):
+    """Stub the agent so its turn leaves the log in the shape a turn *being answered* leaves it.
+
+    Answering lines and no `agent_turn`: the planner's round and one search, through the real
+    emitters inside the app's own `log_turn` scope, so the turn ids carry this conversation's
+    prefix exactly as they do in production. This is a turn that started and never wrote a total
+    — which is also, permanently, what a turn that raised inside `answer_turn` leaves behind.
+    """
+    planner = logging.getLogger("finbrief.retrieval.query_translation")
+    retriever = logging.getLogger("finbrief.retrieval.retrieve")
+
+    def answer_without_finishing(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+        log_event(
+            planner, "query_translation", max_sub_queries=3, sub_queries=2, input_tokens=25
+        )
+        log_event(retriever, "retrieval", strategy="hybrid", k=6, hits=6)
+        return a_turn()
+
+    monkeypatch.setattr(agent, "answer", answer_without_finishing)
+
+
+def test_the_panel_says_a_turn_has_no_total_rather_than_showing_one_that_omits_it(
+    app, monkeypatch, tmp_path
+):
+    # The state the bug report called "mid-turn", at the seam where it can be asserted. The
+    # planner's own round reported 25 input tokens, so this is *not* the unmeasured case — the
+    # panel shows a real figure that is missing the answering loop's calls, and the only thing
+    # standing between that and a total presented as complete is this sentence.
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    in_flight(app, monkeypatch)
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    panel = spend_panel(app)
+    assert panel is not None, "the panel renders in every state — that is the whole fix"
+    text = panel_text(panel)
+    assert "no total" in text, f"the turn with no total is named; got {text!r}"
+    assert "1 turn(s)" in text, "and counted"
+    assert "25" in text, "beside the figure it is incomplete about, not instead of it"
+
+
+def test_an_empty_log_claims_no_turn_in_flight(app, monkeypatch, tmp_path):
+    # The neighbour below the in-flight state. Nothing has started, so the panel may not say
+    # anything has: "no usage reported yet" and "a turn is unaccounted for" are two different
+    # claims and a fresh conversation is only the first of them.
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    app.run()
+
+    text = panel_text(spend_panel(app))
+    assert "No usage reported yet" in text
+    assert "no total" not in text, (
+        f"nothing has started, so nothing is unfinished; got {text!r}"
+    )
+
+
+def test_a_completed_turn_shows_its_totals_and_claims_nothing_is_outstanding(
+    app, monkeypatch, tmp_path
+):
+    # The neighbour above. `agent_turn` is written, so the figures are the whole story and the
+    # in-progress caption must be gone — a caption left up on a settled panel is the same defect
+    # in the other direction, and this is the assertion the first version of the fix would fail.
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    metered(
+        app,
+        monkeypatch,
+        input_tokens=1200,
+        output_tokens=340,
+        input_tokens_calls=1,
+        output_tokens_calls=1,
+        calls=1,
+    )
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    text = panel_text(spend_panel(app))
+    assert "1,200" in text and "340" in text
+    assert "no total" not in text, f"the turn finished and reported; got {text!r}"
+    assert "Measuring this turn" not in text, "and the wait is over"
+
+
+def test_the_sidebar_can_see_a_submitted_question(monkeypatch):
+    """The framework behaviour the eager fill's `answering` argument rests on — measured.
+
+    `app/Home.py` decides what its two placeholders say ~700 lines before `st.chat_input` is
+    declared, which is only possible because Streamlit applies the incoming widget states to the
+    session *before* the script runs. That is a real property of the runtime and not of
+    `AppTest` — the same `ScriptRunner` drives both — but it is somebody else's, so it is pinned
+    here rather than assumed: if an upgrade takes it away, the placeholders go dead silently and
+    the panel starts blinking again with every test still green.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    def page():
+        import streamlit as st
+
+        st.sidebar.caption(f"seen={st.session_state.get('question', '<absent>')}")
+        st.chat_input("Ask", key="question")
+
+    at = AppTest.from_function(page, default_timeout=10).run()
+    assert at.sidebar.caption[0].value == "seen=<absent>", "nothing submitted, nothing to see"
+
+    at.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assert at.sidebar.caption[0].value == "seen=What are Tesla's risk factors?", (
+        "the sidebar sees a submitted question before the widget that carries it is declared"
+    )
+
+
+def test_the_export_placeholder_does_not_duplicate_the_download_buttons(
+    app, monkeypatch, tmp_path
+):
+    """The export slot gets the same treatment, and this is the crash it must not become.
+
+    Its placeholder is a caption on purpose: two fills of one slot in a single run are two
+    `download_button`s with identical parameters, and Streamlit raises
+    `StreamlitDuplicateElementId` for that rather than replacing the first. Asserted on the
+    second question, because the placeholder renders only when there is both something to export
+    and a turn in flight — which is exactly the run a widget in the placeholder would break.
+    """
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    stub_answer(monkeypatch)
+    app.run()
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+    app.chat_input[0].set_value("And its margins?").run()
+
+    # `sidebar.download_button`, not `sidebar.button`: a download is its own element type and
+    # the plain accessor returns only "Start over" — the shape of the vacuous lookup CLAUDE.md
+    # warns about, which is how this assertion was first written.
+    assert not app.exception, [str(e.value) for e in app.exception]
+    labels = [button.label for button in app.sidebar.download_button]
+    assert labels == ["Download JSON", "Download CSV"], f"one of each, not two; got {labels}"
+
+
+# --------------------------------------------------------------------------------------
 # The per-session throttle (T12 item 6)
 # --------------------------------------------------------------------------------------
 

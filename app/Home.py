@@ -181,6 +181,48 @@ if "sink_offset" not in st.session_state:
 if "questions_asked" not in st.session_state:
     st.session_state.questions_asked = 0
 
+# **Moved up here from just above the transcript loop**, where it sat until the sidebar
+# needed to know whether this conversation has anything to export. It is an initialiser like
+# the three above and belongs with them; leaving it below meant the sidebar read a key that
+# does not exist yet on the first run — a `KeyError` on the page, not an empty transcript.
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+#: The chat input's widget key, and the seeded question's `session_state` key — **named here
+#: because the sidebar reads them ~700 lines before either is written**. Streamlit applies
+#: the incoming widget states to the session *before* the script runs, so on the rerun that
+#: carries a submitted question `st.session_state[QUESTION_KEY]` already holds it while
+#: `st.chat_input` is still hundreds of lines away; the seeded half is a plain write from the
+#: example buttons.
+#: Together they are how `answering_now()` can tell, at the top of the page, that this run has a
+#: multi-second turn ahead of it — which is what the two deferred slots need in order to say so
+#: rather than go blank. Measured, not assumed: `test_the_sidebar_can_tell_a_turn_is_coming`.
+#:
+#: Constants rather than three literals: the key is now read in the sidebar and written at the
+#: widget, and a key spelled twice is a lookup that silently returns `None` the day the copies
+#: disagree — which here would fail *open*, back into the blank panel this exists to fix.
+QUESTION_KEY = "question"
+PENDING_QUESTION_KEY = "pending_question"
+
+
+def answering_now() -> bool:
+    """Whether this run has a question in it, asked before the input that carries one exists.
+
+    Both halves of `prompt` below, at the one moment the sidebar can still act on the answer. A
+    typed question arrives as widget state (see `QUESTION_KEY`); a seeded one is a
+    `session_state` write the example buttons made on the previous rerun and this run has not
+    popped yet.
+
+    **A hint about this run, never the source of truth about the turn.** `prompt` below stays
+    the thing that decides whether a turn is answered, and it is deliberately not read from
+    here: the pop is what makes a seeded question fire once, and a second reader of that key
+    that consumed it would ask the question twice. This only decides what two placeholders say
+    while waiting.
+    """
+    return bool(
+        st.session_state.get(QUESTION_KEY) or st.session_state.get(PENDING_QUESTION_KEY)
+    )
+
 
 def render_export_buttons(messages: list[dict[str, object]]) -> None:
     """Take this conversation away, as JSON or as CSV (T12 item 4, user story 35).
@@ -233,7 +275,30 @@ def render_export_buttons(messages: list[dict[str, object]]) -> None:
             log_export(exported, fmt=suffix, size=len(data))
 
 
-def render_spend_meter() -> None:
+def fill_spend_meter(slot, *, answering: bool) -> None:
+    """Render the whole panel into `slot`, replacing whatever it held.
+
+    **Called twice per run, and that is the fix for the panel vanishing mid-turn.** The slot is
+    created in the sidebar and was filled only at the end of the script, after the turn — so
+    while a turn was being answered the slot held Streamlit's `Empty` delta, which does not
+    "wait", it *clears* the node the previous run had drawn there. The panel therefore blinked
+    out for the whole of the one wait it exists to describe, and came back when the script
+    finished (manual testing of #13). The neighbouring panels never moved because they are
+    rendered inline, where the sidebar runs.
+
+    The eager fill is what keeps something on screen for that window; the fill at the end is
+    still the authority, because this run's `agent_turn` line is written by the turn between
+    them. Nothing else can do it: Streamlit repaints on script progress, and a script blocked
+    inside `answer_turn` has no progress to report.
+
+    The label lives here rather than at the two call sites — the same panel written twice is two
+    panels the day one of them is edited.
+    """
+    with slot.container(), st.expander(":material/toll: Token spend"):
+        render_spend_meter(answering=answering)
+
+
+def render_spend_meter(*, answering: bool = False) -> None:
     """This conversation's token spend, and its cost when one is configured (T12 item 5).
 
     **Reads the log T8 already writes rather than adding an instrument**, which is what makes
@@ -252,6 +317,13 @@ def render_spend_meter() -> None:
     Nothing is emitted here. The instrument is at the layer that produces the behaviour and this
     is the layer that displays it — ADR-0011's amendment is explicit that an event wired to a
     page is an event measuring clicks.
+
+    **Every state renders the panel; only the contents change** (manual testing of #13). Sink
+    off, nothing measured yet, a turn with no total, totals, totals that are a floor — five
+    things to say and five sentences, because the alternative this replaced was the panel
+    itself disappearing, and a reader cannot tell an absent measurement from a broken feature.
+    It is the rule the warm-thread caption and `distance_label` already follow: state the
+    absence.
     """
     path = sink_path()
     if path is None:
@@ -264,6 +336,26 @@ def render_spend_meter() -> None:
         read_events(path, start_offset=st.session_state.sink_offset),
         thread_id=st.session_state.thread_id,
     )
+    if answering:
+        # **The state the whole two-fill arrangement exists to render.** Said before the figures
+        # because it is what the figures mean right now: this run has a question in it and the
+        # turn answering it has not written its total yet, so everything below covers the turns
+        # *before* it. Only the eager fill ever passes this — by the time the fill at the end of
+        # the script runs, the turn is in the log and its numbers are in the figures.
+        st.caption(
+            "Measuring this turn — the figures below cover the turns before it, and take it in "
+            "when it finishes."
+        )
+    if spend.unfinished:
+        # **Read out of the log rather than inferred from this run**, which is why it survives
+        # into the settled fill and `answering` does not: a turn that raised inside
+        # `answer_turn`'s `except` never wrote its `agent_turn` line, so its answering calls are
+        # missing from the totals below for good. Both readings are given because the log cannot
+        # tell them apart — and neither of them is a spend of zero.
+        st.caption(
+            f"{spend.unfinished} turn(s) here have no total: still being answered, or ended "
+            "without reporting one. The answering calls behind them are not in these figures."
+        )
     if not spend.measured:
         # **Not zeros.** Either nothing has been asked yet, or the provider reported no usage
         # block at all — and neither is "this conversation cost nothing". OpenRouter fronts many
@@ -400,11 +492,39 @@ with st.sidebar:
     # that bug. Deferring is the whole fix; `render_export_buttons` is called once, below, from
     # a transcript that includes this turn.
     export_slot = st.empty()
+    # **Held open while a turn runs, rather than left blank.** An `st.empty()` does not reserve
+    # space, it clears the node the previous run drew there — so on the rerun that answers a
+    # question the buttons vanished for the length of the turn and returned with the answer,
+    # the same wart the spend panel had. A caption in their place is not the buttons and does
+    # not pretend to be: it says why they are gone, which is exactly the thing a disappearance
+    # cannot say. Only while a turn is in flight — on any other rerun the fill below is
+    # microseconds away and a flash of this sentence would be noise.
+    #
+    # **A caption and not a disabled button**, for a mechanical reason worth recording: two
+    # fills of one slot in a single run are two `download_button`s with identical parameters,
+    # and Streamlit raises `StreamlitDuplicateElementId` for that — measured, not assumed.
+    # Keeping the placeholder widget-free is what keeps this fix from being a crash.
+    if st.session_state.messages and answering_now():
+        with export_slot.container():
+            st.caption(
+                "Export returns when this turn finishes — the file has to contain the answer "
+                "you are about to read."
+            )
 
     # A slot for the same reason the export has one: the meter reads the log, and this run's
     # `agent_turn` line is written by the turn below. Built here it would report the spend as of
     # the *previous* question, which on a cost panel is the one number a reader would act on.
+    #
+    # **Filled here as well as at the end, unlike the export's.** See `fill_spend_meter`: the
+    # deferral above is what made the panel disappear mid-turn, and a panel whose subject is
+    # *this conversation's cost* is one a reader looks at while the cost is being incurred. It
+    # is filled unconditionally rather than only while answering, so there is no rerun on which
+    # the sidebar has a hole where a panel was. That reads the log twice on such a rerun, which
+    # is affordable for the reason `observability/events.py` reads it eagerly at all — the
+    # volume is bounded by a human typing questions — and is not affordable in the one place it
+    # would matter, so `sink_offset` bounds it.
     spend_slot = st.empty()
+    fill_spend_meter(spend_slot, answering=answering_now())
 
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
@@ -1080,11 +1200,11 @@ def render_example_questions() -> None:
         columns = st.columns(_EXAMPLE_COLUMNS)
         for column, question in zip(columns, row, strict=False):
             if column.button(question, width="stretch"):
-                st.session_state.pending_question = question
+                # Through the constant, not `.pending_question`: the sidebar reads this key
+                # now (`answering_now`), and a key written under one spelling and read under
+                # another is a placeholder that stays blank on exactly the run it is for.
+                st.session_state[PENDING_QUESTION_KEY] = question
 
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 # **An `st.empty()` slot rather than a plain render, and the reason is a one-frame wart.** The
 # buttons have to be *drawn* above the transcript, because a click is read from the widget on
@@ -1139,7 +1259,12 @@ for message in st.session_state.messages:
                 render_sources(contexts, searched=message.get("searched", True))
             st.caption(DISCLAIMER)
 
-typed = st.chat_input("Ask about a company in the Universe", submit_mode="disable")
+# `key=QUESTION_KEY` so the sidebar can see a submitted question before this line runs — see the
+# constant. The value is still taken from the return here and not from `session_state`: this is
+# where the question is consumed, and one consumer is the rule the seeded half is built on too.
+typed = st.chat_input(
+    "Ask about a company in the Universe", key=QUESTION_KEY, submit_mode="disable"
+)
 
 # **Popped, not read** (T12 item 3). A seeded question left in `session_state` would be re-asked
 # on every rerun the page does for any other reason — a widget change, a panel opening — so one
@@ -1150,7 +1275,7 @@ typed = st.chat_input("Ask about a company in the Universe", submit_mode="disabl
 # A typed question wins if both arrive in one run, which cannot currently happen — a click and
 # a submit are separate reruns — but the tie has to break somewhere, and the reader's own words
 # are the half that is unambiguous about what they meant.
-seeded = st.session_state.pop("pending_question", None)
+seeded = st.session_state.pop(PENDING_QUESTION_KEY, None)
 
 prompt = typed or seeded
 
@@ -1391,5 +1516,7 @@ if st.session_state.messages:
 
 # Also last, and for the same reason: this run's `agent_turn` line is written inside the turn
 # above, so a meter built in the sidebar would report the spend as of the *previous* question.
-with spend_slot.container(), st.expander(":material/toll: Token spend"):
-    render_spend_meter()
+# **The second of two fills, not the only one** — the sidebar filled this slot on the way past
+# so the panel is on screen for the wait, and this replaces it with the settled figures.
+# `answering` is `False` here whatever this run did: the turn is over, and its total is logged.
+fill_spend_meter(spend_slot, answering=False)

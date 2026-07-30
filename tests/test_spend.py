@@ -296,4 +296,91 @@ def test_an_empty_log_is_an_unmeasured_conversation_and_not_a_free_one(sink, emi
     assert spend.turns == 0
     assert spend.calls == 0
     assert not spend.measured
+    assert spend.unfinished == 0, "nothing has started, so nothing is unfinished"
     assert spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60) is None
+
+
+# --------------------------------------------------------------------------------------
+# A turn that started answering and wrote no total (#13, manual testing)
+# --------------------------------------------------------------------------------------
+
+
+def a_retrieval(emitter, *, thread_id=THREAD, suffix="aaaa"):
+    """One `retrieval` line, as `retrieval/retrieve.py` writes one per search.
+
+    Only the event *name* and the turn id are load-bearing here — this is the sign that the
+    answering path started, not a measurement of it — but the fields are the shape the emitter
+    really writes, so a rename shows up as a failure here rather than as a silent `0`.
+    """
+    with turn(f"{thread_id}:{suffix}"):
+        log_event(emitter, "retrieval", strategy="hybrid", k=6, hits=6, latency_ms=210)
+
+
+def test_a_turn_that_started_answering_and_wrote_no_total_is_unfinished(sink, emitter):
+    """The shape a turn leaves the log in while it is still being answered.
+
+    `agent_turn` is written last, so between the first search and the answer the log holds
+    answering lines and no total. The same shape outlives a turn that raised inside
+    `app/Home.py`'s `except`, which is why the count is permanent rather than a live flag: those
+    calls were really made and are really missing from the figures.
+    """
+    a_planner_call(emitter, Reply(input_tokens=25, output_tokens=8))
+    a_retrieval(emitter)
+
+    spend = spend_from(sink)
+
+    assert spend.unfinished == 1
+    # The planner's own round *did* report, so this is not the unmeasured case — which is
+    # exactly why the count has to be said out loud: the panel shows a real total that is
+    # missing the answering loop's calls entirely, and nothing else on it would hint at that.
+    assert spend.measured and spend.input.total == 25
+    assert not spend.partial, "the lines that exist reported both fields; the absent one is not"
+
+
+def test_a_finished_turn_is_not_unfinished_however_many_searches_it_made(sink, emitter):
+    # Two answering lines and one completion line, differenced over turn *ids* — counting lines
+    # would call a two-search turn two unfinished ones, and the honest answer is zero.
+    a_retrieval(emitter)
+    a_retrieval(emitter)
+    an_agent_turn(emitter, Reply(input_tokens=120, output_tokens=40))
+
+    spend = spend_from(sink)
+
+    assert spend.unfinished == 0
+    assert spend.turns == 1
+
+
+def test_two_turns_of_which_one_never_finished_are_counted_as_one(sink, emitter):
+    a_retrieval(emitter, suffix="one")
+    an_agent_turn(emitter, Reply(input_tokens=120, output_tokens=40), suffix="one")
+    a_retrieval(emitter, suffix="two")
+
+    spend = spend_from(sink)
+
+    assert spend.unfinished == 1, "the second turn has no total; the first has one"
+
+
+def test_a_question_the_gate_refused_is_a_finished_turn(sink, emitter):
+    """**Why `ANSWERING_EVENTS` is a narrow list and not "any line under a turn id".**
+
+    A refused question writes an `input_gate` line, no answering line and no `agent_turn` — and
+    it is a turn that *finished*: it never reached the agent and there is no total to wait for.
+    Counting it would put a permanent "still being answered" caption on the panel of anyone
+    whose question tripped the denylist once — an absence reported as the wrong absence.
+    """
+    with turn(f"{THREAD}:aaaa"):
+        log_event(emitter, "input_gate", verdict="blocked", layer=2, latency_ms=3)
+
+    spend = spend_from(sink)
+
+    assert spend.unfinished == 0
+    assert not spend.measured, "and the gate's classifier is not metered either (ADR-0011)"
+
+
+def test_another_conversations_unfinished_turn_is_not_this_ones(sink, emitter):
+    # The scoping that applies to every other figure here applies to this one: a second tab
+    # mid-turn, or an evaluation run, must not put an in-progress caption on this conversation.
+    a_retrieval(emitter, thread_id=OTHER_THREAD)
+
+    assert spend_from(sink).unfinished == 0
+    assert spend_from(sink, thread_id=OTHER_THREAD).unfinished == 1

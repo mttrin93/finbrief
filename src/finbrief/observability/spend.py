@@ -31,6 +31,12 @@ rather than for correctness.
 repeated here because this is the module that would break it: a provider can report
 `input_tokens` and not `output_tokens`, so each field carries its own denominator and a field
 nothing reported is `None` rather than `0`. A zero here is a claim that calls were free.
+
+**A turn with no total at all is a third kind of absence**, and it is counted rather than folded
+into the arithmetic. `agent_turn` is written *last*, so a turn still being answered — or one
+that ended without reporting — leaves answering lines behind with no total beside them;
+`unfinished` is how many, and a caller printing a figure owes that count. Folding it in would be
+the same narrowing in a new place: the answering calls of such a turn were really made.
 """
 
 from __future__ import annotations
@@ -57,6 +63,21 @@ TOKEN_FIELDS = ("input_tokens", "output_tokens")
 #: left to drift. It is duplicated rather than imported because `evaluation/` is the harness and
 #: the app must not depend on it.
 PLANNER_SILENT_CAP = 0
+
+#: The lines the answering path writes *while* a turn is being answered — one per search
+#: (`retrieval/retrieve.py`) and one per planner round (`retrieval/query_translation.py`). Their
+#: presence under a turn id is the log's only sign that the answering path **started**.
+#:
+#: `input_gate` is deliberately not among them, and the omission is the whole point of the list
+#: being narrow: a question the gate refuses writes a gate line, no answering line and no
+#: `agent_turn`, and it is a turn that *finished* — it never reached the agent. Counting it as
+#: unfinished would report a refusal as a measurement in progress.
+ANSWERING_EVENTS = ("retrieval", "query_translation")
+
+#: The line `agent/agent.py` writes **last**, once the turn has an answer. It is therefore the
+#: completion marker, and its absence beside an answering line is not "this turn was free": it
+#: is a turn with no total yet — one being answered now, or one that ended without reporting.
+COMPLETED_EVENT = "agent_turn"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +129,21 @@ class Spend:
     #: built against, and `partial` cannot carry it because `partial` is about *token* reporting
     #: and this is about the denominator itself (code review of #13).
     floored: int
+    #: How many of this conversation's turns started answering and never wrote a total —
+    #: `ANSWERING_EVENTS` under a turn id with no `COMPLETED_EVENT` beside it.
+    #:
+    #: **An absence with two causes and one honest sentence**, which is why it is a count here
+    #: and not a boolean called `in_progress`: a turn being answered at this moment and a turn
+    #: that raised halfway through leave the log in the same shape, and the reader is owed both
+    #: readings rather than the flattering one. What it is *not* is a spend of zero — the
+    #: answering loop's calls for such a turn were really made and are really missing from the
+    #: figures beside this, and a total that omits them without saying so is the silent
+    #: narrowing this module exists against.
+    #:
+    #: Separate from `partial` on the rule this file already states twice: `partial` is about
+    #: *reported versus counted* calls on lines that exist, and this is about a line that never
+    #: arrived. Two different claims get two different fields and two different sentences.
+    unfinished: int
     input: Tokens
     output: Tokens
 
@@ -173,11 +209,21 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
     conversation's: an evaluation run and a second browser tab both write to the same file.
     """
     prefix = f"{thread_id}:"
-    mine = [
-        event
-        for event in log.of(*TOKEN_EVENTS)
-        if event.turn_id is not None and event.turn_id.startswith(prefix)
-    ]
+
+    def ours(*names: str) -> list[Event]:
+        return [
+            event
+            for event in log.of(*names)
+            if event.turn_id is not None and event.turn_id.startswith(prefix)
+        ]
+
+    mine = ours(*TOKEN_EVENTS)
+    # Turn *ids*, differenced. A turn writes one answering line per search and one completion
+    # line, so counting lines would call a two-search turn two unfinished ones; and the
+    # difference is taken over sets so a turn whose answering line and completion line are both
+    # present cancels out however many of the first it wrote.
+    started = {event.turn_id for event in ours(*ANSWERING_EVENTS)}
+    completed = {event.turn_id for event in ours(COMPLETED_EVENT)}
     totals: dict[str, int | None] = dict.fromkeys(TOKEN_FIELDS)
     reported: dict[str, int] = dict.fromkeys(TOKEN_FIELDS, 0)
     calls = 0
@@ -201,6 +247,7 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         turns=len({event.turn_id for event in mine}),
         calls=calls,
         floored=floored,
+        unfinished=len(started - completed),
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
     )
