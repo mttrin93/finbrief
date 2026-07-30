@@ -21,7 +21,6 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from finbrief.config import (
-    CLUSTERS,
     HISTORY_PERIOD_LABEL,
     ITEM_7A_POINTER_FILERS,
     ITEM_7A_SECTION_FILERS,
@@ -106,53 +105,44 @@ LIVE_DATA_SCOPE = (
 #: What the headline sentence leaves out, for the UI's scope panel and the README — whose
 #: prose cannot import these, so `tests/test_grounding_scope.py` binds its copy to them.
 #: Each line is a limitation a reader could otherwise mistake for a grounded answer.
+#:
+#: **Five lines, one sentence each, and no ADR numbers** (#13, following T12 item 1, whose rule
+#: is that this disclosure stays and only its presentation may change). ADR-0007 makes this
+#: panel an obligation and says nothing about its length; what shipped read as an excerpt of the
+#: ADR — seven bullets, three of them multi-sentence, one citing `ADR-0009` at an analyst who
+#: has never seen it. Every claim below is one a reader could otherwise mistake a limitation
+#: for grounding, and the compression is wording only. Three things left, each because the same
+#: claim is made by a surface that cannot fall out of step with itself:
+#:
+#: - the ingest-report provenance moved to the README, where a reviewer checking the counts
+#:   is looking — an analyst mid-question is not;
+#: - the quote delay and cache TTL are `LIVE_DATA_SCOPE`'s, rendered as a caption under the
+#:   app's title, two panels above this one;
+#: - the peer-cluster basis and the *not reported* wording are on the ratio cards themselves
+#:   (`finance/ratios.py`'s `PeerComparison.basis`, `Unit.format`), beside the numbers they
+#:   qualify, which is a stronger place for them than a panel a reader must open.
 GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
     f"**In scope:** {_ITEMS}.",
     (
-        f"**Item 7A by reference:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer "
-        f"Item 7A by incorporating Item 7, so their market-risk disclosure is in the "
-        f"knowledge base labelled `Item 7` — not `Item 7A` ({_SECTIONS_IN_KB} of "
-        f"{_SECTION_SLOTS} Sections). All {len(UNIVERSE)} companies have market-risk "
-        f"grounding; {len(ITEM_7A_SECTION_FILERS)} have an `Item 7A` Section."
+        f"**Market risk:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer Item 7A by "
+        f"pointing at Item 7, so their market-risk text sits in the knowledge base labelled "
+        f"`Item 7` — all {len(UNIVERSE)} companies have market-risk grounding; "
+        f"{len(ITEM_7A_SECTION_FILERS)} have an `Item 7A` Section."
     ),
     (
-        "**Out of scope:** every other Item of the 10-K, 10-Qs, proxies, earnings calls, "
-        "and any company outside the Universe. Financial statements (Item 8) are not "
-        "ingested, and table and figure fidelity inside the ingested Sections is a stated "
-        "limitation — hard numbers come from the finance tools, not the filing text."
+        "**Out of scope:** every other Item, 10-Qs, proxies, earnings calls, the Item 8 "
+        "financial statements, and any company outside the Universe — and a table inside an "
+        "ingested Section may lose its layout, so hard numbers come from the finance tools "
+        "rather than the filing text."
     ),
     (
-        "**One filing per company:** the most recent 10-K only, so the fiscal year differs "
-        "by filer. Each citation states the year it came from."
+        "**One filing per company:** the latest 10-K only, so the fiscal year differs by "
+        "filer and each citation states its own."
     ),
     (
-        # These counts describe the KB ADR-0007 *defines*, derived from `config`, not a live
-        # count of the collection this app is pointed at — so a partial or stale index would
-        # leave the sentence above overstating coverage. Naming the evidence file is the
-        # honest fix at this scale: it is committed, machine-generated, and lists the chunks
-        # each company actually holds (issue #5 review).
-        "**Where these counts come from:** the ingest run's own evidence, "
-        "`docs/verification/ingest-report.md` — per-company chunk counts read back from the "
-        "collection. This panel describes the knowledge base as ADR-0007 defines it, not a "
-        "live count of the index behind this app."
-    ),
-    (
-        # The counts are derived for the same reason every other one here is, and the *limits*
-        # are stated beside them: a reader who takes "live" literally will read a 15-minute
-        # delayed quote as a tick, and a peer mean as a judgement rather than an arithmetic mean
-        # over a fixed cluster.
-        f"**Live market data:** last price, market cap, P/E, D/E and margins, and headlines, "
-        f"for the same {len(UNIVERSE)} companies — from free public sources (delayed quotes "
-        f"cached for {QUOTE_TTL_SECONDS // 60} minutes; news RSS), never from the filings. "
-        f"Ratios are compared against the mean of a company's own curated cluster within the "
-        f"Universe, {len(CLUSTERS)} clusters in all, and every comparison names its peer set "
-        f"and size (ADR-0009). A figure a source does not report is shown as *not reported*, "
-        f"never as zero."
-    ),
-    (
-        "**When live data is unavailable:** the last cached figure is shown with a banner "
-        "saying how old it is, and if there is nothing cached the answer says the figure could "
-        "not be fetched. No number here is ever a placeholder or a guess."
+        "**Live figures never come from the filings:** price, ratios and headlines are "
+        "fetched, and a fetch that fails shows the last cached figure with its age or says "
+        "the figure could not be fetched — never a placeholder, a guess or a zero."
     ),
 )
 

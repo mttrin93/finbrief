@@ -94,13 +94,85 @@ def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():
     # 7A by reference reads "no Item 7A" as "no market-risk grounding". If the set on screen
     # and the set in the evidence ever diverge, the panel is telling a reader to look under
     # the wrong Item.
+    #
+    # **The list is asserted as one derived string, and the membership as an equality over
+    # whole words** (#13). The old form tested `f"{ticker}," in panel` per ticker, which is
+    # satisfied by six tickers in any order, in any sentence, separated by anything —
+    # and would have passed on a panel that named five of them in the list and the sixth in a
+    # footnote. Whole words because `F` is a Universe ticker and a substring of everything.
     rows = gate_rows(report_text())
     found = {ticker for ticker, row in rows.items() if _POINTER_MARKER in row}
     panel = " ".join(GROUNDING_SCOPE_DETAILS)
 
-    named = {ticker for ticker in rows if f"{ticker}," in panel or f"{ticker} answer" in panel}
+    named = {t for t in rows if re.search(rf"(?<![A-Za-z0-9]){t}(?![A-Za-z0-9])", panel)}
     assert named == found, "the disclosure names exactly the filers the run found"
+    assert f"{', '.join(sorted(found))} answer Item 7A by pointing at Item 7" in panel
+    assert f"all {len(UNIVERSE)} companies have market-risk grounding" in panel
     assert f"{len(UNIVERSE) - len(found)} have an `Item 7A` Section." in panel
+
+
+#: What ADR-0007 obliges the panel to disclose, one entry per claim, as
+#: `(what it is, a phrase that can only appear if the claim is being made)`.
+#:
+#: A list rather than one big assertion because the compression this guards is a *wording*
+#: change (#13): the panel went from seven bullets to five, and the way that stops
+#: being an edit and becomes a deletion is a claim quietly going with a bullet. Each phrase is
+#: chosen to be unsatisfiable by prose that does not make the claim — "10-Q" cannot appear in a
+#: panel that has stopped excluding quarterly filings.
+SCOPE_PANEL_OBLIGATIONS = (
+    ("the Item 8 financials are excluded", "Item 8"),
+    ("10-Qs are excluded", "10-Q"),
+    ("other Items are excluded", "every other Item"),
+    ("table fidelity is a stated limitation", "lose its layout"),
+    ("one filing per company, so fiscal years differ", "fiscal year differs by filer"),
+    ("live figures are not from the filings", "never come from the filings"),
+    ("a stale figure is shown with its age", "last cached figure with its age"),
+    ("an unfetchable figure says so", "could not be fetched"),
+    ("and neither is ever a placeholder", "never a placeholder"),
+)
+
+
+@pytest.mark.parametrize(("claim", "phrase"), SCOPE_PANEL_OBLIGATIONS)
+def test_the_compressed_scope_panel_still_makes_every_claim_it_owes(claim, phrase):
+    """ADR-0007's disclosure survived being shortened. The Items and filers are asserted by
+    the two tests above; these are the claims that have no derived number to bind them."""
+    panel = " ".join(GROUNDING_SCOPE_DETAILS)
+
+    assert phrase in panel, f"the scope panel no longer says {claim}"
+
+
+def test_the_scope_panel_is_five_short_lines_of_plain_language():
+    """The shape of the compression, as an equality — a bound would pass on the seven-bullet
+    panel this replaced (CLAUDE.md: prefer an equality over a bound).
+
+    Two properties, both of which the old panel failed. **Five lines**, because "compress" that
+    permits any number of bullets is not a constraint; a sixth claim belongs in the README, as
+    the ingest-report provenance now is. And **no ADR numbers**, because this panel is read by
+    an analyst mid-question: `(ADR-0009)` sent them looking for a document that is not in the
+    app. The design record is still in `docs/adr/` and still cited from the code — this rule is
+    about the copy on screen.
+    """
+    assert len(GROUNDING_SCOPE_DETAILS) == 5
+
+    panel = " ".join(GROUNDING_SCOPE_DETAILS)
+    assert not re.search(r"ADR-\d+", panel), "no ADR numbers in the user-facing copy"
+    # One sentence each: the marker is a full stop with a word after it, so an abbreviation
+    # ("10-K.") and the closing stop are both fine and a second sentence is not.
+    for detail in GROUNDING_SCOPE_DETAILS:
+        assert not re.search(r"\.\s+\S", detail), f"one sentence per line; got {detail!r}"
+
+
+def test_the_ingest_report_provenance_moved_to_the_readme():
+    """Where the counts come from is a reviewer's question, and the README is where a reviewer
+    reads. It left the panel when that panel was compressed (#13) and had to land somewhere —
+    a claim dropped from one surface and added to none is the deletion a compression must
+    not be."""
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    panel = " ".join(GROUNDING_SCOPE_DETAILS)
+
+    assert "docs/verification/ingest-report.md" in readme
+    assert "not a live count of the index" in readme, "and what the counts are *not*"
+    assert "ingest-report" not in panel, "the panel no longer carries it"
 
 
 def test_every_scope_claim_in_a_prompt_is_derived_and_not_typed():

@@ -105,6 +105,14 @@ cross-checked against the ingest run's own evidence by `tests/test_grounding_sco
   come from the finance tools, not the filing text.
 - **One filing per company:** the most recent 10-K only, so the fiscal year differs by
   filer (NVDA is FY2026, the other fourteen FY2025). Each citation states its own year.
+- **Where these counts come from:** the ingest run's own evidence,
+  [`docs/verification/ingest-report.md`](./docs/verification/ingest-report.md) — per-company
+  chunk counts read back from the collection. The numbers above describe the knowledge base
+  as ADR-0007 defines it, derived from `config.py`, and are **not a live count of the index**
+  behind any particular deployment: a partial or stale ingest would leave them overstating
+  coverage, and the evidence file is what a reviewer checks them against. This bullet is here
+  and not in the app's scope panel on purpose — it answers a reviewer's question, and an
+  analyst mid-question is not asking it (#13).
 
 Retrieved text is shown verbatim in the sources panel: it renders through `st.text`, not
 Markdown, because a filer's own `$178,353` is a KaTeX expression to a Markdown renderer and
