@@ -1705,9 +1705,39 @@ def test_the_refresh_semantics_stay_above_the_fold(app):
 
     panelled = {caption.value for panel in app.sidebar.expander for caption in panel.caption}
     visible = [c.value for c in app.sidebar.caption if c.value not in panelled]
-    joined = " ".join(visible).lower()
-    assert "refreshing" in joined and "new conversation" in joined
-    assert "follow-ups" in joined, "and what memory buys, since it is the reason"
+    # **The wording, as an equality.** This block was cut to the warning alone — the follow-up
+    # sentence it opened with was the help panel's fact stated twice — and the assertion that
+    # used to cover it matched on two lowercased substrings, which a shortened duplicate or a
+    # half-moved sentence would also satisfy. Naming the sentence is what makes this test fail
+    # on the copy drifting rather than on the fact vanishing entirely; `test_the_follow_up_
+    # mechanic_is_stated_once` owns the other half.
+    assert (
+        "Memory lasts as long as this browser session — refreshing the page starts a new "
+        "conversation."
+    ) in visible
+
+
+def test_the_follow_up_mechanic_is_stated_once(app):
+    """In the help panel, and nowhere else in the sidebar.
+
+    The sidebar's `Conversation` block and this panel both explained follow-ups, in different
+    words and with different example phrases — two copies of one fact, already disagreeing.
+    Deleting one copy is not what keeps it deleted, so the single home is asserted both ways:
+    the panel states it, and no unfoldable sidebar element restates it.
+    """
+    app.run()
+
+    def unpanelled(kind: str) -> list[str]:
+        panelled = {
+            element.value for panel in app.sidebar.expander for element in getattr(panel, kind)
+        }
+        return [e.value for e in getattr(app.sidebar, kind) if e.value not in panelled]
+
+    panels = " ".join(block.value for panel in app.sidebar.expander for block in panel.markdown)
+    assert "follow-ups" in panels.lower(), "the panel is where the mechanic is explained"
+    # Both accessors, because a re-added hint need not arrive as a caption.
+    above = " ".join(unpanelled("caption") + unpanelled("markdown")).lower()
+    assert "follow-up" not in above, "and the sidebar above the panels does not say it again"
 
 
 def test_the_thread_id_is_shown_only_when_there_is_a_log_to_find_it_in(

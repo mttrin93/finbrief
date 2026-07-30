@@ -432,10 +432,17 @@ with st.sidebar:
     # reads a lost conversation as a bug, and a reviewer cannot tell an accepted consequence
     # from an oversight. A collapsed panel states it only to a reader who clicks, so the
     # density work below stops here: everything *else* folds, this does not.
+    #
+    # **The refresh warning alone**, and that is the whole content of this block. It used to
+    # open with the follow-up mechanic — which the help panel below also states, in better
+    # words ("one company at a time") and with a different example phrase. Two copies of one
+    # fact, already drifted: the bug class this repo keeps hitting, arriving as UI copy rather
+    # than as a check. ADR-0008 §4 obliges *this* sentence to be unfoldable and says nothing
+    # about the follow-up hint, so the hint moves entirely into the panel and the obligation
+    # keeps the space it is owed.
     st.caption(
-        "FinBrief remembers this conversation, so you can ask follow-ups — *and its debt?* "
-        "resolves against the company you were just discussing. Memory lasts as long as this "
-        "browser session: refreshing the page starts a new conversation."
+        "Memory lasts as long as this browser session — refreshing the page starts a new "
+        "conversation."
     )
     # **Only when there is somewhere to look it up** (T12 item 1). The thread id is the handle
     # on this conversation *in the sink*: `log_turn` below prefixes every `turn_id` with it, so

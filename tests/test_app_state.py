@@ -183,10 +183,13 @@ def test_the_page_states_that_a_refresh_starts_a_new_conversation(app):
     # difference between a design decision and an oversight.
     app.run()
 
+    # The *fact*, not the wording: this test is ADR-0008's binding that the consequence is
+    # stated at all, and the exact sentence has one owner —
+    # `test_app_smoke.test_the_refresh_semantics_stay_above_the_fold`, which also asserts that
+    # no panel is hiding it. A second copy of the literal here would be one more pair to drift.
     sidebar = " ".join(caption.value for caption in app.sidebar.caption)
     assert "refreshing" in sidebar.lower()
     assert "new conversation" in sidebar.lower()
-    assert "follow-ups" in sidebar.lower(), "and what memory buys, since it is the reason"
 
 
 def test_seeding_a_question_touches_session_state_and_not_the_cached_agent(app, stubbed_agent):
