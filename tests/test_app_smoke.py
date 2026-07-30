@@ -20,6 +20,9 @@ from streamlit.testing.v1 import AppTest
 from finbrief.agent import agent
 from finbrief.agent.agent import AgentTurn, Search, Step
 from finbrief.config import (
+    CLUSTERS,
+    ITEM_7A_POINTER_FILERS,
+    ITEM_7A_SECTION_FILERS,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
     PEERS,
@@ -38,6 +41,8 @@ from finbrief.prompts import (
     DISCLAIMER,
     EXAMPLE_QUESTIONS,
     INJECTION_REFUSAL,
+    ITEM_7A_BY_REFERENCE,
+    ITEM_7A_OWN_SECTION,
     NO_CONTEXT_FALLBACK,
     unavailable_message,
 )
@@ -115,14 +120,76 @@ def stub_answer(monkeypatch, answer=None, steps=()):
     return asked
 
 
+def universe_table(app):
+    """The Universe panel's table, as the frame the page handed Streamlit.
+
+    Through `AppTest`'s **typed** `dataframe` accessor, and the count is asserted:
+    `app.get(...)` returns `[]` for an element type it has no wrapper for rather than raising,
+    so a lookup by a guessed name is a vacuous assertion by default (CLAUDE.md). This one would
+    fail if the table stopped being rendered, which is the whole job.
+    """
+    tables = app.sidebar.dataframe
+    assert len(tables) == 1, f"one table in the sidebar's Universe panel; got {len(tables)}"
+    return tables[0].value
+
+
 def test_the_page_renders_the_universe_and_a_chat_input(app):
     app.run()
 
     assert not app.exception
     assert app.title[0].value == "FinBrief"
-    sidebar_text = " ".join(md.value for md in app.sidebar.markdown)
-    assert "TSLA, F, GM" in sidebar_text  # the autos peer cluster (ADR-0009)
+    # The Universe is a table, not the grouped ticker list this used to assert (`"TSLA, F,
+    # GM" in sidebar_text`, #13): a list of tickers discloses the Universe only to a reader
+    # who already knows what they stand for. Same claim, one row per company.
+    assert universe_table(app)["Ticker"].tolist() == [company.ticker for company in UNIVERSE]
     assert app.chat_input
+
+
+def test_the_universe_table_names_every_company_and_how_it_answers_item_7a(app):
+    """The panel's two jobs (#13), both asserted against `config` rather than a list typed here.
+
+    The names are the point of the table — `LLY` is nothing to a reader who does not already
+    read tickers. The `Item 7A` column is what makes the disclosure's "9 of 15" concrete, and it
+    is the fact a reader needs the moment a market-risk answer cites `Item 7`.
+
+    **The verdict column is asserted as a partition, not by sampling a row**: two set equalities
+    that between them account for all 15, so a row rendering neither verdict (or the wrong one)
+    fails. Whether those sets are *true* of the filings is
+    `test_grounding_scope.py`'s question — it has the ingest evidence.
+    """
+    app.run()
+    table = universe_table(app)
+
+    assert list(table.columns) == ["Ticker", "Company", Section.MARKET_RISK.value]
+    assert table["Company"].tolist() == [company.name for company in UNIVERSE]
+
+    verdicts = dict(zip(table["Ticker"], table[Section.MARKET_RISK.value], strict=True))
+    assert {t for t, v in verdicts.items() if v == ITEM_7A_BY_REFERENCE} == (
+        ITEM_7A_POINTER_FILERS
+    )
+    assert {t for t, v in verdicts.items() if v == ITEM_7A_OWN_SECTION} == (
+        ITEM_7A_SECTION_FILERS
+    )
+
+
+def test_the_universe_panel_keeps_its_framing_and_names_the_clusters(app):
+    """What the table replaced was the grouped list, not the sentences around it (#13).
+
+    The summary line stays because a count is the one thing a table of 15 rows does not state,
+    and the cluster grouping moved *into* it rather than being dropped: four columns do not fit
+    the sidebar's measured ~205px, so `Cluster` is a caption here instead of a column there.
+    Every part derived from `CLUSTERS`, which stays the one place the grouping is computed.
+    """
+    app.run()
+    captions = " ".join(
+        caption.value for panel in app.sidebar.expander for caption in panel.caption
+    )
+
+    assert f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters" in captions
+    for cluster, tickers in CLUSTERS.items():
+        assert f"{cluster.label} ({len(tickers)})" in captions, (
+            f"the caption no longer names the {cluster} cluster and its size"
+        )
 
 
 def test_the_page_states_what_the_answers_are_grounded_in(app):
