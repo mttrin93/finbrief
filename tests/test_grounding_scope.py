@@ -1,7 +1,7 @@
 """The grounding-scope disclosure's arithmetic, against the committed ingest evidence.
 
 `prompts.py` derives "54 of 60" from `config` so that a Universe change cannot leave a stale
-number under the app's title. That keeps the sentence *self*-consistent, which is not the
+number in the app's scope panel. That keeps the sentence *self*-consistent, which is not the
 same as *true*: the subtraction assumes each pointer filer really does answer Item 7A by
 reference, and `ITEM_7A_POINTER_FILERS` is a hand-maintained tripwire. The only witness to
 what the knowledge base actually holds is `docs/verification/ingest-report.md`, written by
@@ -88,7 +88,17 @@ def test_the_disclosure_counts_what_the_ingest_run_actually_gated():
     assert len(rows) == len(UNIVERSE), "the run gated every company in the Universe"
     assert f"All {slots} company x Section checks passed." in text
     assert f"{pointers} Section(s) incorporated by reference into Item 7" in text
-    assert f"{slots - pointers} of {slots} company × Section pairs" in GROUNDING_SCOPE
+    # **In the panel, which is where the count now lives** (#13). It used to end
+    # `GROUNDING_SCOPE`, the caption under the app's title, and moved when that caption was cut
+    # to the sentence a reader can use before knowing what a Section is. Asserted against the
+    # panel and not against "the page", which would pass wherever it had drifted to — including
+    # back into a caption that is quoted by three prompts.
+    assert f"{slots - pointers} of {slots} company × Section pairs" in " ".join(
+        GROUNDING_SCOPE_DETAILS
+    )
+    assert f"{slots - pointers} of {slots}" not in GROUNDING_SCOPE, (
+        "the caption states the scope; the panel states the arithmetic, and only one of them"
+    )
 
 
 def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():

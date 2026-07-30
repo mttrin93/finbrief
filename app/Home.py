@@ -73,8 +73,8 @@ from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
     EXAMPLE_QUESTIONS,
-    GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    GROUNDING_SCOPE_SOURCED,
     GROUNDING_SCOPE_VERIFY,
     INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
@@ -104,10 +104,15 @@ logger = logging.getLogger("finbrief.app")
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
 st.title("FinBrief")
-st.caption(GROUNDING_SCOPE)
+# The scope sentence with the filings' source linked — `GROUNDING_SCOPE_SOURCED` and not
+# `GROUNDING_SCOPE`, which is the bare sentence the prompts quote. Both are `prompts.py`'s and
+# nothing about the source is composed here.
+st.caption(GROUNDING_SCOPE_SOURCED)
 # The second half of the scope, and it earns its own line rather than being appended to the one
 # above: `GROUNDING_SCOPE` is quoted by the *chain*'s prompt too, where there are no tools, so
-# the two sentences cannot be one string (`prompts.py`).
+# the two sentences cannot be one string (`prompts.py`). Whose data the live figures are is in
+# the sidebar's scope panel rather than here, for the same reason the pair count now is: this
+# caption is what a reader meets before their first question.
 st.caption(LIVE_DATA_SCOPE)
 
 # Fail here rather than on the first message: a missing key should be obvious before the

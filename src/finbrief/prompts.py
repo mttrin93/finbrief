@@ -82,10 +82,35 @@ _ITEM_LABELS = (
 #: is what keeps this constant usable on the *chain*'s path too, where there are no tools at
 #: all: `NO_CONTEXT_FALLBACK` and `SYSTEM_PROMPT` quote it, and neither may promise a price.
 #: What the tools cover is `LIVE_DATA_SCOPE`, which only the surfaces that have them read.
+#:
+#: **The pair count moved to the panel, and the sentence is shorter for it.** This used to end
+#: "— {_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs", which is the arithmetic
+#: *behind* the scope rather than the scope: it means nothing to a reader who does not yet know
+#: what a Section is, and this sentence is the first thing they meet. `GROUNDING_SCOPE_DETAILS`'
+#: first line states it now — still derived from the same two constants, and bound to the ingest
+#: run's own evidence by `tests/test_grounding_scope.py`, which is where it was always checked.
+#: Moved and not copied: a count in two places is the drift this module exists to prevent, so
+#: the panel is the one surface that carries it.
 GROUNDING_SCOPE = (
-    f"Filing answers are grounded only in Items {_ITEM_LABELS} of the latest annual 10-K on "
-    f"file for each of the {len(UNIVERSE)} companies in FinBrief's Universe — "
-    f"{_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs."
+    f"Filing answers are grounded only in Items {_ITEM_LABELS} of the latest annual 10-K "
+    f"for each of the {len(UNIVERSE)} companies in FinBrief's Universe."
+)
+
+#: The same sentence with its source named, for the app's caption — and **only** for a surface
+#: that renders markdown.
+#:
+#: The link is the reader's, not the model's: `SYSTEM_PROMPT`, `AGENT_SYSTEM_PROMPT` and
+#: `NO_CONTEXT_FALLBACK` quote `GROUNDING_SCOPE` above, and a URL in a prompt is tokens the
+#: model may repeat back as though it had fetched something. So the provenance is composed
+#: here rather than folded into the constant the prompts read, which is the same split
+#: `GROUNDING_SCOPE_VERIFY` makes for the panel.
+#:
+#: EDGAR and not the market-data providers, because this half of the intro is about the filings:
+#: it is the authoritative source a reviewer would check a citation against, and the URL is
+#: `ingestion/edgar.py`'s like every other EDGAR address. Who the *live* figures come from is
+#: `MARKET_DATA_PROVIDER`, named in the scope panel where there is room to qualify it.
+GROUNDING_SCOPE_SOURCED = (
+    f"{GROUNDING_SCOPE} Filings come from the SEC's [EDGAR]({EDGAR_SEARCH_URL})."
 )
 
 #: The other half of the scope, for the surfaces that have the tools: the app's caption, the
@@ -97,11 +122,27 @@ GROUNDING_SCOPE = (
 #: minutes is current enough for a pre-earnings brief and is not a tick, and saying so once here
 #: is cheaper than a caveat on every card.
 LIVE_DATA_SCOPE = (
-    f"Live figures — price, peer-relative ratios and headlines — come from three finance tools "
-    f"over free public data for the same {len(UNIVERSE)} companies: delayed quotes cached for "
+    f"Live figures — price, peer ratios and headlines — come from three finance tools over "
+    f"free public data for the same {len(UNIVERSE)} companies: delayed quotes cached for "
     f"{QUOTE_TTL_SECONDS // 60} minutes, and news RSS. Never from the filings, which carry no "
-    f"prices, and never from anywhere else."
+    f"prices."
 )
+
+#: Who the live figures actually come from, for the scope panel. "Free public data" says what
+#: they cost and not whose they are, and whose is the part a reader can check.
+#:
+#: One name covers all three finance tools because both boundaries resolve to the same provider:
+#: `finance/quotes.py` reads it through `yfinance` and `finance/news.py` reads its per-ticker
+#: headline RSS. Written here beside the other scope claims rather than in `app/Home.py`, for
+#: the reason `EXAMPLE_QUESTIONS` is here — a provider name is a scope claim, and a scope claim
+#: in two files is one that will disagree with itself.
+#:
+#: **`yfinance` is an unofficial client of an undocumented endpoint**, which the README records
+#: as a limitation and ADR-0009 accepts: there is no API contract behind this name and an
+#: endpoint change is a fetch failure rather than a support ticket. Named anyway, because a
+#: reader deciding how much to trust a figure is better served by "Yahoo Finance, unofficially"
+#: than by "free public data" — and the failure path is disclosed in the same line.
+MARKET_DATA_PROVIDER = "Yahoo Finance"
 
 #: What the headline sentence leaves out, for the UI's scope panel and the README — whose
 #: prose cannot import these, so `tests/test_grounding_scope.py` binds its copy to them.
@@ -122,8 +163,20 @@ LIVE_DATA_SCOPE = (
 #: - the peer-cluster basis and the *not reported* wording are on the ratio cards themselves
 #:   (`finance/ratios.py`'s `PeerComparison.basis`, `Unit.format`), beside the numbers they
 #:   qualify, which is a stronger place for them than a panel a reader must open.
+#:
+#: Two things then arrived *here*, both from the caption under the title — the surface that had
+#: to get shorter next, being the one a reader meets before their first question (#13):
+#:
+#: - the **pair count**, which `GROUNDING_SCOPE` used to end on. It belongs in the panel that
+#:   explains what a Section is and which six filers answer 7A by reference — the two facts that
+#:   make "54 of 60" a number rather than a puzzle — and nowhere else, so the caption dropped it
+#:   rather than sharing it;
+#: - the **provider** behind the live figures (`MARKET_DATA_PROVIDER`), which the caption states
+#:   as "free public data". The intro names EDGAR because a citation is the thing a reviewer
+#:   checks; the market-data provider is the qualified claim, and this is where a claim gets
+#:   qualified.
 GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
-    f"**In scope:** {_ITEMS}.",
+    f"**In scope:** {_ITEMS} — {_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs.",
     (
         f"**Market risk:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer Item 7A by "
         f"pointing at Item 7, so their market-risk text sits in the knowledge base labelled "
@@ -141,9 +194,10 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
         "filer and each citation states its own."
     ),
     (
-        "**Live figures never come from the filings:** price, ratios and headlines are "
-        "fetched, and a fetch that fails shows the last cached figure with its age or says "
-        "the figure could not be fetched — never a placeholder, a guess or a zero."
+        f"**Live figures never come from the filings:** price, ratios and headlines are "
+        f"fetched from {MARKET_DATA_PROVIDER}, and a fetch that fails shows the last cached "
+        f"figure with its age or says the figure could not be fetched — never a placeholder, "
+        f"a guess or a zero."
     ),
 )
 
