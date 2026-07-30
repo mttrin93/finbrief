@@ -47,6 +47,14 @@ from finbrief.config import (
     get_settings,
     resolve_log_file,
 )
+from finbrief.export import (
+    THREAD_HANDLE_CHARS,
+    Transcript,
+    as_csv,
+    as_json,
+    file_name,
+    log_export,
+)
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.observability.logging_setup import configure_logging, log_event
 
@@ -134,6 +142,54 @@ def shared_agent():
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
+
+def render_export_buttons(messages: list[dict[str, object]]) -> None:
+    """Take this conversation away, as JSON or as CSV (T11 item 4, user story 25).
+
+    **Defined above the sidebar block rather than beside the other render functions**, which is
+    a constraint of this file and not a preference: the sidebar runs at module scope, so a name
+    it calls has to exist by then — the same reason `_RENDERERS` is declared *below* the
+    functions it maps.
+
+    The source is `messages`, the display transcript, and `finbrief/export.py` argues why that
+    rather than the checkpointer at length: this is what the analyst saw, refusals included.
+
+    **Both payloads are built on every rerun**, because `st.download_button` takes bytes and
+    offers no lazy callback to build them from. That is affordable for the reason
+    `observability/events.py` reads its whole log eagerly — the volume is bounded by a human
+    typing questions — and it is the cost of the button being a plain download rather than a
+    second request the server has to route.
+
+    Nothing is logged here. The log line belongs to the *click*, because a line written on every
+    rerun would count reruns and call them exports.
+    """
+    exported = Transcript.of(messages, thread_id=st.session_state.thread_id)
+    st.caption(
+        f"Export this conversation — {len(exported.turns)} turn(s), "
+        f"{len(exported.sources)} source(s)."
+    )
+    for label, suffix, body, mime in (
+        ("JSON", "json", as_json(exported), "application/json"),
+        ("CSV", "csv", as_csv(exported), "text/csv"),
+    ):
+        data = body.encode("utf-8")
+        if st.download_button(
+            f"Download {label}",
+            data=data,
+            # `export.file_name`, not an f-string here: a download button's file name is not on
+            # the proto — the bytes are served over a URL — so `AppTest` cannot see it, and a
+            # name built in this file would be a claim no test could reach.
+            file_name=file_name(st.session_state.thread_id, suffix),
+            mime=mime,
+            icon=":material/download:",
+            width="stretch",
+        ):
+            # A count and a format. **Never the payload** — this file is the analyst's own
+            # questions and the filer's prose, which is exactly what these kept lines may not
+            # carry (`export.log_export`, ADR-0011).
+            log_export(exported, fmt=suffix, size=len(data))
+
+
 with st.sidebar:
     st.subheader("Conversation")
     # **Above the fold, and deliberately not in a panel** (T11 item 1). ADR-0008 §4 makes this
@@ -159,7 +215,10 @@ with st.sidebar:
     if resolve_log_file(os.environ) is not None:
         # Not a secret — a uuid identifies a conversation and says nothing about who is having
         # it, which is why it is also safe on every log line.
-        st.caption(f"Thread `{st.session_state.thread_id[:8]}`")
+        # `THREAD_HANDLE_CHARS`, shared with the export's file names: this caption and a
+        # downloaded file have to name a conversation the same way, or the file cannot be
+        # matched back to the handle the page showed.
+        st.caption(f"Thread `{st.session_state.thread_id[:THREAD_HANDLE_CHARS]}`")
     # A fresh uuid, not a cleared checkpointer: the old thread is orphaned rather than deleted
     # (nothing else can reach it), and the cached agent survives — rebuilding it here would
     # discard every *other* session's memory too, which is the bug this button looks like.
@@ -191,6 +250,13 @@ with st.sidebar:
             "FinBrief answers research questions, not *should I buy this* — it refuses "
             "personalised advice by design."
         )
+
+    # **A slot, filled at the very end of the script.** The sidebar runs before this run's turn
+    # has been answered, so building the buttons here would offer a file missing the exchange
+    # the reader just had — and they would not be able to tell, which is the worst version of
+    # that bug. Deferring is the whole fix; `render_export_buttons` is called once, below, from
+    # a transcript that includes this turn.
+    export_slot = st.empty()
 
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
@@ -928,11 +994,21 @@ seeded = st.session_state.pop("pending_question", None)
 
 prompt = typed or seeded
 
-if prompt:
-    # Retracted here rather than skipped above: this run has a question in it, so the empty
-    # page's affordance is no longer describing this page. See the slot's own comment.
-    examples_slot.empty()
 
+def answer_turn(prompt: str) -> None:
+    """One turn: screen the question, answer it, and leave the result in the transcript.
+
+    **A function with `return`s where this was a top-level block with `st.stop()`s.** The reason
+    is the export slot and not tidiness: `st.stop()` does not merely end the script, it stops
+    Streamlit accepting further elements, so anything rendered afterwards is silently discarded
+    — measured, with a `finally` writing into a placeholder after an `st.stop()` and producing
+    nothing at all. The export buttons have to be built from the transcript *including* this
+    turn, or a reader downloads a file missing the exchange they just had and cannot tell.
+
+    So the turn needs an exit the script survives. Three `st.stop()`s became three `return`s and
+    nothing else changed: this block was the last thing in the file, so ending it and ending the
+    script were the same act until there was something to render after it.
+    """
     # **One turn, one identifier, on every event this block emits** (T8, #10). The gate's
     # screening, the retrievals the agent's tool ran, the validator's verdict and the marker
     # check all land on separate lines with nothing else in common: a `retrieval` line carries
@@ -958,7 +1034,7 @@ if prompt:
                 f"actually want an answer about.",
                 icon=":material/text_fields:",
             )
-            st.stop()
+            return
 
         # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door
         # a human types through, which is what the front door is about; a gate inside the agent
@@ -989,7 +1065,7 @@ if prompt:
             st.session_state.messages.append(
                 {"role": "assistant", "content": INJECTION_REFUSAL}
             )
-            st.stop()
+            return
 
         with st.chat_message("assistant"):
             try:
@@ -1079,14 +1155,14 @@ if prompt:
                     st.session_state.messages.append(
                         {"role": "assistant", "content": ADVICE_REFUSAL}
                     )
-                    st.stop()
+                    return
 
                 st.markdown(as_markdown(reply.text))
                 # The citation-marker check (T3's finding, #5): every `[n]` against every number
                 # this *conversation* has issued, not just this turn's — see `issued_ranks`.
                 # Logged on every turn that renders an answer rather than only on a violation,
                 # so T10 (#11) has a denominator for the rate. **Not every turn**: the layer-4
-                # branch above `st.stop()`s first, so a refused answer contributes to neither
+                # branch above `return`s first, so a refused answer contributes to neither
                 # numerator nor denominator — which is the right denominator anyway, since the
                 # markers of an answer no reader saw are not a marker-resolution rate about
                 # anything.
@@ -1116,3 +1192,18 @@ if prompt:
                         "turn": reply,
                     }
                 )
+
+
+if prompt:
+    # Retracted here rather than skipped above: this run has a question in it, so the empty
+    # page's affordance is no longer describing this page. See the slot's own comment.
+    examples_slot.empty()
+    answer_turn(prompt)
+
+# **Last, and that ordering is the point.** Every branch of `answer_turn` has run by now,
+# including the two refusals, so the transcript this reads is the one the reader is looking at.
+# Nothing at all when there is no conversation: a download button offering a file with no turns
+# in it reads as a broken feature rather than as an empty one.
+if st.session_state.messages:
+    with export_slot.container():
+        render_export_buttons(st.session_state.messages)

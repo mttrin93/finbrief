@@ -291,6 +291,49 @@ stale.
   searches in one step run concurrently against identical state and would otherwise all number
   from `[1]`.
 
+## Taking a conversation away: JSON and CSV
+
+The sidebar offers the conversation as two downloads once there is one to take. Both are built
+from **the display transcript, not the checkpointer** — the export is what the analyst *saw*,
+and the two genuinely differ in both directions: a question the input gate blocked never reached
+the agent, so the checkpointer has no memory of it while the page shows the exchange; and an
+answer layer 4 refused is *in* the checkpointer while the page shows the refusal that replaced
+it. Exporting the agent's memory would hand a reader an answer that was withheld from them and
+omit a refusal they were given.
+
+- **Every `[n]` resolves against the file's own source list, and that list is the
+  conversation's.** Citations run in one sequence across a thread, so a follow-up can cite a
+  chunk an earlier turn retrieved — scoped per turn, an export would render that citation
+  unresolvable in a file whose own answers cite it. The JSON therefore carries one `sources`
+  table keyed by rank, and each turn names the ranks it retrieved.
+- **CSV is one row per (turn, source that turn retrieved).** A turn's answer repeats across its
+  source rows, which is the ordinary cost of a long format, and it buys the property that
+  matters: every source is a row with its own `rank`, so a marker resolves by scanning one
+  column rather than by parsing a list packed into a cell. A turn that retrieved nothing still
+  gets a row, with the source columns empty. Bodies carrying commas, quotes and blank lines are
+  written with `csv.writer` and asserted to come back byte-identical through `csv.reader`.
+- **Absences stay absent.** A refusal has no turn behind it, so whether it searched is *unknown*
+  and no key is written for it — not `false`, which would be a measurement of a turn that did
+  not happen. A chunk BM25 recovered has no vector distance and exports `null`, never `0.0`. In
+  CSV those are empty cells, because a spreadsheet averages a column without asking what its
+  blanks meant.
+- **The export is logged as a count and a format, never as a payload.** The file is the analyst's
+  own questions and the filer's prose, which is exactly what the log may not carry (ADR-0011;
+  the one bounded exception is a blocked question's normalised text). The line records how many
+  turns and sources went out, in which format, at what size.
+- **Text cells are guarded against a spreadsheet.** A cell opening `=`, `+`, `-` or `@` is
+  evaluated as a formula on open by Excel and Sheets, and every text cell here is model output or
+  filing prose. Such a value is prefixed so it is treated as text, and still round-trips.
+
+**No PDF, and the reason is this project's dependency record rather than effort.** It needs a new
+library, and every library added here for quality or safety shipped a telemetry path enabled by
+default — all three of them, each switched off somewhere different (see *Three libraries, three
+that phone home by default* above). A rendering library is a worse bet than those three rather
+than a better one: it would be added for **presentation**, which buys none of the argument that
+made the other three worth their switches and their per-backend tests. JSON and CSV need no
+dependency at all — `json` and `csv` are stdlib — so the export ships with exactly the egress
+surface the page already had.
+
 ## Configuration
 
 Every knob lives in [`src/finbrief/config.py`](./src/finbrief/config.py) and resolves from
