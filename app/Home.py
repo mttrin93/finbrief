@@ -31,6 +31,7 @@ import logging
 import os
 import uuid
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from langgraph.errors import GraphRecursionError
@@ -958,12 +959,31 @@ def _render_quote(card: QuoteCard) -> None:
         f"{Unit.PRICE.format(quote.previous_close)}"
     )
     if quote.closes:
-        st.line_chart(
-            pd.DataFrame(
-                {"close": [close.close for close in quote.closes]},
-                index=[close.date for close in quote.closes],
+        # **`st.altair_chart` and not `st.line_chart`, and only for the y-axis.** Vega-Lite
+        # includes zero in a quantitative axis' domain by default, and `st.line_chart` — which
+        # is sugar over *this* call, its own docstring says so — offers no way to say
+        # otherwise. So a month of closes between 215 and 232 drew as a flat line two-thirds of
+        # the way up an axis running 0 → 100 → 200: the chart reporting "nothing happened"
+        # about the move a reader opened the card to see. `zero=False` scales it to the data.
+        #
+        # Everything else is `st.line_chart`'s own generated spec, reproduced rather than
+        # improved on, so this stays the change it says it is: the same nominal x over the ISO
+        # dates (`Close.date` is a string), the same gridlines, the same `close` axis title,
+        # and a hover tooltip in place of the one that came free.
+        history = pd.DataFrame(
+            {
+                "date": [close.date for close in quote.closes],
+                "close": [close.close for close in quote.closes],
+            }
+        )
+        st.altair_chart(
+            alt.Chart(history)
+            .mark_line()
+            .encode(
+                x=alt.X("date:N", axis=alt.Axis(grid=False), title=""),
+                y=alt.Y("close:Q", axis=alt.Axis(grid=True), scale=alt.Scale(zero=False)),
+                tooltip=["date", "close"],
             ),
-            y="close",
             height=180,
         )
         # `HISTORY_PERIOD_LABEL`, not "last month" typed again. That constant exists because the
@@ -971,7 +991,17 @@ def _render_quote(card: QuoteCard) -> None:
         # caption was a third copy (issue #9 review). The session count stays derived from the
         # data rather than from the label: `"1mo"` yields ~21 trading sessions, not 30, and the
         # exact number is a property of the response.
-        st.caption(f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions).")
+        #
+        # **The axis clause is the price of scaling to the data.** Two lines above this chart
+        # the card states a 52-week range, and an axis that no longer starts at zero starts
+        # wherever *this month* does — so the numbers running up the side are a month's
+        # extremes sitting directly under a year's, with nothing but this sentence to say they
+        # are different windows. A reader who takes the axis for the 52-week range reads a
+        # month of noise as a year of it.
+        st.caption(
+            f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions) — the axis "
+            f"spans this window, not the 52-week range above."
+        )
 
 
 #: How many metric charts sit side by side before wrapping to a new row. Three keeps a
