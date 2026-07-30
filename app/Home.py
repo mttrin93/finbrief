@@ -59,7 +59,6 @@ from finbrief.export import (
 )
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.ingestion.edgar import filing_index_url
-from finbrief.ingestion.model import Section
 from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
@@ -577,48 +576,38 @@ with st.sidebar:
     with st.expander(":material/apartment: Universe"):
         # The summary line, plus the grouping that used to be a column of its own. Both derived
         # from `CLUSTERS`, which stays the one place the grouping is computed.
+        # The ordering sentence is here rather than implied: the table shows no cluster column,
+        # so a reader who does not know the rows are grouped reads 15 in an arbitrary order and
+        # the clusters this line names are invisible in the thing underneath it.
         st.caption(
             f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters — "
             + " · ".join(
                 f"{cluster.label} ({len(tickers)})" for cluster, tickers in CLUSTERS.items()
             )
-            + "."
+            + ". Rows follow that cluster order."
         )
         # **A table, because the grouped ticker list this replaces assumed ticker literacy**
         # (#13). `**Healthcare** — JNJ, LLY, PFE` discloses the Universe only to a reader who
         # already knows that `LLY` is Eli Lilly, and the scope of the knowledge base is the
-        # first thing this app owes a reader. `prompts.UNIVERSE_ROWS` owns the rows — including
-        # the `Item 7A` column, which is a scope claim and is bound to the committed ingest
-        # evidence there rather than here.
+        # first thing this app owes a reader. `prompts.UNIVERSE_ROWS` owns the rows, and owns
+        # why there are two columns rather than three.
         #
-        # **The widths are pinned, and the numbers are measured** — Chromium 150, 1280×1200,
-        # this page. Streamlit 1.60's sidebar is a fixed 300px (no resize handle in the DOM),
-        # which leaves this expander ~205px of content width, and the grid autosizes to content
-        # and *scrolls* past whatever does not fit rather than shrinking to it. Unpinned, the
-        # three columns come to ~310px and `Item 7A` — the column a reader opens this panel for
-        # — sits off the right edge behind a horizontal scrollbar, visible only to someone who
-        # thinks to drag inside it. That is what these three numbers buy, and they sum to
-        # exactly the 205: 54 fits the longest ticker (`GOOGL`), 60 fits the widest verdict
-        # (`→ Item 7`) and its header, and `Company` takes the remainder.
-        #
-        # **What it costs is ~13 characters of company name**, which ellipsises 11 of the 15 —
-        # `The Goldman Sachs Group, Inc.` reads `The Goldman…`. Enough to tell the 15 apart,
-        # which is the literacy problem this panel had; not enough to read a legal name in full.
-        # A fourth column does not fit at all, and the two ways to buy real width — moving this
-        # panel into the main page, or widening the sidebar with injected CSS — are both larger
-        # changes than this panel, so they are a design call and not this commit's.
+        # **Nothing is pinned, because the pins are what truncated the names.** This carried
+        # three columns at measured widths summing to the sidebar's content width — 54 for the
+        # ticker, 60 for the `Item 7A` verdict, 91 for `Company` — and 91px does not finish a
+        # legal name: `Microsoft Corporatio`, `JPMorgan Chase & C`. With the third column gone
+        # the arithmetic no longer needs doing. `width="stretch"` fills the expander and
+        # `Company` takes everything `Ticker` does not, which is every pixel this panel has to
+        # give a name. (`width="stretch"` and not `use_container_width`, which is the deprecated
+        # spelling of the same thing in Streamlit 1.60 and warns.)
         st.dataframe(
             pd.DataFrame(UNIVERSE_ROWS),
             hide_index=True,
+            width="stretch",
             # All 15 rows, rather than the ten `"auto"` would show behind a nested
             # scrollbar inside a sidebar that already scrolls. From the content, not a
             # pixel count.
             height="content",
-            column_config={
-                "Ticker": st.column_config.TextColumn(width=54),
-                "Company": st.column_config.TextColumn(width=91),
-                Section.MARKET_RISK.value: st.column_config.TextColumn(width=60),
-            },
         )
         # The thinnest cluster makes the crispest example, and picking it from the data keeps
         # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day

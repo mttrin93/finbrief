@@ -165,16 +165,7 @@ GROUNDING_SCOPE_VERIFY = (
 # The Universe, per company (#13)
 # --------------------------------------------------------------------------------------
 
-#: How a filer that has its own `Item 7A` Section reads in the Universe table's last column.
-ITEM_7A_OWN_SECTION = "Section"
-
-#: And how one that answers Item 7A by directing the reader to Item 7 reads. The target is
-#: `Section.MDA`'s own label rather than the string `Item 7`, for the reason every other number
-#: in this module is derived: the two Items are an enum away from being renamed together.
-ITEM_7A_BY_REFERENCE = f"→ {Section.MDA.value}"
-
-#: One row per Universe member, for the sidebar's Universe panel: what the ticker *is*, and how
-#: that filer answers Item 7A.
+#: One row per Universe member, for the sidebar's Universe panel: what the ticker *is*.
 #:
 #: **A table because the list it replaced assumed ticker literacy** (#13). The panel used to
 #: group tickers by cluster — `**Healthcare** — JNJ, LLY, PFE` — which discloses the Universe
@@ -182,31 +173,21 @@ ITEM_7A_BY_REFERENCE = f"→ {Section.MDA.value}"
 #: the first thing this app tells a reader; spelling the names out is the difference between
 #: disclosing it and referring to it.
 #:
-#: **Here rather than in `app/Home.py` because the Item 7A column is a scope claim.** It is the
-#: per-company form of the sentence `GROUNDING_SCOPE_DETAILS` makes in aggregate — six answer
-#: Item 7A by pointing at Item 7, nine have a Section of their own — and it is the fact a reader
-#: needs at the moment a market-risk answer cites `Item 7`: without it, "no Item 7A" reads as
-#: "no market-risk grounding". Same disclosure, row granularity, so it belongs in the module
-#: that owns the disclosure and is bound to the committed ingest evidence by the same test
-#: (`tests/test_grounding_scope.py`).
+#: **Two columns, because a third truncated the names this table exists to spell out.** It
+#: carried an `Item 7A` column — `Section` or `→ Item 7` per filer — and at the sidebar's width
+#: the three columns left `Company` too narrow to finish a legal name: `Microsoft Corporatio`,
+#: `JPMorgan Chase & C`. A truncated name discloses less than no column at all, since a reader
+#: cannot tell whether they are looking at the name or at a prefix of it. The Item 7A claim was
+#: never only here — `GROUNDING_SCOPE_DETAILS` states it in aggregate, naming the six filers and
+#: both counts, and that sentence is the one bound to the committed ingest evidence
+#: (`tests/test_grounding_scope.py`). So dropping the column costs the row granularity and none
+#: of the disclosure.
 #:
-#: Every cell is derived and nothing is typed: the names from `UNIVERSE`, the verdict from
-#: `ITEM_7A_POINTER_FILERS`, the column head and the pointer's target from `Section`.
-#:
-#: **Three columns, and the cluster is a caption in `app/Home.py` rather than a fourth** — a
-#: width measurement, so it is recorded where the width is (that panel). Ordered as `UNIVERSE`
-#: declares, which is by cluster, so the rows arrive already grouped underneath that caption.
+#: Both cells are derived and nothing is typed: ticker and name from `UNIVERSE`. Ordered as
+#: `UNIVERSE` declares, which is by cluster, so the rows arrive grouped underneath the panel's
+#: cluster caption — which is where the grouping is stated, since no column shows it.
 UNIVERSE_ROWS: tuple[dict[str, str], ...] = tuple(
-    {
-        "Ticker": company.ticker,
-        "Company": company.name,
-        Section.MARKET_RISK.value: (
-            ITEM_7A_BY_REFERENCE
-            if company.ticker in _POINTER_FILERS_IN_UNIVERSE
-            else ITEM_7A_OWN_SECTION
-        ),
-    }
-    for company in UNIVERSE
+    {"Ticker": company.ticker, "Company": company.name} for company in UNIVERSE
 )
 
 

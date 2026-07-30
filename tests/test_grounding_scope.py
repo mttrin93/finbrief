@@ -33,8 +33,6 @@ from finbrief.prompts import (
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
     GROUNDING_SCOPE_VERIFY,
-    ITEM_7A_BY_REFERENCE,
-    ITEM_7A_OWN_SECTION,
     LIVE_DATA_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
@@ -115,46 +113,28 @@ def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():
     assert f"{len(UNIVERSE) - len(found)} have an `Item 7A` Section." in panel
 
 
-def test_the_universe_tables_item_7a_column_is_the_run_that_built_the_kb():
-    """The same claim as the test above, one row at a time (#13).
+def test_the_universe_table_is_two_columns_and_both_are_derived():
+    """Ticker · Company, in `UNIVERSE` order, neither column composed here (#13).
 
-    The sidebar's Universe panel is a table now, and its last column renders
-    `ITEM_7A_POINTER_FILERS` per company — so a filer wrongly in that hand-maintained set is
-    no longer an aggregate count off by one, it is a row telling a reader that *this* company
-    has no Item 7A Section. Bound to the ingest run's own gate table for the reason the module
-    docstring gives: the arithmetic being self-consistent is not the same as its being true.
+    The table used to carry a third column — `Section` or `→ Item 7` per filer — and this file
+    bound it, row by row, to the ingest run's own gate table. **That column is gone because it
+    truncated the names**: three columns at the sidebar's width left `Company` too narrow to
+    finish `Microsoft Corporation`, and a name a reader cannot tell from a prefix of itself
+    discloses less than no column at all.
 
-    **Both halves, as a partition.** The by-reference set is asserted equal to what the run
-    found, and the two sets together to the whole Universe — so a row that renders neither
-    verdict, or a company missing from the table entirely, fails here rather than passing on the
-    strength of the six that are right.
+    What was lost is the row granularity, not the claim, and not its binding: the Item 7A
+    disclosure is `GROUNDING_SCOPE_DETAILS`', which names the six filers and both counts, and
+    `test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found` above holds *that*
+    sentence to what the run found. So the evidence tie survives the column; only the
+    per-company rendering of it went.
+
+    **Both columns asserted as whole-sequence equalities**, which is what keeps this from
+    drifting into a shape check: a `len()` or an `in` would pass on a table that repeated one
+    company fifteen times, and the ordering is load-bearing now that the panel's caption tells a
+    reader the rows follow cluster order.
     """
-    rows = gate_rows(report_text())
-    found = {ticker for ticker, row in rows.items() if _POINTER_MARKER in row}
-    item_7a = Section.MARKET_RISK.value
-
-    by_reference = {r["Ticker"] for r in UNIVERSE_ROWS if r[item_7a] == ITEM_7A_BY_REFERENCE}
-    own_section = {r["Ticker"] for r in UNIVERSE_ROWS if r[item_7a] == ITEM_7A_OWN_SECTION}
-
-    assert by_reference == found, "the table's Item 7A column names the filers the run found"
-    assert by_reference | own_section == {company.ticker for company in UNIVERSE}
-    # And the panel's aggregate sentence counts the same rows the table shows, so a reader who
-    # reads one and not the other is not told two different things.
-    assert f"{len(own_section)} have an `Item 7A` Section." in " ".join(GROUNDING_SCOPE_DETAILS)
-
-
-def test_the_universe_tables_two_item_labels_come_from_the_enum():
-    """Neither the column head nor the pointer's target may be a typed `Item 7A` / `Item 7`.
-
-    A latent binding rather than one that bites today — both sides read the same enum, so
-    what it catches is the *next* change: rename either Section's label and a hand-typed copy
-    in the table stops matching, exactly as the prompts' own
-    `test_every_scope_claim_in_a_prompt_is_derived_and_not_typed` catches a typed Item list.
-    The column is a scope claim like any other sentence in `prompts.py`, and this file is
-    where those are held to being derived.
-    """
-    assert list(UNIVERSE_ROWS[0]) == ["Ticker", "Company", Section.MARKET_RISK.value]
-    assert ITEM_7A_BY_REFERENCE.endswith(Section.MDA.value)
+    assert list(UNIVERSE_ROWS[0]) == ["Ticker", "Company"]
+    assert [r["Ticker"] for r in UNIVERSE_ROWS] == [c.ticker for c in UNIVERSE]
     # The company column is the whole reason the table replaced a list of tickers, so it is the
     # legal name from `config` and not a ticker repeated or a shortened form composed here.
     assert [r["Company"] for r in UNIVERSE_ROWS] == [c.name for c in UNIVERSE]
