@@ -243,6 +243,27 @@ CLUSTERS: Mapping[PeerCluster, tuple[str, ...]] = _build_clusters(UNIVERSE)
 PEERS: Mapping[str, tuple[str, ...]] = _build_peers(CLUSTERS, UNIVERSE)
 
 
+def thinnest_cluster_filer() -> Company:
+    """The Universe member with the fewest peers — the crispest worked example, from the data.
+
+    **One derivation, because two of them disagreed on screen.** The sidebar's Universe
+    panel picks a company to illustrate "peers come only from this set", and
+    `prompts.EXAMPLE_QUESTIONS` picks one for its peer-comparison button. Both were written
+    as `min(UNIVERSE, key=...)` over the same idea with different tie-breaks — and five
+    clusters tie at two members, so the panel said `TSLA` while the button asked about Bank
+    of America, under a comment claiming the button was derived the way the panel is (code
+    review of #13).
+
+    `ticker` breaks the tie so the answer is deterministic across runs: on size alone it fell
+    out of dictionary order, stable per build and not across curation changes.
+
+    Here rather than in `prompts.py` because it is a fact about the Universe and not a
+    prompt, and `prompts.py` already reads this module — the other direction is the import
+    loop `GROUNDING_SCOPE` is careful about.
+    """
+    return min(UNIVERSE, key=lambda company: (len(PEERS[company.ticker]), company.ticker))
+
+
 # --------------------------------------------------------------------------------------
 # Finance tools: the free-tier budget and the input caps (T5, ADR-0009)
 # --------------------------------------------------------------------------------------

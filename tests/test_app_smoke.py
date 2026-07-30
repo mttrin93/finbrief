@@ -24,6 +24,7 @@ from finbrief.config import (
     PEERS,
     UNIVERSE,
     get_settings,
+    thinnest_cluster_filer,
 )
 from finbrief.finance.news import Headline
 from finbrief.finance.ratios import compare
@@ -1662,7 +1663,14 @@ def test_the_sidebar_prose_is_collapsed_by_default(app):
     app.run()
 
     panels = app.sidebar.expander
-    assert len(panels) >= 3, f"the prose blocks are panels now; got {[p.label for p in panels]}"
+    # **Named and counted, not `>= 3`.** A lower bound is satisfied by a sidebar that lost a
+    # panel as well as by the right one, so it is not a check on which panels are there
+    # (CLAUDE.md — prefer an equality over a bound; code review of #13).
+    labels = [panel.label for panel in panels]
+    expected = ("How to use", "Grounding scope", "Configuration", "Universe", "Token spend")
+    for name in expected:
+        assert any(name in label for label in labels), f"{name} is a panel; got {labels}"
+    assert len(labels) == 5, f"five panels, and no sixth arriving unnoticed; got {labels}"
     assert not any(panel.proto.expanded for panel in panels), (
         f"every sidebar panel opens collapsed; got "
         f"{[(p.label, p.proto.expanded) for p in panels]}"
@@ -2066,11 +2074,16 @@ def test_a_conversation_can_be_taken_away_as_json_and_as_csv(app, monkeypatch):
 
     buttons = app.sidebar.download_button
     assert [button.label for button in buttons] == ["Download JSON", "Download CSV"]
-    # The file name and the mime type are **not asserted here, and that is not an omission**:
-    # neither is on `DownloadButtonProto` — the bytes are served over a URL, so `AppTest` has no
-    # handle on either. That is why `export.file_name` exists as a function rather than as an
-    # f-string in the app, and `test_export.py` binds it where it can actually be checked.
-    assert all(button.proto.url for button in buttons), "each one has bytes behind it"
+    # The file name, the mime type and the payload are **not asserted here, and that is not an
+    # omission**: none of the three is on `DownloadButtonProto` — the bytes are served over a
+    # URL, so `AppTest` has no handle on any of them. That is why `export.file_name` exists as a
+    # function rather than as an f-string in the app, and `tests/test_export.py` binds the name
+    # and both payloads where they can actually be checked.
+    #
+    # This line used to add `assert all(button.proto.url ...)`, captioned "each one has bytes
+    # behind it". It does not check that: Streamlit populates the URL whether or not the data is
+    # what it should be, so the claim was one the assertion could not make (code review of #13).
+    # The label equality above is the check `AppTest` can honestly do here.
 
 
 def test_the_export_caption_counts_the_turns_and_sources_going_out(app, monkeypatch):
@@ -2146,13 +2159,44 @@ def example_buttons(app):
     return [button for button in app.button if button.label in EXAMPLE_QUESTIONS]
 
 
+def test_the_peer_example_names_the_same_company_the_universe_panel_does(app):
+    """Two surfaces, one derivation — because two derivations disagreed on screen.
+
+    The Universe panel illustrates "peers come only from this set" with the thinnest
+    cluster, and the peer-comparison button picks a filer the same way. Both were
+    `min(UNIVERSE, key=...)` with different tie-breaks, and five clusters tie at two members
+    — so the caption named `TSLA` while the button asked about Bank of America, under a
+    comment claiming the button was derived the way the caption is (code review of #13).
+
+    Asserted against `config.thinnest_cluster_filer` **and** against what is on the page:
+    binding only the two call sites to the function would pass on a page rendering neither.
+    """
+    app.run()
+
+    example = thinnest_cluster_filer()
+    captions = " ".join(
+        caption.value for panel in app.sidebar.expander for caption in panel.caption
+    )
+    assert f"e.g. {example.ticker} vs." in captions, (
+        f"the Universe panel's worked example is {example.ticker}; got {captions!r}"
+    )
+    peer_question = next(q for q in EXAMPLE_QUESTIONS if "peers" in q)
+    assert example.aliases[0] in peer_question, (
+        f"and so is the button's: {peer_question!r} names a different company"
+    )
+
+
 def test_the_examples_are_questions_this_universe_can_actually_answer(app):
     # A first click that returns the out-of-scope fallback teaches a new reader that the app is
     # broken. So every example names a company the Universe holds — asserted against `config`
     # rather than against a list typed here, which is what makes it a binding: `prompts.py`
     # builds these from `UNIVERSE`, so a curation change moves the buttons instead of leaving
     # them pointing at a company nothing was ingested for.
-    assert 3 <= len(EXAMPLE_QUESTIONS) <= 4, "three or four, or the row wraps badly"
+    # An equality, not `3 <= n <= 4`: there are four, one per path a reader would not guess is
+    # there, and a bound that three values satisfy is not a check on the number (CLAUDE.md —
+    # prefer an equality over a bound; code review of #13). Four also fills both rows of the
+    # two-column layout exactly, which is the other reason it is four rather than three.
+    assert len(EXAMPLE_QUESTIONS) == 4, "one per path a reader would not guess is there"
     names = {company.aliases[0] for company in UNIVERSE} | {c.ticker for c in UNIVERSE}
     for question in EXAMPLE_QUESTIONS:
         assert any(name in question for name in names), (

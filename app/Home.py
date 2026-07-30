@@ -47,6 +47,7 @@ from finbrief.config import (
     RetrievalStrategy,
     get_settings,
     resolve_log_file,
+    thinnest_cluster_filer,
 )
 from finbrief.export import (
     THREAD_HANDLE_CHARS,
@@ -145,6 +146,7 @@ def shared_agent():
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
+
 # **Where this session's window of the sink begins** (T12 item 5). Marked once, before this
 # session has appended anything, so the spend meter reads forward from here instead of over a
 # file that accumulates every run and every other session that named it — the shape ADR-0011's
@@ -155,8 +157,20 @@ if "thread_id" not in st.session_state:
 # Deliberately **not** re-marked by "Start over": that mints a new `thread_id`, so the filter
 # already excludes the previous conversation's lines and re-marking would only narrow the window
 # for no gain.
+def sink_path():
+    """Where the event log is being written, or `None` when nobody named one.
+
+    **One question, asked of one source, in the three places this page asks it** — the offset
+    below, the thread-id caption and the spend meter. `configure_logging()` takes no arguments
+    and resolves the sink from the environment itself, so reading `os.environ` is what keeps
+    these three from claiming a sink the handler did not install; reading it *here* is what
+    keeps them from disagreeing with each other (code review of #13).
+    """
+    return resolve_log_file(os.environ)
+
+
 if "sink_offset" not in st.session_state:
-    log_path = resolve_log_file(os.environ)
+    log_path = sink_path()
     st.session_state.sink_offset = 0 if log_path is None else sink_offset(log_path)
 
 # **The per-session question counter** (T12 item 6). Cost and abuse limiting and **not a
@@ -169,7 +183,11 @@ if "questions_asked" not in st.session_state:
 
 
 def render_export_buttons(messages: list[dict[str, object]]) -> None:
-    """Take this conversation away, as JSON or as CSV (T12 item 4, user story 25).
+    """Take this conversation away, as JSON or as CSV (T12 item 4, user story 35).
+
+    Story **35** — *"export or copy a completed brief (basic)… Full multi-format export is
+    Tier-2"* — and not the 25 this shipped citing, which is *"RAGAs metrics reported per
+    bucket"* (code review of #13).
 
     **Defined above the sidebar block rather than beside the other render functions**, which is
     a constraint of this file and not a preference: the sidebar runs at module scope, so a name
@@ -235,7 +253,7 @@ def render_spend_meter() -> None:
     is the layer that displays it — ADR-0011's amendment is explicit that an event wired to a
     page is an event measuring clicks.
     """
-    path = resolve_log_file(os.environ)
+    path = sink_path()
     if path is None:
         st.caption(
             "Token spend is read from the event log, which is off. Set `FINBRIEF_LOG_FILE` to "
@@ -333,11 +351,11 @@ with st.sidebar:
     # there is no log, and the caption is then a hex string in front of an analyst with nothing
     # to do with it — sidebar space spent on a handle to nothing.
     #
-    # Read from the environment rather than from `Settings`, because that is where the sink's
-    # own resolution reads it (`config.resolve_log_file`, called by `configure_logging` with no
-    # arguments): asking the same question of the same source is what keeps this caption from
-    # claiming a sink the handler did not install.
-    if resolve_log_file(os.environ) is not None:
+    # Through `sink_path()`, which reads the environment rather than `Settings` because that is
+    # where the sink's own resolution reads it (`config.resolve_log_file`, called by
+    # `configure_logging` with no arguments): asking the same question of the same source is
+    # what keeps this caption from claiming a sink the handler did not install.
+    if sink_path() is not None:
         # Not a secret — a uuid identifies a conversation and says nothing about who is having
         # it, which is why it is also safe on every log line.
         # `THREAD_HANDLE_CHARS`, shared with the export's file names: this caption and a
@@ -419,7 +437,12 @@ with st.sidebar:
         # The thinnest cluster makes the crispest example, and picking it from the data keeps
         # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
         # the Universe changed.
-        example = min(UNIVERSE, key=lambda company: len(PEERS[company.ticker]))
+        #
+        # **Through `config.thinnest_cluster_filer` rather than a `min` here**, which is the one
+        # derivation `prompts.EXAMPLE_QUESTIONS` also reads. Two copies with different
+        # tie-breaks disagreed on screen — five clusters tie at two members, so this caption
+        # named TSLA while the example button asked about Bank of America (review of #13).
+        example = thinnest_cluster_filer()
         st.caption(
             f"Peers come only from this set, e.g. {example.ticker} vs. "
             f"{', '.join(PEERS[example.ticker])}."
@@ -1020,7 +1043,14 @@ _EXAMPLE_COLUMNS = 2
 
 
 def render_example_questions() -> None:
-    """The empty page's four starting points (T12 item 3, user story 20).
+    """The empty page's four starting points (T12 item 3, PLAN §2's *Interactive help / guide*).
+
+    **No user story, and the citation says so rather than borrowing one.** This shipped citing
+    "user story 20", which is *"a fresh browser session starts a clean conversation"* — nothing
+    to do with example questions (code review of #13). `docs/spec/finbrief.md` has no story for
+    onboarding at all; it puts a help guide in **Out of Scope**, and PLAN §2's Easy tail is the
+    only thing asking for this. A pointer into the spec that lands on the wrong line is worse
+    than no pointer, because the next reader checks the line rather than the claim.
 
     **Shown only while the transcript is empty**, which is what keeps them an affordance rather
     than furniture: they answer "what do I type", and that stops being the reader's question the

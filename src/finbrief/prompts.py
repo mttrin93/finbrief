@@ -28,10 +28,10 @@ from finbrief.config import (
     NEWS_DEFAULT_DAYS,
     NEWS_MAX_DAYS,
     NEWS_MAX_HEADLINES,
-    PEERS,
     QUOTE_TTL_SECONDS,
     TICKERS,
     UNIVERSE,
+    thinnest_cluster_filer,
 )
 from finbrief.ingestion.model import Section
 
@@ -168,12 +168,13 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
 _EXAMPLE_FILER = UNIVERSE[0]
 
 #: The company whose peer comparison reads most crisply — the thinnest cluster, picked from the
-#: data the way the sidebar's own worked example is. `ticker` breaks the tie so the button label
-#: is deterministic across runs; two clusters of equal size otherwise made it depend on
-#: dictionary order.
-_EXAMPLE_PEER_FILER = min(
-    UNIVERSE, key=lambda company: (len(PEERS[company.ticker]), company.ticker)
-)
+#: data by the **same function** the sidebar's own worked example calls.
+#:
+#: That last clause was a claim and not a fact until the code review of #13: this held its own
+#: `min(UNIVERSE, ...)` with a `ticker` tie-break while the panel held one without, and five
+#: clusters tie at two members — so the button asked about Bank of America under a caption
+#: naming TSLA. `config.thinnest_cluster_filer` is now the one derivation.
+_EXAMPLE_PEER_FILER = thinnest_cluster_filer()
 
 #: Four questions the empty page offers, one per path a reader would not guess is there:
 #: Item 1A retrieval, Item 7 retrieval, the peer-ratio tool, and the multi-tool brief.
