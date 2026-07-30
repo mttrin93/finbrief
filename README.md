@@ -307,11 +307,19 @@ over `observability/events.py` and nothing new is emitted. Three consequences:
   which is exactly how an evaluation artifact once published a planner p50 over 13 appended runs
   (ADR-0011). Every turn id is prefixed with the conversation's, so the meter selects this
   conversation's lines and nothing else.
-- **A partial total says so, and names the call it cannot see.** Each field carries its own
-  denominator, so a total missing a call it should have counted is shown as a floor with the
-  counts printed beside it. The gate's zero-shot classifier is deliberately never metered
-  (ADR-0011), which means one paid call per turn is structurally absent from every figure — and
-  the panel says that rather than letting the total imply otherwise.
+- **A partial total says so.** Each field carries its own denominator, so a total missing a call
+  it should have counted is shown as a floor with the counts printed beside it. And where the
+  *call count itself* is a floor — `agent_turn` writes its `calls` only once something reported
+  usage, so a turn that metered nothing is worth one — the figure carries `≥` rather than
+  claiming to be a count.
+- **The unmetered call is named on every total, complete or not.** The gate's zero-shot
+  classifier is deliberately never metered (ADR-0011), so one paid call per turn is structurally
+  absent from every figure, and the panel says so beside the figures. Deliberately *not* folded
+  into the partial banner, which is the bug the code review of #13 found here: "partial" is a
+  claim about reported-versus-counted calls and the classifier never enters that count, so a
+  conversation whose every metered call reported both fields — the ordinary outcome — showed no
+  caveat at all while this file and ADR-0011 both claimed one. A structural absence and a
+  reporting shortfall are two different claims and they get two different sentences.
 
 **No rate card ships in this repo.** `FINBRIEF_INPUT_COST_PER_MTOK` and
 `FINBRIEF_OUTPUT_COST_PER_MTOK` default to unset, and with no price the panel reports tokens and

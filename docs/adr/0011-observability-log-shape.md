@@ -334,12 +334,25 @@ and it would be *this ADR's* own rule broken by the feature it declined. Two kno
 one because input and output are priced differently everywhere, and a blended figure has to be
 wrong for both.
 
-**4. A partial total says so, and names the call it cannot see.** Each field carries its own
-denominator (`observability/tokens.py`'s per-field rule, which this module would otherwise be the
-next place to break), so a total missing a call it should have counted is displayed as a **floor**
-with the counts printed beside it. The banner also names the gate's classifier, which this ADR
-declines to meter: one paid call per turn is structurally absent from every figure the panel
+**4. A partial total says so, and the call it cannot see is named on every total.** Each field
+carries its own denominator (`observability/tokens.py`'s per-field rule, which this module would
+otherwise be the next place to break), so a total missing a call it should have counted is
+displayed as a **floor** with the counts printed beside it — as is the call count itself, when
+`agent_turn` reported none and the honest floor of one stood in for it (`Spend.floored`). The
+gate's classifier, which this ADR declines to meter, is named **separately and
+unconditionally**: one paid call per turn is structurally absent from every figure the panel
 shows, and a total that quietly omitted it would imply it had counted everything.
+
+*Corrected by the code review of #13, and the correction is the point of writing this down.* The
+classifier sentence shipped as a clause of the partial banner, so the paragraph above was false
+for the ordinary case: a conversation whose every metered call reported both fields renders no
+banner, and the caveat this ADR claims is "stated on screen" was stated only when something
+*else* was already missing. It cannot be a sub-clause of `partial` even in principle —
+`Spend.partial` is defined over reported-versus-counted calls and the classifier never enters
+`calls`, so no value of `partial` is evidence about it. `test_the_unmetered_classifier_is_named_
+on_a_complete_total_too` asserts the sentence on exactly the total the first version left silent.
+The shape of the mistake is this repo's own: a claim in a document that nothing rendered, sitting
+beside a test that passed because it exercised the other branch.
 
 **One correctness detail that is the mirror of the usual defect.** A `query_translation` line at
 `max_sub_queries=0` stands behind **zero** chat calls — ADR-0004 §6: the cap removes the

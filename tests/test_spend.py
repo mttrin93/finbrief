@@ -208,6 +208,41 @@ def test_a_planner_that_ran_and_reported_nothing_is_a_call_in_the_denominator(si
     assert spend.input.partial, "the planner's round is in the denominator and reported nothing"
 
 
+def test_a_turn_that_metered_nothing_makes_the_call_count_a_floor(sink, emitter):
+    """`calls` is a floor, not a count, and the shape has to say which.
+
+    `tokens.usage_total` writes `calls` only once something reported usage, so a turn that made
+    five calls and metered none of them arrives as a line with **no** count on it. One is the
+    honest floor — it certainly made a call — but a floor rendered as a count is the same
+    fabrication in the denominator that this module refuses in the numerator, and the surface
+    could not say so because nothing carried the distinction (code review of #13).
+
+    Paired with the reported case below rather than asserted alone: a `floored` that was always
+    truthy would pass a negative-only test.
+    """
+    an_agent_turn(emitter)  # no replies at all, so `usage_total` writes no `calls`
+    a_planner_call(emitter, Reply(input_tokens=40, output_tokens=20), cap=3)
+
+    spend = spend_from(sink)
+
+    assert spend.calls == 2, "the floor of one for the turn, plus the planner's real round"
+    assert spend.floored == 1
+    assert spend.calls_are_a_floor, "so the count may not be displayed as a total"
+
+
+def test_a_turn_that_reported_its_calls_is_a_count_and_not_a_floor(sink, emitter):
+    # The other half. Same two lines, and the only difference is that the turn metered itself,
+    # which is what makes `calls_are_a_floor` a measurement of the line and not of the shape.
+    an_agent_turn(emitter, Reply(input_tokens=100, output_tokens=30))
+    a_planner_call(emitter, Reply(input_tokens=40, output_tokens=20), cap=3)
+
+    spend = spend_from(sink)
+
+    assert spend.calls == 2
+    assert spend.floored == 0
+    assert not spend.calls_are_a_floor
+
+
 def test_the_planner_cap_agrees_with_the_one_the_latency_pool_uses():
     """Two modules asserting the same fact about ADR-0004 §6, bound rather than left to drift.
 

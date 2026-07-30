@@ -1782,7 +1782,12 @@ def test_the_meter_says_the_log_is_off_rather_than_reporting_zero(app):
 
     text = panel_text(spend_panel(app))
     assert "FINBRIEF_LOG_FILE" in text
-    assert "0 tokens" not in text and "$0.00" not in text
+    # **Asserted against the shape the panel actually renders**, which the first version was
+    # not: it forbade `"0 tokens"`, a string no branch of `render_spend_meter` emits, so the
+    # clause described the defect and could not detect it. A fabricated zero arrives as a
+    # backticked figure, so what has to be absent is any figure at all (code review of #13).
+    assert "**Input**" not in text and "**Output**" not in text, "no figures without a log"
+    assert "`0`" not in text and "$" not in text
 
 
 def test_the_meter_reports_this_conversations_tokens_from_the_log(app, monkeypatch, tmp_path):
@@ -1824,7 +1829,13 @@ def test_a_cost_is_shown_only_when_a_price_is_configured(app, monkeypatch, tmp_p
 
     unpriced = panel_text(spend_panel(app))
     assert "FINBRIEF_INPUT_COST_PER_MTOK" in unpriced
-    assert "$" not in unpriced.replace("$0", "@"), "no dollar figure without a rate card"
+    # **No `.replace("$0", "@")` here, which is what this line used to carry.** Nothing in the
+    # unpriced panel contains `$0`, so the replace protected nothing and stripped exactly the
+    # sentinel a regression emits: every cost this app produces is under a dollar, so
+    # `**Cost** `$0.7500`` survived it intact and this clause could not fail. It is the only
+    # guard for a figure rendered *beside* the not-priced caption — the case the assertion above
+    # does not cover — so it has to be able to fail (code review of #13).
+    assert "$" not in unpriced, "no dollar figure without a rate card"
 
     monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "0.15")
     monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "0.60")
@@ -1859,9 +1870,6 @@ def test_a_partial_total_says_so_beside_the_figure(app, monkeypatch, tmp_path):
     assert "Partial" in text
     assert "1 of 2 call(s) reported input tokens" in text
     assert "floor" in text
-    # And it names the call it structurally cannot see, rather than letting the total imply it
-    # counted everything (ADR-0011 declines to meter the gate's classifier).
-    assert "classifier is never metered" in text
 
 
 def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
@@ -1882,6 +1890,76 @@ def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
     assert "Partial" not in panel_text(spend_panel(app))
+
+
+def test_the_unmetered_classifier_is_named_on_a_complete_total_too(app, monkeypatch, tmp_path):
+    # **The case the review found, and it is the common one.** ADR-0011's amendment §4 claims
+    # the gate classifier's omission is "stated on screen"; the sentence sat inside the
+    # `partial` branch, so a conversation where every metered call reported both fields — a
+    # complete total, the ordinary outcome — showed no caveat at all. `test_a_partial_total_
+    # says_so_beside_the_figure` passed and the claim was still false.
+    #
+    # It cannot be a `partial` sub-clause even in principle: `Spend.partial` is about *reported
+    # versus counted* calls and the classifier never enters `calls`, so no value of `partial` is
+    # evidence about it. Asserted on exactly the total the old code left silent (code review of
+    # #13).
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    metered(
+        app,
+        monkeypatch,
+        input_tokens=1200,
+        output_tokens=340,
+        input_tokens_calls=1,
+        output_tokens_calls=1,
+        calls=1,
+    )
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    text = panel_text(spend_panel(app))
+    assert "Partial" not in text, "this is the complete-total case, deliberately"
+    assert "classifier is never metered" in text
+
+
+def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp_path):
+    # `tokens.usage_total` writes `calls` only once something reported usage, so a turn that
+    # metered nothing arrives as a line with no count on it and is worth the honest floor of
+    # one. Printing that floor as a count is the same fabrication in the denominator that
+    # `_tokens` refuses in the numerator — so the figure carries `≥`.
+    #
+    # Two lines, because the floor is only *visible* when something else reported: an
+    # `agent_turn` with no usage at all (no `calls` key, exactly as the emitter writes it) and a
+    # planner call that did report. The turn really made at least two calls and the panel may
+    # not claim it knows how many.
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    planner = logging.getLogger("finbrief.retrieval.query_translation")
+
+    def answer_unmetered(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+        log_event(
+            planner,
+            "query_translation",
+            max_sub_queries=3,
+            sub_queries=2,
+            input_tokens=40,
+            output_tokens=20,
+        )
+        log_event(
+            logging.getLogger("finbrief.agent.agent"),
+            "agent_turn",
+            thread_id=thread_id,
+            searches=1,
+        )
+        return a_turn()
+
+    monkeypatch.setattr(agent, "answer", answer_unmetered)
+    app.run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    text = panel_text(spend_panel(app))
+    assert "`≥2`" in text, f"the call count is a floor, and says so; got {text!r}"
+    assert "40" in text and "20" in text, "the planner's own counts are real and reported"
 
 
 # --------------------------------------------------------------------------------------

@@ -97,6 +97,17 @@ class Spend:
 
     turns: int
     calls: int
+    #: How many of the lines behind `calls` did not report a call count of their own, so that
+    #: `calls` counted each of them as **one**.
+    #:
+    #: `agent_turn` writes `calls` only once something reported usage (`tokens.usage_total`), so
+    #: a turn that made five calls and metered none of them arrives here as a line with no count
+    #: on it. Counting it as one is the honest floor — it certainly made a call — but `calls` is
+    #: then a floor and not a count, and a caller printing it owes the reader that word. Without
+    #: this field it could not: a floor rendered as a total is the narrowing this whole path is
+    #: built against, and `partial` cannot carry it because `partial` is about *token* reporting
+    #: and this is about the denominator itself (code review of #13).
+    floored: int
     input: Tokens
     output: Tokens
 
@@ -104,6 +115,11 @@ class Spend:
     def measured(self) -> bool:
         """Whether any call in this conversation reported any count."""
         return self.input.measured or self.output.measured
+
+    @property
+    def calls_are_a_floor(self) -> bool:
+        """Whether `calls` counts every call, or only every call it could see."""
+        return self.floored > 0
 
     @property
     def partial(self) -> bool:
@@ -165,9 +181,11 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
     totals: dict[str, int | None] = dict.fromkeys(TOKEN_FIELDS)
     reported: dict[str, int] = dict.fromkeys(TOKEN_FIELDS, 0)
     calls = 0
+    floored = 0
     for event in mine:
-        made = _calls_behind(event)
+        made, is_floor = _calls_behind(event)
         calls += made
+        floored += is_floor
         for name in TOKEN_FIELDS:
             count = event.field(name)
             if count is None:
@@ -182,21 +200,28 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         # per search, so counting lines would report a two-search turn as three turns.
         turns=len({event.turn_id for event in mine}),
         calls=calls,
+        floored=floored,
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
     )
 
 
-def _calls_behind(event: Event) -> int:
-    """How many paid chat calls one line represents.
+def _calls_behind(event: Event) -> tuple[int, bool]:
+    """How many paid chat calls one line represents, and whether that number is a floor.
 
     `agent_turn` says so itself (`calls`, written only once something was reported — so its
     absence means the turn reported no usage at all, not that it made none, and the fallback is
-    the honest floor of one). A `query_translation` line is one call, or **none** at
-    `PLANNER_SILENT_CAP`: at a cap of 0 no `model.invoke` happens, so charging that line a call
-    would inflate the denominator and report a complete total as partial.
+    the honest floor of one). **The floor is returned as a floor**, because a caller printing
+    the total owes the reader the difference: a five-call turn that metered nothing arrives as a
+    line worth `1` here, and `Spend.floored` is what stops that being displayed as a count
+    (code review of #13).
+
+    A `query_translation` line is one call, or **none** at `PLANNER_SILENT_CAP`: at a cap of 0
+    no `model.invoke` happens, so charging that line a call would inflate the denominator and
+    report a complete total as partial.
     """
     if event.event == "query_translation":
         cap = event.field("max_sub_queries")
-        return 0 if cap == PLANNER_SILENT_CAP else 1
-    return int(event.field("calls", 1))
+        return (0 if cap == PLANNER_SILENT_CAP else 1), False
+    reported = event.field("calls")
+    return (1, True) if reported is None else (int(reported), False)

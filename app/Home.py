@@ -66,7 +66,7 @@ from finbrief.observability.logging_setup import configure_logging, log_event
 # died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
 # would not have.
 from finbrief.observability.logging_setup import turn as log_turn
-from finbrief.observability.spend import conversation_spend
+from finbrief.observability.spend import Spend, conversation_spend
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -259,7 +259,7 @@ def render_spend_meter() -> None:
     st.markdown(
         f"**Input** `{_tokens(spend.input.total)}`  \n"
         f"**Output** `{_tokens(spend.output.total)}`  \n"
-        f"**Calls** `{spend.calls}` across `{spend.turns}` turn(s)"
+        f"**Calls** `{_calls(spend)}` across `{spend.turns}` turn(s)"
     )
     dollars = spend.dollars(
         input_per_mtok=settings.input_cost_per_mtok,
@@ -273,6 +273,19 @@ def render_spend_meter() -> None:
         )
     else:
         st.markdown(f"**Cost** `${dollars:.4f}`")
+    # **Unconditional, and that is the fix.** This sentence sat inside the `partial` branch
+    # below, so a conversation whose every metered call reported both fields showed no caveat at
+    # all — and ADR-0011's amendment §4 claims precisely that the omission is "stated on
+    # screen". The claim was falsified by the surface it was written about (code review of #13).
+    #
+    # It cannot live in `partial` even in principle: `Spend.partial` is defined over *reported
+    # versus counted* calls, and the gate's classifier never enters `calls`, so no value of
+    # `partial` is evidence about it. A structural absence and a reporting shortfall are two
+    # different claims and they get two different sentences.
+    st.caption(
+        "The input gate's classifier is never metered (ADR-0011), so one paid call per turn is "
+        "missing from these figures by design."
+    )
     if spend.partial:
         # **Said beside the figure, not folded into it.** A total missing a call it should have
         # counted is a floor, and a floor presented as a total is the silent narrowing this
@@ -281,8 +294,7 @@ def render_spend_meter() -> None:
         st.warning(
             f"Partial: {spend.input.reported_calls} of {spend.calls} call(s) reported input "
             f"tokens and {spend.output.reported_calls} reported output tokens, so the figures "
-            f"above are a floor. The input gate's classifier is never metered (ADR-0011), so "
-            f"one call per turn is missing from them by design.",
+            f"above are a floor.",
             icon=":material/data_alert:",
         )
 
@@ -290,6 +302,17 @@ def render_spend_meter() -> None:
 def _tokens(count: int | None) -> str:
     """`12,431`, or the word for a count nothing reported. Never `0` for an absence."""
     return "not reported" if count is None else f"{count:,}"
+
+
+def _calls(spend: Spend) -> str:
+    """`3`, or `≥3` when the call count is a floor rather than a count.
+
+    `agent_turn` writes its `calls` only once something reported usage, so a turn that metered
+    nothing is worth the honest floor of one here — and printing that floor as a count is the
+    same fabrication in the denominator that `_tokens` refuses in the numerator
+    (`spend.Spend.floored`, code review of #13).
+    """
+    return f"≥{spend.calls}" if spend.calls_are_a_floor else str(spend.calls)
 
 
 with st.sidebar:
