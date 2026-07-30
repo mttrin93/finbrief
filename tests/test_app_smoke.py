@@ -9,6 +9,7 @@ behaviour (ADR-0008).
 
 import json
 import logging
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from finbrief.config import (
 )
 from finbrief.finance.news import Headline
 from finbrief.finance.ratios import compare
+from finbrief.ingestion.edgar import filing_index_url
 from finbrief.ingestion.model import Section
 from finbrief.observability.events import read_events
 from finbrief.observability.logging_setup import log_event
@@ -874,6 +876,80 @@ def test_the_sources_panel_names_the_retrievers_that_found_each_chunk(app, monke
 
     captions = " ".join(c.value for c in sources_panel(app.chat_message[1]).caption)
     assert "vector + BM25" in captions
+
+
+def test_each_source_links_its_own_accession_to_its_own_filing_on_edgar(app, monkeypatch):
+    """A citation an analyst can check against the primary source (user story 2, #13).
+
+    **The assertion is the pairing, not the presence.** A link is the one thing on this page a
+    reader cannot verify by looking: every EDGAR filing index renders, so a chunk carrying the
+    *other* chunk's link — or a link built from the accession's leading block, which is the
+    filer agent's CIK and not the company's — is a wrong answer that looks exactly like a right
+    one. So each rendered link is matched to the accession of the chunk it sits under.
+
+    The two chunks are TSLA's and META's real 10-Ks, and they were both filed by Donnelley
+    (`0001628280-…`). That is deliberate: a derivation that read the CIK out of the accession
+    would give these two the *same* directory, so the final inequality fails on the exact bug
+    `ingestion/edgar.filing_index_url`'s docstring is about. `tests/test_edgar_links.py` binds
+    the URLs themselves to the ones a real fetch recorded; this binds them to their chunks.
+    """
+    contexts = (
+        a_context(1, ticker="TSLA", accession="0001628280-26-003952"),
+        a_context(2, ticker="META", accession="0001628280-26-003942"),
+    )
+    stub_answer(
+        monkeypatch,
+        AgentTurn(
+            text="Both filers describe supply concentration [1][2].",
+            searches=(Search(query="supply chain risk", contexts=contexts),),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("What do Tesla and Meta say about supply chains?").run()
+
+    assert not app.exception
+    lines = [md.value for md in sources_panel(app.chat_message[1]).markdown]
+    assert len(lines) == len(contexts), "one citation line per source"
+
+    links = []
+    for context, line in zip(contexts, lines, strict=True):
+        match = re.search(r"\[([\d-]+)\]\((\S+)\)", line)
+        assert match, f"source [{context.rank}] renders no EDGAR link; got {line!r}"
+        accession, url = match.groups()
+        assert accession == context.accession, "the link text is this chunk's own accession"
+        assert url.endswith(f"{context.accession}-index.html"), (
+            f"source [{context.rank}] links {url}, which is not its own filing's index"
+        )
+        assert url == filing_index_url(context.ticker, context.accession)
+        links.append(url)
+
+    assert links[0] != links[1], (
+        "two filings by one agent must resolve to two company directories; a CIK taken from "
+        "the accession would make these identical"
+    )
+
+
+def test_a_source_whose_cik_does_not_resolve_says_so_instead_of_linking(app, monkeypatch):
+    """An absence rendered as an absence. A chunk whose ticker is not in edgartools' bundled
+    table still has a checkable citation — the filer's words are right there — so the panel
+    shows the accession unlinked and says why, rather than dropping it or inventing a URL."""
+    context = a_context(1, ticker="NOTATICKER", accession="0000320193-25-000079")
+    stub_answer(
+        monkeypatch,
+        AgentTurn(
+            text="An answer whose filer has no CIK on file [1].",
+            searches=(Search(query="anything", contexts=(context,)),),
+        ),
+    )
+    app.run()
+
+    app.chat_input[0].set_value("Anything at all?").run()
+
+    assert not app.exception
+    line = " ".join(md.value for md in sources_panel(app.chat_message[1]).markdown)
+    assert f"{context.accession} (no EDGAR link)" in line
+    assert "](" not in line, "and no link, rather than one pointing somewhere plausible"
 
 
 def test_the_panel_survives_the_next_turn_like_the_sources_do(app, monkeypatch):

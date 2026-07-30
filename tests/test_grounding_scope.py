@@ -32,6 +32,7 @@ from finbrief.prompts import (
     AGENT_SYSTEM_PROMPT,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    GROUNDING_SCOPE_VERIFY,
     LIVE_DATA_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
@@ -154,8 +155,8 @@ def test_the_scope_panel_is_five_short_lines_of_plain_language():
     """
     assert len(GROUNDING_SCOPE_DETAILS) == 5
 
-    panel = " ".join(GROUNDING_SCOPE_DETAILS)
-    assert not re.search(r"ADR-\d+", panel), "no ADR numbers in the user-facing copy"
+    on_screen = " ".join((*GROUNDING_SCOPE_DETAILS, GROUNDING_SCOPE_VERIFY))
+    assert not re.search(r"ADR-\d+", on_screen), "no ADR numbers in the user-facing copy"
     # One sentence each: the marker is a full stop with a word after it, so an abbreviation
     # ("10-K.") and the closing stop are both fine and a second sentence is not.
     for detail in GROUNDING_SCOPE_DETAILS:

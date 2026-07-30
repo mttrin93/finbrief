@@ -235,6 +235,17 @@ the_download_buttons` is the guard).
   enumerated here belongs in `config.py`, or the exemption stops being narrow.
 - `ingestion/model.py` owns the shared boundary definitions (`WORD`, `NEXT_ITEM_MARKERS`,
   `item_heading`/`section_start`) — a second copy lets a repair and the gate disagree.
+- `ingestion/edgar.py` owns every EDGAR **address** as well as every EDGAR call.
+  `filing_index_url` is what makes a citation checkable — the sources panel links each accession
+  to its filing — and it composes **no template**: it asks edgartools for the same string
+  `FilingRef.url` records at ingest, and resolves the CIK from the **ticker** through the
+  bundled `company_tickers.parquet`, never from the accession, whose leading block is the *filer
+  agent's* CIK. META's 10-K is accession `0001628280-…`, which is Donnelley's, so a URL built
+  from it resolves to a different company's filings and raises nothing — a wrong answer
+  indistinguishable by eye from a right one, which is why the binding is an equality against
+  the 15 URLs a real fetch recorded in `docs/verification/section-starts.md`
+  (`tests/test_edgar_links.py`) and not a shape check on a URL we built. A second URL template
+  anywhere reintroduces exactly that.
 - `llm.py` is the only chat-model constructor; `retrieval/embeddings.py` the only
   embeddings constructor, and ingest and query must share it (a drifting model degrades
   retrieval to noise with no error).

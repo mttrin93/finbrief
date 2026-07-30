@@ -32,6 +32,7 @@ from finbrief.config import (
     UNIVERSE,
     thinnest_cluster_filer,
 )
+from finbrief.ingestion.edgar import EDGAR_SEARCH_URL
 from finbrief.ingestion.model import Section
 
 if TYPE_CHECKING:
@@ -144,6 +145,19 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
         "fetched, and a fetch that fails shows the last cached figure with its age or says "
         "the figure could not be fetched — never a placeholder, a guess or a zero."
     ),
+)
+
+#: The panel's one link out, under the five lines above.
+#:
+#: **A link and not a sentence about links.** User story 2 asks an analyst to be able to check
+#: an answer against the primary source, and the sources panel does that per citation
+#: (`ingestion/edgar.filing_index_url`). This is the same offer for the question the panel
+#: itself raises — "is that really all a 10-K says about this?" — pointed at EDGAR's own search
+#: rather than at any one filing. The URL lives in `ingestion/edgar.py` with the rest of the
+#: EDGAR boundary; nothing here composes one.
+GROUNDING_SCOPE_VERIFY = (
+    f"Every citation links to its filing on EDGAR. [Verify on EDGAR]({EDGAR_SEARCH_URL}) — "
+    f"the primary source for all of it."
 )
 
 

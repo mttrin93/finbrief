@@ -58,6 +58,7 @@ from finbrief.export import (
     log_export,
 )
 from finbrief.finance.ratios import Metric, Unit
+from finbrief.ingestion.edgar import filing_index_url
 from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
@@ -74,6 +75,7 @@ from finbrief.prompts import (
     EXAMPLE_QUESTIONS,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    GROUNDING_SCOPE_VERIFY,
     INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
 )
@@ -536,6 +538,10 @@ with st.sidebar:
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
             st.markdown(f"- {detail}")
+        # A caption rather than a sixth bullet: the five above are what the KB is and is not,
+        # and this is where to go when they are not enough. Its words are `prompts.py`'s like
+        # every other line in this panel.
+        st.caption(GROUNDING_SCOPE_VERIFY)
 
     with st.expander(":material/tune: Configuration"):
         # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
@@ -667,6 +673,28 @@ def retriever_label(context: Context) -> str:
     # no provenance at all.
     found = ["BM25" if r is Retriever.BM25 else r.value for r in context.retrievers]
     return " + ".join(found) if found else "provenance not recorded"
+
+
+def accession_label(context: Context) -> str:
+    """The chunk's accession number, linked to the filing's own index page on EDGAR.
+
+    What turns a citation from a claim into something an analyst can check (user story 2). The
+    panel already shows the filer's words; this is where the words came from, one click away.
+
+    **The link is derived from this chunk's own accession**, never from a template written here
+    — `ingestion/edgar.filing_index_url` asks edgartools for the URL shape that
+    `FilingRef.url` already records, and resolves the CIK from the ticker rather than from the
+    accession's leading block, which belongs to the filer's agent. A link built any other way
+    is one that can point at a different company's filing while looking entirely correct, which
+    is why `tests/test_app_smoke.py` asserts the *rendered* link carries the chunk's own
+    accession rather than merely that a link is present.
+
+    Unlinked when the CIK does not resolve, and the accession is still shown: a missing link is
+    "we cannot address this filing on EDGAR", which is a different claim from "this citation
+    has no source" (CLAUDE.md).
+    """
+    url = filing_index_url(context.ticker, context.accession)
+    return f"[{context.accession}]({url})" if url else f"{context.accession} (no EDGAR link)"
 
 
 def variant_labels(search: Search) -> dict[str, str]:
@@ -1056,7 +1084,10 @@ def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
     # `status` block and put the panel out of `AppTest.expander`'s reach (seam 3).
     with st.expander(f":material/description: Sources ({len(contexts)})"):
         for context in contexts:
-            st.markdown(f"**[{context.rank}] {context.citation}**")
+            # The link rides on the citation line rather than in the caption below it: this is
+            # the line a reader reads to decide whether to trust the excerpt, and "where to
+            # check it" belongs beside "what it is". The caption under it is machine detail.
+            st.markdown(f"**[{context.rank}] {context.citation}** · {accession_label(context)}")
             st.caption(
                 f"`{context.chunk_id}` · {distance_label(context.distance)} · "
                 f"{retriever_label(context)}"

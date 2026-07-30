@@ -118,6 +118,16 @@ Retrieved text is shown verbatim in the sources panel: it renders through `st.te
 Markdown, because a filer's own `$178,353` is a KaTeX expression to a Markdown renderer and
 a citation surface that silently reformats the figures is not a citation surface.
 
+Each source also carries its **accession number, linked to that filing's index page on
+EDGAR**, so a citation can be checked against the primary source rather than against the
+excerpt beside it (user story 2). The link is derived, not stored: the CIK comes from the
+ticker through edgartools' bundled table and the URL shape from `Filing.homepage_url`, which
+is the same string `FilingRef.url` records at ingest. It is derived *from the ticker* because
+an accession's leading block is the **filer agent's** CIK, not the company's — META's 10-K is
+accession `0001628280-…`, which is Donnelley's, and a URL built from it resolves to a
+different company's filings with no error anywhere. `tests/test_edgar_links.py` reproduces all
+15 recorded URLs from ticker and accession alone.
+
 ## What the live figures are, and are not
 
 Price, ratios and headlines come from three tools over free public data, never from the filings
