@@ -28,6 +28,7 @@ from finbrief.config import (
     NEWS_DEFAULT_DAYS,
     NEWS_MAX_DAYS,
     NEWS_MAX_HEADLINES,
+    PEERS,
     QUOTE_TTL_SECONDS,
     TICKERS,
     UNIVERSE,
@@ -153,6 +154,44 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
         "saying how old it is, and if there is nothing cached the answer says the figure could "
         "not be fetched. No number here is ever a placeholder or a guess."
     ),
+)
+
+
+# --------------------------------------------------------------------------------------
+# The empty page's four questions (T11 item 3)
+# --------------------------------------------------------------------------------------
+
+#: An arbitrary but *stable* Universe member for the filing-shaped examples. Indexed rather
+#: than named so that curating the Universe moves the example instead of raising: a literal
+#: `COMPANIES["AAPL"]` here would be a `KeyError` at import — which, in a module the app reads
+#: at startup, is a blank page rather than a loud failure.
+_EXAMPLE_FILER = UNIVERSE[0]
+
+#: The company whose peer comparison reads most crisply — the thinnest cluster, picked from the
+#: data the way the sidebar's own worked example is. `ticker` breaks the tie so the button label
+#: is deterministic across runs; two clusters of equal size otherwise made it depend on
+#: dictionary order.
+_EXAMPLE_PEER_FILER = min(
+    UNIVERSE, key=lambda company: (len(PEERS[company.ticker]), company.ticker)
+)
+
+#: Four questions the empty page offers, one per path a reader would not guess is there:
+#: Item 1A retrieval, Item 7 retrieval, the peer-ratio tool, and the multi-tool brief.
+#:
+#: **Here rather than in `app/Home.py` because an example question is a scope claim.** It tells
+#: a reader "this is the kind of thing I answer", which is the same promise `GROUNDING_SCOPE`
+#: and `SEARCH_FILINGS_DESCRIPTION` make — and this module exists so that promise is written
+#: once and derived. Every company named is taken from `UNIVERSE`, so a curation change cannot
+#: leave the first thing a new reader clicks pointing at a company nothing was ingested for;
+#: `tests/test_app_smoke.py` binds that.
+#:
+#: Not a prompt the model reads, and so not bound by `test_every_scope_claim_in_a_prompt_is_
+#: derived_and_not_typed` — but written to the same rule, because the failure is the same.
+EXAMPLE_QUESTIONS: tuple[str, ...] = (
+    f"What are {_EXAMPLE_FILER.aliases[0]}'s biggest risk factors?",
+    f"How does {_EXAMPLE_FILER.aliases[0]} describe its revenue drivers?",
+    f"How does {_EXAMPLE_PEER_FILER.aliases[0]}'s valuation compare with its peers?",
+    f"Give me the full brief on {_EXAMPLE_PEER_FILER.ticker}.",
 )
 
 

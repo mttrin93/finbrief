@@ -28,6 +28,7 @@ discover it when their context disappears.
 """
 
 import logging
+import os
 import uuid
 
 import pandas as pd
@@ -44,6 +45,7 @@ from finbrief.config import (
     ConfigError,
     RetrievalStrategy,
     get_settings,
+    resolve_log_file,
 )
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.observability.logging_setup import configure_logging, log_event
@@ -57,6 +59,7 @@ from finbrief.observability.logging_setup import turn as log_turn
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
+    EXAMPLE_QUESTIONS,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
     INJECTION_REFUSAL,
@@ -133,16 +136,30 @@ if "thread_id" not in st.session_state:
 
 with st.sidebar:
     st.subheader("Conversation")
+    # **Above the fold, and deliberately not in a panel** (T11 item 1). ADR-0008 §4 makes this
+    # an obligation in these words — "the sidebar says so" — because a user who is not told
+    # reads a lost conversation as a bug, and a reviewer cannot tell an accepted consequence
+    # from an oversight. A collapsed panel states it only to a reader who clicks, so the
+    # density work below stops here: everything *else* folds, this does not.
     st.caption(
         "FinBrief remembers this conversation, so you can ask follow-ups — *and its debt?* "
         "resolves against the company you were just discussing. Memory lasts as long as this "
         "browser session: refreshing the page starts a new conversation."
     )
-    # Shown, and shown short, because it is the handle on the conversation: it is what
-    # distinguishes this tab's memory from another's, and a support question about a lost
-    # thread has nothing else to name. Not a secret — a uuid identifies a conversation and
-    # says nothing about who is having it.
-    st.caption(f"Thread `{st.session_state.thread_id[:8]}`")
+    # **Only when there is somewhere to look it up** (T11 item 1). The thread id is the handle
+    # on this conversation *in the sink*: `log_turn` below prefixes every `turn_id` with it, so
+    # it is what makes a log line lead back to a conversation. With `FINBRIEF_LOG_FILE` unset
+    # there is no log, and the caption is then a hex string in front of an analyst with nothing
+    # to do with it — sidebar space spent on a handle to nothing.
+    #
+    # Read from the environment rather than from `Settings`, because that is where the sink's
+    # own resolution reads it (`config.resolve_log_file`, called by `configure_logging` with no
+    # arguments): asking the same question of the same source is what keeps this caption from
+    # claiming a sink the handler did not install.
+    if resolve_log_file(os.environ) is not None:
+        # Not a secret — a uuid identifies a conversation and says nothing about who is having
+        # it, which is why it is also safe on every log line.
+        st.caption(f"Thread `{st.session_state.thread_id[:8]}`")
     # A fresh uuid, not a cleared checkpointer: the old thread is orphaned rather than deleted
     # (nothing else can reach it), and the cached agent survives — rebuilding it here would
     # discard every *other* session's memory too, which is the bug this button looks like.
@@ -150,41 +167,67 @@ with st.sidebar:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.messages = []
 
-    st.subheader("Grounding scope")
-    for detail in GROUNDING_SCOPE_DETAILS:
-        st.markdown(f"- {detail}")
+    # **Four panels, all collapsed** (T11 item 1). The sidebar had grown to four stacked blocks
+    # of prose — roughly a screen and a half — so the panel a reader wanted was always below
+    # something they had already read, and the scope disclosure ADR-0007 requires was competing
+    # with a cluster listing for the same attention. Collapsing is the *whole* change: every
+    # word is still rendered, and `AppTest`'s block accessors recurse into an expander, so the
+    # tests that bind these words to `config` and to the committed ingest evidence still find
+    # them (`tests/test_app_smoke.py`, `tests/test_grounding_scope.py`).
+    with st.expander(":material/help: How to use FinBrief"):
+        # T11 item 3's other half: the three things a reader cannot guess from a chat box.
+        st.markdown(
+            "- **Ask about one company at a time.** Follow-ups resolve against it, so "
+            "*and its margins?* needs no name.\n"
+            "- **`[1]` markers are citations.** Each one resolves to an entry in the "
+            "**Sources** panel under the answer, with the filer's own words to check it "
+            "against.\n"
+            "- **Prices and ratios are not from the filings.** Filings carry no prices, so "
+            "hard figures come from the finance tools and arrive on their own cards.\n"
+            "- **Open *How I answered*** to see which queries ran and which retriever "
+            "surfaced each chunk."
+        )
+        st.caption(
+            "FinBrief answers research questions, not *should I buy this* — it refuses "
+            "personalised advice by design."
+        )
 
-    st.subheader("Configuration")
-    # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
-    # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
-    # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so a
-    # second line would be a gap that no longer exists — and the way this panel stays honest is
-    # that `agent.build_agent` reads these same two settings (nothing here restates them).
-    st.markdown(
-        f"**Model** `{settings.chat_model}`  \n"
-        f"**Strategy** `{settings.retrieval_strategy}"
-        f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
-        f"**Top-k** `{settings.retrieval_k}`"
-    )
-    st.caption(
-        "Every answer's *How I answered* panel shows the queries that ran and which "
-        "retriever surfaced each chunk (ADR-0004)."
-        if settings.retrieval_strategy is RetrievalStrategy.HYBRID
-        else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
-    )
+    with st.expander(":material/policy: Grounding scope"):
+        for detail in GROUNDING_SCOPE_DETAILS:
+            st.markdown(f"- {detail}")
 
-    st.subheader("Universe")
-    st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
-    for cluster, tickers in CLUSTERS.items():
-        st.markdown(f"**{cluster.label}** — {', '.join(tickers)}")
-    # The thinnest cluster makes the crispest example, and picking it from the data keeps
-    # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
-    # the Universe changed.
-    example = min(UNIVERSE, key=lambda company: len(PEERS[company.ticker]))
-    st.caption(
-        f"Peers come only from this set, e.g. {example.ticker} vs. "
-        f"{', '.join(PEERS[example.ticker])}."
-    )
+    with st.expander(":material/tune: Configuration"):
+        # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
+        # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
+        # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so
+        # a second line would be a gap that no longer exists — and the way this panel stays
+        # honest is that `agent.build_agent` reads these same two settings (nothing here
+        # restates them).
+        st.markdown(
+            f"**Model** `{settings.chat_model}`  \n"
+            f"**Strategy** `{settings.retrieval_strategy}"
+            f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
+            f"**Top-k** `{settings.retrieval_k}`"
+        )
+        st.caption(
+            "Every answer's *How I answered* panel shows the queries that ran and which "
+            "retriever surfaced each chunk (ADR-0004)."
+            if settings.retrieval_strategy is RetrievalStrategy.HYBRID
+            else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
+        )
+
+    with st.expander(":material/apartment: Universe"):
+        st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
+        for cluster, tickers in CLUSTERS.items():
+            st.markdown(f"**{cluster.label}** — {', '.join(tickers)}")
+        # The thinnest cluster makes the crispest example, and picking it from the data keeps
+        # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
+        # the Universe changed.
+        example = min(UNIVERSE, key=lambda company: len(PEERS[company.ticker]))
+        st.caption(
+            f"Peers come only from this set, e.g. {example.ticker} vs. "
+            f"{', '.join(PEERS[example.ticker])}."
+        )
 
 
 def as_markdown(text: str) -> str:
@@ -774,8 +817,63 @@ def render_marker_note(report: MarkerReport) -> None:
     )
 
 
+#: How many example buttons sit side by side. Two, because the labels are whole sentences:
+#: four across truncates every one of them on a laptop, and one per row pushes the first
+#: answer below the fold on the only screen where these are visible at all.
+_EXAMPLE_COLUMNS = 2
+
+
+def render_example_questions() -> None:
+    """The empty page's four starting points (T11 item 3, user story 20).
+
+    **Shown only while the transcript is empty**, which is what keeps them an affordance rather
+    than furniture: they answer "what do I type", and that stops being the reader's question the
+    moment there is an answer on screen to read. Left up, four buttons would push every
+    subsequent answer down the page for the whole conversation.
+
+    `st.chat_input` cannot be given a value from code, so "seeding the input" is seeding the
+    **turn**: the click records the question in `session_state` and the block below consumes it
+    exactly where a typed question is consumed. That is one code path on purpose — a seeded
+    question therefore gets the length cap, the input gate, the transcript row and the panels,
+    and not a second thinner version of the turn that quietly skips one of them. The gate
+    especially: a seeding route that bypassed `screen()` would be a second door into the agent,
+    and it is the door worth trying precisely because it looks like UI convenience
+    (`test_a_seeded_question_is_screened_by_the_gate_like_any_other`).
+
+    Nothing here touches the cached agent. ADR-0008's isolation guarantee rests on that
+    instance being built once and shared, so "start me off" must mean a `session_state` write
+    and never a rebuild — which would discard every *other* session's memory, the same failure
+    the "Start over" button is written around.
+    """
+    st.caption("New here? Start with one of these — or just type a question.")
+    for start in range(0, len(EXAMPLE_QUESTIONS), _EXAMPLE_COLUMNS):
+        row = EXAMPLE_QUESTIONS[start : start + _EXAMPLE_COLUMNS]
+        # Always `_EXAMPLE_COLUMNS` columns, even for a short final row — the same reason
+        # `_render_metric_bars` does it: passing `len(row)` would stretch a lone button across
+        # the full width and make the last example look like the recommended one.
+        columns = st.columns(_EXAMPLE_COLUMNS)
+        for column, question in zip(columns, row, strict=False):
+            if column.button(question, width="stretch"):
+                st.session_state.pending_question = question
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# **An `st.empty()` slot rather than a plain render, and the reason is a one-frame wart.** The
+# buttons have to be *drawn* above the transcript, because a click is read from the widget on
+# the rerun that follows it — so `st.button` must be called before the question it seeded is
+# consumed below. But at that point in the script the transcript is still empty on exactly the
+# run where the click is being handled, so the naive version leaves four "New here?" buttons
+# sitting above the reader's own first answer until some later rerun clears them.
+#
+# A placeholder separates the two: the buttons are rendered into it (so the click is still
+# read — verified, not assumed) and the slot is emptied again below once this run turns out to
+# have a conversation in it. `test_the_examples_make_way_for_the_conversation` is the assertion.
+examples_slot = st.empty()
+if not st.session_state.messages:
+    with examples_slot.container():
+        render_example_questions()
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -815,7 +913,26 @@ for message in st.session_state.messages:
                 render_sources(contexts, searched=message.get("searched", True))
             st.caption(DISCLAIMER)
 
-if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
+typed = st.chat_input("Ask about a company in the Universe", submit_mode="disable")
+
+# **Popped, not read** (T11 item 3). A seeded question left in `session_state` would be re-asked
+# on every rerun the page does for any other reason — a widget change, a panel opening — so one
+# click would bill a question per interaction. Consuming it here, *before* the turn runs, means
+# even a turn that raises or is refused cannot leave it behind to fire again
+# (`test_a_seeded_question_is_asked_once_and_not_again_on_the_next_rerun`).
+#
+# A typed question wins if both arrive in one run, which cannot currently happen — a click and
+# a submit are separate reruns — but the tie has to break somewhere, and the reader's own words
+# are the half that is unambiguous about what they meant.
+seeded = st.session_state.pop("pending_question", None)
+
+prompt = typed or seeded
+
+if prompt:
+    # Retracted here rather than skipped above: this run has a question in it, so the empty
+    # page's affordance is no longer describing this page. See the slot's own comment.
+    examples_slot.empty()
+
     # **One turn, one identifier, on every event this block emits** (T8, #10). The gate's
     # screening, the retrievals the agent's tool ran, the validator's verdict and the marker
     # check all land on separate lines with nothing else in common: a `retrieval` line carries
