@@ -181,6 +181,13 @@ def test_the_configuration_panel_states_the_shipping_default_out_of_the_box(app)
     panel = " ".join(md.value for md in app.sidebar.markdown)
     assert "**Strategy** `hybrid + translation`" in panel
     assert "lands in Phase 4" not in sidebar_captions(app), "the gap it described is closed"
+    # The caption under those values had no assertion at all, which is how it kept an
+    # `(ADR-0004)` citation through the panel's last two rewrites. Pinned as an equality on the
+    # hybrid branch, since that is the branch this test is about (#13).
+    assert (
+        "Every answer's *How I answered* panel shows the queries that ran and which "
+        "retriever surfaced each chunk."
+    ) in [caption.value for caption in app.sidebar.caption]
 
 
 def test_the_configuration_panel_follows_the_switches_it_does_not_restate_them(
@@ -811,8 +818,14 @@ def test_the_panel_says_which_variant_surfaced_nothing(app, monkeypatch):
 
     panel = how_i_answered(app.chat_message[1])
     captions = " ".join(caption.value for caption in panel.caption)
-    assert "Surfaced no chunk in the top-1" in captions
-    assert "`sub-query 2`" in captions
+    # The whole caption, as an equality — the variable head names the barren variant and the
+    # fixed tail is the reassurance that it cost the reader nothing. Asserting only the head
+    # left the tail free to drift, which is how it kept its `(ADR-0004)` citation (#13).
+    assert (
+        "Surfaced no chunk in the top-1: `sub-query 2`. Each ran through every retriever this "
+        "strategy uses; nothing they found survived fusion. Translation only ever *adds*, so a "
+        "variant that contributes nothing costs a retrieval round and changes no ranking."
+    ) in [caption.value for caption in panel.caption]
     # And it does not accuse the variants that did contribute.
     assert "`original`" not in captions
     assert "`sub-query 1`" not in captions
@@ -1041,8 +1054,14 @@ def test_the_panel_names_the_ticker_form_apart_from_the_planners_sub_queries(app
     assert "`original`" in text and "`ticker form`" in text and "`sub-query 1`" in text
     assert "| ticker form | bm25 | 1 |" in text, "and the table names it too"
     # And the panel says *why* a ticker form exists, since it is the least obvious of the three.
-    captions = " ".join(c.value for c in how_i_answered(assistant).caption)
-    assert "deterministically" in captions
+    # **As an equality**: the bare word `deterministically` this used to match is in the caption
+    # both before and after it lost its `(ADR-0004 amendment)` citation, so it proved the
+    # explanation was present and nothing about what the explanation said (#13).
+    assert (
+        "The ticker form is added deterministically from the Universe, not by a model: a "
+        "chunk's header carries `TSLA`, so a lexical search for *Tesla* would miss most of "
+        "the filer."
+    ) in [c.value for c in how_i_answered(assistant).caption]
 
 
 def a_search(**kwargs) -> Search:
@@ -2033,7 +2052,14 @@ def test_the_unmetered_classifier_is_named_on_a_complete_total_too(app, monkeypa
 
     text = panel_text(spend_panel(app))
     assert "Partial" not in text, "this is the complete-total case, deliberately"
-    assert "classifier is never metered" in text
+    # **The wording, as an equality**, on the refresh-semantics principle: the substring this
+    # used to match survived the sentence losing its `(ADR-0011)` citation, so it could not have
+    # told a cleaned panel from an uncleaned one. Naming the sentence is what makes a citation
+    # creeping back into analyst-facing copy fail here (#13).
+    assert (
+        "The input gate's classifier is never metered, so one paid call per turn is "
+        "missing from these figures by design."
+    ) in [caption.value for caption in spend_panel(app).caption]
 
 
 def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp_path):

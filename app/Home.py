@@ -394,8 +394,14 @@ def render_spend_meter(*, answering: bool = False) -> None:
     # versus counted* calls, and the gate's classifier never enters `calls`, so no value of
     # `partial` is evidence about it. A structural absence and a reporting shortfall are two
     # different claims and they get two different sentences.
+    #
+    # **The provenance is here and not in the caption.** ADR-0011 is the record for both halves
+    # — that the classifier's call is unmetered, and that the omission is stated on screen — but
+    # an analyst reading a cost panel does not know what ADR-0011 is, so the citation reads as
+    # developer leakage where the claim reads as information (#13). The claim is what ships; the
+    # number stays in this comment.
     st.caption(
-        "The input gate's classifier is never metered (ADR-0011), so one paid call per turn is "
+        "The input gate's classifier is never metered, so one paid call per turn is "
         "missing from these figures by design."
     )
     if spend.partial:
@@ -556,9 +562,12 @@ with st.sidebar:
             f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
             f"**Top-k** `{settings.retrieval_k}`"
         )
+        # The per-chunk provenance this points at is ADR-0004's requirement; the citation lives
+        # here rather than in the caption, which an analyst reads for the pointer and not for
+        # the decision record (#13).
         st.caption(
             "Every answer's *How I answered* panel shows the queries that ran and which "
-            "retriever surfaced each chunk (ADR-0004)."
+            "retriever surfaced each chunk."
             if settings.retrieval_strategy is RetrievalStrategy.HYBRID
             else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
         )
@@ -774,10 +783,13 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 label = labels.get(variant, "query")
                 st.markdown(f"{index}. `{label}` — {as_markdown(variant)}")
             if search.ticker_form is not None:
+                # The mechanism is ADR-0004's amendment (the T6 finding: the recovery is
+                # embedding-side and the ticker form is what carries it). The caption explains
+                # the mechanism, which is what an analyst needs; the citation stays here (#13).
                 st.caption(
                     "The ticker form is added deterministically from the Universe, not by a "
                     "model: a chunk's header carries `TSLA`, so a lexical search for *Tesla* "
-                    "would miss most of the filer (ADR-0004 amendment)."
+                    "would miss most of the filer."
                 )
             if not search.translated:
                 st.caption("Query translation was off, so only the question itself was run.")
@@ -822,11 +834,15 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 )
             if barren := barren_variants(search):
                 named = ", ".join(f"`{labels.get(variant, 'query')}`" for variant in barren)
+                # "Translation only ever *adds*" is ADR-0004's invariant, and the reason this
+                # caption can reassure rather than alarm. Cited here, not on screen: the reader
+                # needs to know the barren variant cost them nothing, not which ADR says so
+                # (#13).
                 st.caption(
                     f"Surfaced no chunk in the top-{len(search.contexts)}: {named}. Each ran "
                     "through every retriever this strategy uses; nothing they found survived "
                     "fusion. Translation only ever *adds*, so a variant that contributes "
-                    "nothing costs a retrieval round and changes no ranking (ADR-0004)."
+                    "nothing costs a retrieval round and changes no ranking."
                 )
 
 
