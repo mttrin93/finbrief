@@ -21,7 +21,6 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from finbrief.config import (
-    CLUSTERS,
     HISTORY_PERIOD_LABEL,
     ITEM_7A_POINTER_FILERS,
     ITEM_7A_SECTION_FILERS,
@@ -31,7 +30,9 @@ from finbrief.config import (
     QUOTE_TTL_SECONDS,
     TICKERS,
     UNIVERSE,
+    thinnest_cluster_filer,
 )
+from finbrief.ingestion.edgar import EDGAR_SEARCH_URL
 from finbrief.ingestion.model import Section
 
 if TYPE_CHECKING:
@@ -81,10 +82,35 @@ _ITEM_LABELS = (
 #: is what keeps this constant usable on the *chain*'s path too, where there are no tools at
 #: all: `NO_CONTEXT_FALLBACK` and `SYSTEM_PROMPT` quote it, and neither may promise a price.
 #: What the tools cover is `LIVE_DATA_SCOPE`, which only the surfaces that have them read.
+#:
+#: **The pair count moved to the panel, and the sentence is shorter for it.** This used to end
+#: "— {_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs", which is the arithmetic
+#: *behind* the scope rather than the scope: it means nothing to a reader who does not yet know
+#: what a Section is, and this sentence is the first thing they meet. `GROUNDING_SCOPE_DETAILS`'
+#: first line states it now — still derived from the same two constants, and bound to the ingest
+#: run's own evidence by `tests/test_grounding_scope.py`, which is where it was always checked.
+#: Moved and not copied: a count in two places is the drift this module exists to prevent, so
+#: the panel is the one surface that carries it.
 GROUNDING_SCOPE = (
-    f"Filing answers are grounded only in Items {_ITEM_LABELS} of the latest annual 10-K on "
-    f"file for each of the {len(UNIVERSE)} companies in FinBrief's Universe — "
-    f"{_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs."
+    f"Filing answers are grounded only in Items {_ITEM_LABELS} of the latest annual 10-K "
+    f"for each of the {len(UNIVERSE)} companies in FinBrief's Universe."
+)
+
+#: The same sentence with its source named, for the app's caption — and **only** for a surface
+#: that renders markdown.
+#:
+#: The link is the reader's, not the model's: `SYSTEM_PROMPT`, `AGENT_SYSTEM_PROMPT` and
+#: `NO_CONTEXT_FALLBACK` quote `GROUNDING_SCOPE` above, and a URL in a prompt is tokens the
+#: model may repeat back as though it had fetched something. So the provenance is composed
+#: here rather than folded into the constant the prompts read, which is the same split
+#: `GROUNDING_SCOPE_VERIFY` makes for the panel.
+#:
+#: EDGAR and not the market-data providers, because this half of the intro is about the filings:
+#: it is the authoritative source a reviewer would check a citation against, and the URL is
+#: `ingestion/edgar.py`'s like every other EDGAR address. Who the *live* figures come from is
+#: `MARKET_DATA_PROVIDER`, named in the scope panel where there is room to qualify it.
+GROUNDING_SCOPE_SOURCED = (
+    f"{GROUNDING_SCOPE} Filings come from the SEC's [EDGAR]({EDGAR_SEARCH_URL})."
 )
 
 #: The other half of the scope, for the surfaces that have the tools: the app's caption, the
@@ -96,63 +122,165 @@ GROUNDING_SCOPE = (
 #: minutes is current enough for a pre-earnings brief and is not a tick, and saying so once here
 #: is cheaper than a caveat on every card.
 LIVE_DATA_SCOPE = (
-    f"Live figures — price, peer-relative ratios and headlines — come from three finance tools "
-    f"over free public data for the same {len(UNIVERSE)} companies: delayed quotes cached for "
+    f"Live figures — price, peer ratios and headlines — come from three finance tools over "
+    f"free public data for the same {len(UNIVERSE)} companies: delayed quotes cached for "
     f"{QUOTE_TTL_SECONDS // 60} minutes, and news RSS. Never from the filings, which carry no "
-    f"prices, and never from anywhere else."
+    f"prices."
 )
+
+#: Who the live figures actually come from, for the scope panel. "Free public data" says what
+#: they cost and not whose they are, and whose is the part a reader can check.
+#:
+#: One name covers all three finance tools because both boundaries resolve to the same provider:
+#: `finance/quotes.py` reads it through `yfinance` and `finance/news.py` reads its per-ticker
+#: headline RSS. Written here beside the other scope claims rather than in `app/Home.py`, for
+#: the reason `EXAMPLE_QUESTIONS` is here — a provider name is a scope claim, and a scope claim
+#: in two files is one that will disagree with itself.
+#:
+#: **`yfinance` is an unofficial client of an undocumented endpoint**, which the README records
+#: as a limitation and ADR-0009 accepts: there is no API contract behind this name and an
+#: endpoint change is a fetch failure rather than a support ticket. Named anyway, because a
+#: reader deciding how much to trust a figure is better served by "Yahoo Finance, unofficially"
+#: than by "free public data" — and the failure path is disclosed in the same line.
+MARKET_DATA_PROVIDER = "Yahoo Finance"
 
 #: What the headline sentence leaves out, for the UI's scope panel and the README — whose
 #: prose cannot import these, so `tests/test_grounding_scope.py` binds its copy to them.
 #: Each line is a limitation a reader could otherwise mistake for a grounded answer.
+#:
+#: **Five lines, one sentence each, and no ADR numbers** (#13, following T12 item 1, whose rule
+#: is that this disclosure stays and only its presentation may change). ADR-0007 makes this
+#: panel an obligation and says nothing about its length; what shipped read as an excerpt of the
+#: ADR — seven bullets, three of them multi-sentence, one citing `ADR-0009` at an analyst who
+#: has never seen it. Every claim below is one a reader could otherwise mistake a limitation
+#: for grounding, and the compression is wording only. Three things left, each because the same
+#: claim is made by a surface that cannot fall out of step with itself:
+#:
+#: - the ingest-report provenance moved to the README, where a reviewer checking the counts
+#:   is looking — an analyst mid-question is not;
+#: - the quote delay and cache TTL are `LIVE_DATA_SCOPE`'s, rendered as a caption under the
+#:   app's title, two panels above this one;
+#: - the peer-cluster basis and the *not reported* wording are on the ratio cards themselves
+#:   (`finance/ratios.py`'s `PeerComparison.basis`, `Unit.format`), beside the numbers they
+#:   qualify, which is a stronger place for them than a panel a reader must open.
+#:
+#: Two things then arrived *here*, both from the caption under the title — the surface that had
+#: to get shorter next, being the one a reader meets before their first question (#13):
+#:
+#: - the **pair count**, which `GROUNDING_SCOPE` used to end on. It belongs in the panel that
+#:   explains what a Section is and which six filers answer 7A by reference — the two facts that
+#:   make "54 of 60" a number rather than a puzzle — and nowhere else, so the caption dropped it
+#:   rather than sharing it;
+#: - the **provider** behind the live figures (`MARKET_DATA_PROVIDER`), which the caption states
+#:   as "free public data". The intro names EDGAR because a citation is the thing a reviewer
+#:   checks; the market-data provider is the qualified claim, and this is where a claim gets
+#:   qualified.
 GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
-    f"**In scope:** {_ITEMS}.",
+    f"**In scope:** {_ITEMS} — {_SECTIONS_IN_KB} of {_SECTION_SLOTS} company × Section pairs.",
     (
-        f"**Item 7A by reference:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer "
-        f"Item 7A by incorporating Item 7, so their market-risk disclosure is in the "
-        f"knowledge base labelled `Item 7` — not `Item 7A` ({_SECTIONS_IN_KB} of "
-        f"{_SECTION_SLOTS} Sections). All {len(UNIVERSE)} companies have market-risk "
-        f"grounding; {len(ITEM_7A_SECTION_FILERS)} have an `Item 7A` Section."
+        f"**Market risk:** {', '.join(sorted(_POINTER_FILERS_IN_UNIVERSE))} answer Item 7A by "
+        f"pointing at Item 7, so their market-risk text sits in the knowledge base labelled "
+        f"`Item 7` — all {len(UNIVERSE)} companies have market-risk grounding; "
+        f"{len(ITEM_7A_SECTION_FILERS)} have an `Item 7A` Section."
     ),
     (
-        "**Out of scope:** every other Item of the 10-K, 10-Qs, proxies, earnings calls, "
-        "and any company outside the Universe. Financial statements (Item 8) are not "
-        "ingested, and table and figure fidelity inside the ingested Sections is a stated "
-        "limitation — hard numbers come from the finance tools, not the filing text."
+        "**Out of scope:** every other Item, 10-Qs, proxies, earnings calls, the Item 8 "
+        "financial statements, and any company outside the Universe — and a table inside an "
+        "ingested Section may lose its layout, so hard numbers come from the finance tools "
+        "rather than the filing text."
     ),
     (
-        "**One filing per company:** the most recent 10-K only, so the fiscal year differs "
-        "by filer. Each citation states the year it came from."
+        "**One filing per company:** the latest 10-K only, so the fiscal year differs by "
+        "filer and each citation states its own."
     ),
     (
-        # These counts describe the KB ADR-0007 *defines*, derived from `config`, not a live
-        # count of the collection this app is pointed at — so a partial or stale index would
-        # leave the sentence above overstating coverage. Naming the evidence file is the
-        # honest fix at this scale: it is committed, machine-generated, and lists the chunks
-        # each company actually holds (issue #5 review).
-        "**Where these counts come from:** the ingest run's own evidence, "
-        "`docs/verification/ingest-report.md` — per-company chunk counts read back from the "
-        "collection. This panel describes the knowledge base as ADR-0007 defines it, not a "
-        "live count of the index behind this app."
+        f"**Live figures never come from the filings:** price, ratios and headlines are "
+        f"fetched from {MARKET_DATA_PROVIDER}, and a fetch that fails shows the last cached "
+        f"figure with its age or says the figure could not be fetched — never a placeholder, "
+        f"a guess or a zero."
     ),
-    (
-        # The counts are derived for the same reason every other one here is, and the *limits*
-        # are stated beside them: a reader who takes "live" literally will read a 15-minute
-        # delayed quote as a tick, and a peer mean as a judgement rather than an arithmetic mean
-        # over a fixed cluster.
-        f"**Live market data:** last price, market cap, P/E, D/E and margins, and headlines, "
-        f"for the same {len(UNIVERSE)} companies — from free public sources (delayed quotes "
-        f"cached for {QUOTE_TTL_SECONDS // 60} minutes; news RSS), never from the filings. "
-        f"Ratios are compared against the mean of a company's own curated cluster within the "
-        f"Universe, {len(CLUSTERS)} clusters in all, and every comparison names its peer set "
-        f"and size (ADR-0009). A figure a source does not report is shown as *not reported*, "
-        f"never as zero."
-    ),
-    (
-        "**When live data is unavailable:** the last cached figure is shown with a banner "
-        "saying how old it is, and if there is nothing cached the answer says the figure could "
-        "not be fetched. No number here is ever a placeholder or a guess."
-    ),
+)
+
+#: The panel's one link out, under the five lines above.
+#:
+#: **A link and not a sentence about links.** User story 2 asks an analyst to be able to check
+#: an answer against the primary source, and the sources panel does that per citation
+#: (`ingestion/edgar.filing_index_url`). This is the same offer for the question the panel
+#: itself raises — "is that really all a 10-K says about this?" — pointed at EDGAR's own search
+#: rather than at any one filing. The URL lives in `ingestion/edgar.py` with the rest of the
+#: EDGAR boundary; nothing here composes one.
+GROUNDING_SCOPE_VERIFY = (
+    f"Every citation links to its filing on EDGAR. [Verify on EDGAR]({EDGAR_SEARCH_URL}) — "
+    f"the primary source for all of it."
+)
+
+
+# --------------------------------------------------------------------------------------
+# The Universe, per company (#13)
+# --------------------------------------------------------------------------------------
+
+#: One row per Universe member, for the sidebar's Universe panel: what the ticker *is*.
+#:
+#: **A table because the list it replaced assumed ticker literacy** (#13). The panel used to
+#: group tickers by cluster — `**Healthcare** — JNJ, LLY, PFE` — which discloses the Universe
+#: only to a reader who already knows that `LLY` is Eli Lilly. The scope of a knowledge base is
+#: the first thing this app tells a reader; spelling the names out is the difference between
+#: disclosing it and referring to it.
+#:
+#: **Two columns, because a third truncated the names this table exists to spell out.** It
+#: carried an `Item 7A` column — `Section` or `→ Item 7` per filer — and at the sidebar's width
+#: the three columns left `Company` too narrow to finish a legal name: `Microsoft Corporatio`,
+#: `JPMorgan Chase & C`. A truncated name discloses less than no column at all, since a reader
+#: cannot tell whether they are looking at the name or at a prefix of it. The Item 7A claim was
+#: never only here — `GROUNDING_SCOPE_DETAILS` states it in aggregate, naming the six filers and
+#: both counts, and that sentence is the one bound to the committed ingest evidence
+#: (`tests/test_grounding_scope.py`). So dropping the column costs the row granularity and none
+#: of the disclosure.
+#:
+#: Both cells are derived and nothing is typed: ticker and name from `UNIVERSE`. Ordered as
+#: `UNIVERSE` declares, which is by cluster, so the rows arrive grouped underneath the panel's
+#: cluster caption — which is where the grouping is stated, since no column shows it.
+UNIVERSE_ROWS: tuple[dict[str, str], ...] = tuple(
+    {"Ticker": company.ticker, "Company": company.name} for company in UNIVERSE
+)
+
+
+# --------------------------------------------------------------------------------------
+# The empty page's four questions (T12 item 3)
+# --------------------------------------------------------------------------------------
+
+#: An arbitrary but *stable* Universe member for the filing-shaped examples. Indexed rather
+#: than named so that curating the Universe moves the example instead of raising: a literal
+#: `COMPANIES["AAPL"]` here would be a `KeyError` at import — which, in a module the app reads
+#: at startup, is a blank page rather than a loud failure.
+_EXAMPLE_FILER = UNIVERSE[0]
+
+#: The company whose peer comparison reads most crisply — the thinnest cluster, picked from the
+#: data by the **same function** the sidebar's own worked example calls.
+#:
+#: That last clause was a claim and not a fact until the code review of #13: this held its own
+#: `min(UNIVERSE, ...)` with a `ticker` tie-break while the panel held one without, and five
+#: clusters tie at two members — so the button asked about Bank of America under a caption
+#: naming TSLA. `config.thinnest_cluster_filer` is now the one derivation.
+_EXAMPLE_PEER_FILER = thinnest_cluster_filer()
+
+#: Four questions the empty page offers, one per path a reader would not guess is there:
+#: Item 1A retrieval, Item 7 retrieval, the peer-ratio tool, and the multi-tool brief.
+#:
+#: **Here rather than in `app/Home.py` because an example question is a scope claim.** It tells
+#: a reader "this is the kind of thing I answer", which is the same promise `GROUNDING_SCOPE`
+#: and `SEARCH_FILINGS_DESCRIPTION` make — and this module exists so that promise is written
+#: once and derived. Every company named is taken from `UNIVERSE`, so a curation change cannot
+#: leave the first thing a new reader clicks pointing at a company nothing was ingested for;
+#: `tests/test_app_smoke.py` binds that.
+#:
+#: Not a prompt the model reads, and so not bound by `test_every_scope_claim_in_a_prompt_is_
+#: derived_and_not_typed` — but written to the same rule, because the failure is the same.
+EXAMPLE_QUESTIONS: tuple[str, ...] = (
+    f"What are {_EXAMPLE_FILER.aliases[0]}'s biggest risk factors?",
+    f"How does {_EXAMPLE_FILER.aliases[0]} describe its revenue drivers?",
+    f"How does {_EXAMPLE_PEER_FILER.aliases[0]}'s valuation compare with its peers?",
+    f"Give me the full brief on {_EXAMPLE_PEER_FILER.ticker}.",
 )
 
 

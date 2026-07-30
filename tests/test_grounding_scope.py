@@ -1,7 +1,7 @@
 """The grounding-scope disclosure's arithmetic, against the committed ingest evidence.
 
 `prompts.py` derives "54 of 60" from `config` so that a Universe change cannot leave a stale
-number under the app's title. That keeps the sentence *self*-consistent, which is not the
+number in the app's scope panel. That keeps the sentence *self*-consistent, which is not the
 same as *true*: the subtraction assumes each pointer filer really does answer Item 7A by
 reference, and `ITEM_7A_POINTER_FILERS` is a hand-maintained tripwire. The only witness to
 what the knowledge base actually holds is `docs/verification/ingest-report.md`, written by
@@ -32,9 +32,11 @@ from finbrief.prompts import (
     AGENT_SYSTEM_PROMPT,
     GROUNDING_SCOPE,
     GROUNDING_SCOPE_DETAILS,
+    GROUNDING_SCOPE_VERIFY,
     LIVE_DATA_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
+    UNIVERSE_ROWS,
     query_translation_prompt,
 )
 
@@ -86,7 +88,17 @@ def test_the_disclosure_counts_what_the_ingest_run_actually_gated():
     assert len(rows) == len(UNIVERSE), "the run gated every company in the Universe"
     assert f"All {slots} company x Section checks passed." in text
     assert f"{pointers} Section(s) incorporated by reference into Item 7" in text
-    assert f"{slots - pointers} of {slots} company × Section pairs" in GROUNDING_SCOPE
+    # **In the panel, which is where the count now lives** (#13). It used to end
+    # `GROUNDING_SCOPE`, the caption under the app's title, and moved when that caption was cut
+    # to the sentence a reader can use before knowing what a Section is. Asserted against the
+    # panel and not against "the page", which would pass wherever it had drifted to — including
+    # back into a caption that is quoted by three prompts.
+    assert f"{slots - pointers} of {slots} company × Section pairs" in " ".join(
+        GROUNDING_SCOPE_DETAILS
+    )
+    assert f"{slots - pointers} of {slots}" not in GROUNDING_SCOPE, (
+        "the caption states the scope; the panel states the arithmetic, and only one of them"
+    )
 
 
 def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():
@@ -94,13 +106,112 @@ def test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found():
     # 7A by reference reads "no Item 7A" as "no market-risk grounding". If the set on screen
     # and the set in the evidence ever diverge, the panel is telling a reader to look under
     # the wrong Item.
+    #
+    # **The list is asserted as one derived string, and the membership as an equality over
+    # whole words** (#13). The old form tested `f"{ticker}," in panel` per ticker, which is
+    # satisfied by six tickers in any order, in any sentence, separated by anything —
+    # and would have passed on a panel that named five of them in the list and the sixth in a
+    # footnote. Whole words because `F` is a Universe ticker and a substring of everything.
     rows = gate_rows(report_text())
     found = {ticker for ticker, row in rows.items() if _POINTER_MARKER in row}
     panel = " ".join(GROUNDING_SCOPE_DETAILS)
 
-    named = {ticker for ticker in rows if f"{ticker}," in panel or f"{ticker} answer" in panel}
+    named = {t for t in rows if re.search(rf"(?<![A-Za-z0-9]){t}(?![A-Za-z0-9])", panel)}
     assert named == found, "the disclosure names exactly the filers the run found"
+    assert f"{', '.join(sorted(found))} answer Item 7A by pointing at Item 7" in panel
+    assert f"all {len(UNIVERSE)} companies have market-risk grounding" in panel
     assert f"{len(UNIVERSE) - len(found)} have an `Item 7A` Section." in panel
+
+
+def test_the_universe_table_is_two_columns_and_both_are_derived():
+    """Ticker · Company, in `UNIVERSE` order, neither column composed here (#13).
+
+    The table used to carry a third column — `Section` or `→ Item 7` per filer — and this file
+    bound it, row by row, to the ingest run's own gate table. **That column is gone because it
+    truncated the names**: three columns at the sidebar's width left `Company` too narrow to
+    finish `Microsoft Corporation`, and a name a reader cannot tell from a prefix of itself
+    discloses less than no column at all.
+
+    What was lost is the row granularity, not the claim, and not its binding: the Item 7A
+    disclosure is `GROUNDING_SCOPE_DETAILS`', which names the six filers and both counts, and
+    `test_the_pointer_filers_named_on_screen_are_the_ones_the_run_found` above holds *that*
+    sentence to what the run found. So the evidence tie survives the column; only the
+    per-company rendering of it went.
+
+    **Both columns asserted as whole-sequence equalities**, which is what keeps this from
+    drifting into a shape check: a `len()` or an `in` would pass on a table that repeated one
+    company fifteen times, and the ordering is load-bearing now that the panel's caption tells a
+    reader the rows follow cluster order.
+    """
+    assert list(UNIVERSE_ROWS[0]) == ["Ticker", "Company"]
+    assert [r["Ticker"] for r in UNIVERSE_ROWS] == [c.ticker for c in UNIVERSE]
+    # The company column is the whole reason the table replaced a list of tickers, so it is the
+    # legal name from `config` and not a ticker repeated or a shortened form composed here.
+    assert [r["Company"] for r in UNIVERSE_ROWS] == [c.name for c in UNIVERSE]
+
+
+#: What ADR-0007 obliges the panel to disclose, one entry per claim, as
+#: `(what it is, a phrase that can only appear if the claim is being made)`.
+#:
+#: A list rather than one big assertion because the compression this guards is a *wording*
+#: change (#13): the panel went from seven bullets to five, and the way that stops
+#: being an edit and becomes a deletion is a claim quietly going with a bullet. Each phrase is
+#: chosen to be unsatisfiable by prose that does not make the claim — "10-Q" cannot appear in a
+#: panel that has stopped excluding quarterly filings.
+SCOPE_PANEL_OBLIGATIONS = (
+    ("the Item 8 financials are excluded", "Item 8"),
+    ("10-Qs are excluded", "10-Q"),
+    ("other Items are excluded", "every other Item"),
+    ("table fidelity is a stated limitation", "lose its layout"),
+    ("one filing per company, so fiscal years differ", "fiscal year differs by filer"),
+    ("live figures are not from the filings", "never come from the filings"),
+    ("a stale figure is shown with its age", "last cached figure with its age"),
+    ("an unfetchable figure says so", "could not be fetched"),
+    ("and neither is ever a placeholder", "never a placeholder"),
+)
+
+
+@pytest.mark.parametrize(("claim", "phrase"), SCOPE_PANEL_OBLIGATIONS)
+def test_the_compressed_scope_panel_still_makes_every_claim_it_owes(claim, phrase):
+    """ADR-0007's disclosure survived being shortened. The Items and filers are asserted by
+    the two tests above; these are the claims that have no derived number to bind them."""
+    panel = " ".join(GROUNDING_SCOPE_DETAILS)
+
+    assert phrase in panel, f"the scope panel no longer says {claim}"
+
+
+def test_the_scope_panel_is_five_short_lines_of_plain_language():
+    """The shape of the compression, as an equality — a bound would pass on the seven-bullet
+    panel this replaced (CLAUDE.md: prefer an equality over a bound).
+
+    Two properties, both of which the old panel failed. **Five lines**, because "compress" that
+    permits any number of bullets is not a constraint; a sixth claim belongs in the README, as
+    the ingest-report provenance now is. And **no ADR numbers**, because this panel is read by
+    an analyst mid-question: `(ADR-0009)` sent them looking for a document that is not in the
+    app. The design record is still in `docs/adr/` and still cited from the code — this rule is
+    about the copy on screen.
+    """
+    assert len(GROUNDING_SCOPE_DETAILS) == 5
+
+    on_screen = " ".join((*GROUNDING_SCOPE_DETAILS, GROUNDING_SCOPE_VERIFY))
+    assert not re.search(r"ADR-\d+", on_screen), "no ADR numbers in the user-facing copy"
+    # One sentence each: the marker is a full stop with a word after it, so an abbreviation
+    # ("10-K.") and the closing stop are both fine and a second sentence is not.
+    for detail in GROUNDING_SCOPE_DETAILS:
+        assert not re.search(r"\.\s+\S", detail), f"one sentence per line; got {detail!r}"
+
+
+def test_the_ingest_report_provenance_moved_to_the_readme():
+    """Where the counts come from is a reviewer's question, and the README is where a reviewer
+    reads. It left the panel when that panel was compressed (#13) and had to land somewhere —
+    a claim dropped from one surface and added to none is the deletion a compression must
+    not be."""
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    panel = " ".join(GROUNDING_SCOPE_DETAILS)
+
+    assert "docs/verification/ingest-report.md" in readme
+    assert "not a live count of the index" in readme, "and what the counts are *not*"
+    assert "ingest-report" not in panel, "the panel no longer carries it"
 
 
 def test_every_scope_claim_in_a_prompt_is_derived_and_not_typed():
@@ -382,6 +493,46 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
         "the README must lead with the composition rather than the derived rate: a 31% "
         "full-support rate hides that partial support is the largest bucket."
     )
+
+
+def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control():
+    """T12 item 6. The number is bound; the disclaimer is bound; both for the same reason.
+
+    ADR-0001's amendment records this reversal and puts the danger plainly: a reviewer who
+    reads a session counter as rate limiting stops looking for the thing that is. So the README
+    may not quote the cap without the sentence that a refresh resets it, and it may not quote a
+    *stale* cap either — this is the file that binds prose to `config`.
+    """
+    from finbrief.config import MAX_QUESTIONS_PER_SESSION
+
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+
+    # A whole number, not a substring: `40` inside `140` is the vacuous match this file's own
+    # amendment-four finding is about.
+    assert re.search(rf"(?<![\d.\-]){MAX_QUESTIONS_PER_SESSION}(?![\d])", readme), (
+        f"the README no longer states the {MAX_QUESTIONS_PER_SESSION}-question session cap"
+    )
+    assert "Refreshing the page resets it" in readme
+    assert "not a security control" in readme
+
+
+def test_the_readme_does_not_quote_a_price_as_though_it_were_measured():
+    """The absence that has to stay an absence, asserted from the other direction.
+
+    Both cost knobs default to unset and the README's argument is that no rate card belongs in
+    this repo — so the prose must not carry a dollar-per-million figure presented as FinBrief's
+    cost. `.env.example` may show a *sample* value beside a commented switch; the README may not
+    state one as fact, because that is the "figure nobody measured" the design rejects.
+    """
+    from finbrief.config import Settings
+
+    settings = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"})
+    assert settings.input_cost_per_mtok is None, "unpriced is the default"
+    assert settings.output_cost_per_mtok is None
+
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" in readme, "the knob is documented"
+    assert "no rate card" in readme.lower(), "and so is the reason there is no default"
 
 
 def test_no_test_imports_through_the_tests_package():

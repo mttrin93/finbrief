@@ -28,8 +28,10 @@ discover it when their context disappears.
 """
 
 import logging
+import os
 import uuid
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from langgraph.errors import GraphRecursionError
@@ -39,13 +41,26 @@ from finbrief.config import (
     CLUSTERS,
     HISTORY_PERIOD_LABEL,
     MAX_QUESTION_CHARS,
+    MAX_QUESTIONS_PER_SESSION,
     PEERS,
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
     get_settings,
+    resolve_log_file,
+    thinnest_cluster_filer,
+)
+from finbrief.export import (
+    THREAD_HANDLE_CHARS,
+    Transcript,
+    as_csv,
+    as_json,
+    file_name,
+    log_export,
 )
 from finbrief.finance.ratios import Metric, Unit
+from finbrief.ingestion.edgar import filing_index_url
+from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
 # Aliased, and the alias is the point: this module already binds `turn` at module scope — the
@@ -54,13 +69,17 @@ from finbrief.observability.logging_setup import configure_logging, log_event
 # died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
 # would not have.
 from finbrief.observability.logging_setup import turn as log_turn
+from finbrief.observability.spend import Spend, conversation_spend
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
-    GROUNDING_SCOPE,
+    EXAMPLE_QUESTIONS,
     GROUNDING_SCOPE_DETAILS,
+    GROUNDING_SCOPE_SOURCED,
+    GROUNDING_SCOPE_VERIFY,
     INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
+    UNIVERSE_ROWS,
 )
 from finbrief.retrieval.hybrid import Retriever
 from finbrief.retrieval.retrieve import Context
@@ -86,10 +105,15 @@ logger = logging.getLogger("finbrief.app")
 st.set_page_config(page_title="FinBrief", page_icon=":material/query_stats:")
 
 st.title("FinBrief")
-st.caption(GROUNDING_SCOPE)
+# The scope sentence with the filings' source linked — `GROUNDING_SCOPE_SOURCED` and not
+# `GROUNDING_SCOPE`, which is the bare sentence the prompts quote. Both are `prompts.py`'s and
+# nothing about the source is composed here.
+st.caption(GROUNDING_SCOPE_SOURCED)
 # The second half of the scope, and it earns its own line rather than being appended to the one
 # above: `GROUNDING_SCOPE` is quoted by the *chain*'s prompt too, where there are no tools, so
-# the two sentences cannot be one string (`prompts.py`).
+# the two sentences cannot be one string (`prompts.py`). Whose data the live figures are is in
+# the sidebar's scope panel rather than here, for the same reason the pair count now is: this
+# caption is what a reader meets before their first question.
 st.caption(LIVE_DATA_SCOPE)
 
 # Fail here rather than on the first message: a missing key should be obvious before the
@@ -131,18 +155,333 @@ def shared_agent():
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
+
+# **Where this session's window of the sink begins** (T12 item 5). Marked once, before this
+# session has appended anything, so the spend meter reads forward from here instead of over a
+# file that accumulates every run and every other session that named it — the shape ADR-0011's
+# T10 amendment records, where a p50 over 13 appended runs was published as one run's.
+# Correctness comes from the `turn_id` filter in `observability/spend.py`; this bounds how much
+# of the file has to be parsed on each rerun, which is the half that grows without limit.
+#
+# Deliberately **not** re-marked by "Start over": that mints a new `thread_id`, so the filter
+# already excludes the previous conversation's lines and re-marking would only narrow the window
+# for no gain.
+def sink_path():
+    """Where the event log is being written, or `None` when nobody named one.
+
+    **One question, asked of one source, in the three places this page asks it** — the offset
+    below, the thread-id caption and the spend meter. `configure_logging()` takes no arguments
+    and resolves the sink from the environment itself, so reading `os.environ` is what keeps
+    these three from claiming a sink the handler did not install; reading it *here* is what
+    keeps them from disagreeing with each other (code review of #13).
+    """
+    return resolve_log_file(os.environ)
+
+
+if "sink_offset" not in st.session_state:
+    log_path = sink_path()
+    st.session_state.sink_offset = 0 if log_path is None else sink_offset(log_path)
+
+# **The per-session question counter** (T12 item 6). Cost and abuse limiting and **not a
+# security control** — `config.MAX_QUESTIONS_PER_SESSION` states why at length: a refresh mints
+# a new `session_state` and therefore a new counter, so anyone who wants past this walks past
+# it. ADR-0006's input gate is the security boundary; this is a bound on what one open tab can
+# spend.
+if "questions_asked" not in st.session_state:
+    st.session_state.questions_asked = 0
+
+# **Moved up here from just above the transcript loop**, where it sat until the sidebar
+# needed to know whether this conversation has anything to export. It is an initialiser like
+# the three above and belongs with them; leaving it below meant the sidebar read a key that
+# does not exist yet on the first run — a `KeyError` on the page, not an empty transcript.
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+#: The chat input's widget key, and the seeded question's `session_state` key — **named here
+#: because the sidebar reads them ~700 lines before either is written**. Streamlit applies
+#: the incoming widget states to the session *before* the script runs, so on the rerun that
+#: carries a submitted question `st.session_state[QUESTION_KEY]` already holds it while
+#: `st.chat_input` is still hundreds of lines away; the seeded half is a plain write from the
+#: example buttons.
+#: Together they are how `answering_now()` can tell, at the top of the page, that this run has a
+#: multi-second turn ahead of it — which is what the two deferred slots need in order to say so
+#: rather than go blank. Measured, not assumed: `test_the_sidebar_can_tell_a_turn_is_coming`.
+#:
+#: Constants rather than three literals: the key is now read in the sidebar and written at the
+#: widget, and a key spelled twice is a lookup that silently returns `None` the day the copies
+#: disagree — which here would fail *open*, back into the blank panel this exists to fix.
+QUESTION_KEY = "question"
+PENDING_QUESTION_KEY = "pending_question"
+
+
+def answering_now() -> bool:
+    """Whether this run has a question in it, asked before the input that carries one exists.
+
+    Both halves of `prompt` below, at the one moment the sidebar can still act on the answer. A
+    typed question arrives as widget state (see `QUESTION_KEY`); a seeded one is a
+    `session_state` write the example buttons made on the previous rerun and this run has not
+    popped yet.
+
+    **A hint about this run, never the source of truth about the turn.** `prompt` below stays
+    the thing that decides whether a turn is answered, and it is deliberately not read from
+    here: the pop is what makes a seeded question fire once, and a second reader of that key
+    that consumed it would ask the question twice. This only decides what two placeholders say
+    while waiting.
+    """
+    return bool(
+        st.session_state.get(QUESTION_KEY) or st.session_state.get(PENDING_QUESTION_KEY)
+    )
+
+
+def render_export_buttons(messages: list[dict[str, object]]) -> None:
+    """Take this conversation away, as JSON or as CSV (T12 item 4, user story 35).
+
+    Story **35** — *"export or copy a completed brief (basic)… Full multi-format export is
+    Tier-2"* — and not the 25 this shipped citing, which is *"RAGAs metrics reported per
+    bucket"* (code review of #13).
+
+    **Defined above the sidebar block rather than beside the other render functions**, which is
+    a constraint of this file and not a preference: the sidebar runs at module scope, so a name
+    it calls has to exist by then — the same reason `_RENDERERS` is declared *below* the
+    functions it maps.
+
+    The source is `messages`, the display transcript, and `finbrief/export.py` argues why that
+    rather than the checkpointer at length: this is what the analyst saw, refusals included.
+
+    **Both payloads are built on every rerun**, because `st.download_button` takes bytes and
+    offers no lazy callback to build them from. That is affordable for the reason
+    `observability/events.py` reads its whole log eagerly — the volume is bounded by a human
+    typing questions — and it is the cost of the button being a plain download rather than a
+    second request the server has to route.
+
+    Nothing is logged here. The log line belongs to the *click*, because a line written on every
+    rerun would count reruns and call them exports.
+    """
+    exported = Transcript.of(messages, thread_id=st.session_state.thread_id)
+    # **Turns and messages are two counts, because they are two units.** A turn is an exchange —
+    # what `turn_id` names on every log line and what the `Token spend` panel counts three
+    # panels up — and the file holds a row per *message*, so one question and its answer are one
+    # turn and two rows. This caption said `2 turn(s)` for that conversation while the meter
+    # beside it said `across 1 turn(s)`: one page, one word, two numbers (`export.py`, and
+    # CONTEXT.md's **Turn**).
+    st.caption(
+        f"Export this conversation — {exported.turns} turn(s), "
+        f"{len(exported.messages)} message(s), {len(exported.sources)} source(s)."
+    )
+    for label, suffix, body, mime in (
+        ("JSON", "json", as_json(exported), "application/json"),
+        ("CSV", "csv", as_csv(exported), "text/csv"),
+    ):
+        data = body.encode("utf-8")
+        if st.download_button(
+            f"Download {label}",
+            data=data,
+            # `export.file_name`, not an f-string here: a download button's file name is not on
+            # the proto — the bytes are served over a URL — so `AppTest` cannot see it, and a
+            # name built in this file would be a claim no test could reach.
+            file_name=file_name(st.session_state.thread_id, suffix),
+            mime=mime,
+            icon=":material/download:",
+            width="stretch",
+        ):
+            # A count and a format. **Never the payload** — this file is the analyst's own
+            # questions and the filer's prose, which is exactly what these kept lines may not
+            # carry (`export.log_export`, ADR-0011).
+            log_export(exported, fmt=suffix, size=len(data))
+
+
+def fill_spend_meter(slot, *, answering: bool) -> None:
+    """Render the whole panel into `slot`, replacing whatever it held.
+
+    **Called twice per run, and that is the fix for the panel vanishing mid-turn.** The slot is
+    created in the sidebar and was filled only at the end of the script, after the turn — so
+    while a turn was being answered the slot held Streamlit's `Empty` delta, which does not
+    "wait", it *clears* the node the previous run had drawn there. The panel therefore blinked
+    out for the whole of the one wait it exists to describe, and came back when the script
+    finished (manual testing of #13). The neighbouring panels never moved because they are
+    rendered inline, where the sidebar runs.
+
+    The eager fill is what keeps something on screen for that window; the fill at the end is
+    still the authority, because this run's `agent_turn` line is written by the turn between
+    them. Nothing else can do it: Streamlit repaints on script progress, and a script blocked
+    inside `answer_turn` has no progress to report.
+
+    The label lives here rather than at the two call sites — the same panel written twice is two
+    panels the day one of them is edited.
+    """
+    with slot.container(), st.expander(":material/toll: Token spend"):
+        render_spend_meter(answering=answering)
+
+
+def render_spend_meter(*, answering: bool = False) -> None:
+    """This conversation's token spend, and its cost when one is configured (T12 item 5).
+
+    **Reads the log T8 already writes rather than adding an instrument**, which is what makes
+    this affordable: the counts are on `agent_turn` and `query_translation` already, and
+    `observability/spend.py` does the arithmetic through the one reader. So the meter exists
+    only when the sink does — `FINBRIEF_LOG_FILE` unset means there is nothing to read, and
+    this says so rather than rendering zeros, because a spend of `0` is a claim that the calls
+    were free.
+
+    Read from **this session's own window** of the file (`events.sink_offset`, taken once when
+    the session starts) and filtered to this conversation's turn ids. The offset is for read
+    cost; the filter is for correctness, and the module docstring argues why that is the sharper
+    of the two here — the sink is shared, and a total over the whole of it is a total over every
+    run that ever named it (ADR-0011).
+
+    Nothing is emitted here. The instrument is at the layer that produces the behaviour and this
+    is the layer that displays it — ADR-0011's amendment is explicit that an event wired to a
+    page is an event measuring clicks.
+
+    **Every state renders the panel; only the contents change** (manual testing of #13). Sink
+    off, nothing measured yet, a turn with no total, totals, totals that are a floor — five
+    things to say and five sentences, because the alternative this replaced was the panel
+    itself disappearing, and a reader cannot tell an absent measurement from a broken feature.
+    It is the rule the warm-thread caption and `distance_label` already follow: state the
+    absence.
+    """
+    path = sink_path()
+    if path is None:
+        st.caption(
+            "Token spend is read from the event log, which is off. Set `FINBRIEF_LOG_FILE` to "
+            "meter this conversation."
+        )
+        return
+    spend = conversation_spend(
+        read_events(path, start_offset=st.session_state.sink_offset),
+        thread_id=st.session_state.thread_id,
+    )
+    if answering:
+        # **The state the whole two-fill arrangement exists to render.** Said before the figures
+        # because it is what the figures mean right now: this run has a question in it and the
+        # turn answering it has not written its total yet, so everything below covers the turns
+        # *before* it. Only the eager fill ever passes this — by the time the fill at the end of
+        # the script runs, the turn is in the log and its numbers are in the figures.
+        st.caption(
+            "Measuring this turn — the figures below cover the turns before it, and take it in "
+            "when it finishes."
+        )
+    if spend.unfinished:
+        # **Read out of the log rather than inferred from this run**, which is why it survives
+        # into the settled fill and `answering` does not: a turn that raised inside
+        # `answer_turn`'s `except` never wrote its `agent_turn` line, so its answering calls are
+        # missing from the totals below for good. Both readings are given because the log cannot
+        # tell them apart — and neither of them is a spend of zero.
+        st.caption(
+            f"{spend.unfinished} turn(s) here have no total: still being answered, or ended "
+            "without reporting one. The answering calls behind them are not in these figures."
+        )
+    if not spend.measured:
+        # **Not zeros.** Either nothing has been asked yet, or the provider reported no usage
+        # block at all — and neither is "this conversation cost nothing". OpenRouter fronts many
+        # upstreams and whether a given one meters itself is not ours to assert
+        # (`observability/tokens.py`).
+        st.caption(
+            f"No usage reported yet for this conversation "
+            f"({spend.calls} model call(s) across {spend.turns} turn(s))."
+        )
+        return
+    st.markdown(
+        f"**Input** `{_tokens(spend.input.total)}`  \n"
+        f"**Output** `{_tokens(spend.output.total)}`  \n"
+        f"**Calls** `{_calls(spend)}` across `{spend.turns}` turn(s)"
+    )
+    dollars = spend.dollars(
+        input_per_mtok=settings.input_cost_per_mtok,
+        output_per_mtok=settings.output_cost_per_mtok,
+    )
+    if dollars is None:
+        st.caption(
+            "Cost is not priced: set `FINBRIEF_INPUT_COST_PER_MTOK` and "
+            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card. No price is "
+            "assumed, because this app reaches every model through OpenRouter's routing."
+        )
+    else:
+        st.markdown(f"**Cost** `${dollars:.4f}`")
+    # **Unconditional, and that is the fix.** This sentence sat inside the `partial` branch
+    # below, so a conversation whose every metered call reported both fields showed no caveat at
+    # all — and ADR-0011's amendment §4 claims precisely that the omission is "stated on
+    # screen". The claim was falsified by the surface it was written about (code review of #13).
+    #
+    # It cannot live in `partial` even in principle: `Spend.partial` is defined over *reported
+    # versus counted* calls, and the gate's classifier never enters `calls`, so no value of
+    # `partial` is evidence about it. A structural absence and a reporting shortfall are two
+    # different claims and they get two different sentences.
+    #
+    # **The provenance is here and not in the caption.** ADR-0011 is the record for both halves
+    # — that the classifier's call is unmetered, and that the omission is stated on screen — but
+    # an analyst reading a cost panel does not know what ADR-0011 is, so the citation reads as
+    # developer leakage where the claim reads as information (#13). The claim is what ships; the
+    # number stays in this comment.
+    st.caption(
+        "The input gate's classifier is never metered, so one paid call per turn is "
+        "missing from these figures by design."
+    )
+    if spend.partial:
+        # **Said beside the figure, not folded into it.** A total missing a call it should have
+        # counted is a floor, and a floor presented as a total is the silent narrowing this
+        # whole path is built against — so the denominators are printed rather than the
+        # shortfall being left for a reader to infer.
+        st.warning(
+            f"Partial: {spend.input.reported_calls} of {spend.calls} call(s) reported input "
+            f"tokens and {spend.output.reported_calls} reported output tokens, so the figures "
+            f"above are a floor.",
+            icon=":material/data_alert:",
+        )
+
+
+def _tokens(count: int | None) -> str:
+    """`12,431`, or the word for a count nothing reported. Never `0` for an absence."""
+    return "not reported" if count is None else f"{count:,}"
+
+
+def _calls(spend: Spend) -> str:
+    """`3`, or `≥3` when the call count is a floor rather than a count.
+
+    `agent_turn` writes its `calls` only once something reported usage, so a turn that metered
+    nothing is worth the honest floor of one here — and printing that floor as a count is the
+    same fabrication in the denominator that `_tokens` refuses in the numerator
+    (`spend.Spend.floored`, code review of #13).
+    """
+    return f"≥{spend.calls}" if spend.calls_are_a_floor else str(spend.calls)
+
+
 with st.sidebar:
     st.subheader("Conversation")
+    # **Above the fold, and deliberately not in a panel** (T12 item 1). ADR-0008 §4 makes this
+    # an obligation in these words — "the sidebar says so" — because a user who is not told
+    # reads a lost conversation as a bug, and a reviewer cannot tell an accepted consequence
+    # from an oversight. A collapsed panel states it only to a reader who clicks, so the
+    # density work below stops here: everything *else* folds, this does not.
+    #
+    # **The refresh warning alone**, and that is the whole content of this block. It used to
+    # open with the follow-up mechanic — which the help panel below also states, in better
+    # words ("one company at a time") and with a different example phrase. Two copies of one
+    # fact, already drifted: the bug class this repo keeps hitting, arriving as UI copy rather
+    # than as a check. ADR-0008 §4 obliges *this* sentence to be unfoldable and says nothing
+    # about the follow-up hint, so the hint moves entirely into the panel and the obligation
+    # keeps the space it is owed.
     st.caption(
-        "FinBrief remembers this conversation, so you can ask follow-ups — *and its debt?* "
-        "resolves against the company you were just discussing. Memory lasts as long as this "
-        "browser session: refreshing the page starts a new conversation."
+        "Memory lasts as long as this browser session — refreshing the page starts a new "
+        "conversation."
     )
-    # Shown, and shown short, because it is the handle on the conversation: it is what
-    # distinguishes this tab's memory from another's, and a support question about a lost
-    # thread has nothing else to name. Not a secret — a uuid identifies a conversation and
-    # says nothing about who is having it.
-    st.caption(f"Thread `{st.session_state.thread_id[:8]}`")
+    # **Only when there is somewhere to look it up** (T12 item 1). The thread id is the handle
+    # on this conversation *in the sink*: `log_turn` below prefixes every `turn_id` with it, so
+    # it is what makes a log line lead back to a conversation. With `FINBRIEF_LOG_FILE` unset
+    # there is no log, and the caption is then a hex string in front of an analyst with nothing
+    # to do with it — sidebar space spent on a handle to nothing.
+    #
+    # Through `sink_path()`, which reads the environment rather than `Settings` because that is
+    # where the sink's own resolution reads it (`config.resolve_log_file`, called by
+    # `configure_logging` with no arguments): asking the same question of the same source is
+    # what keeps this caption from claiming a sink the handler did not install.
+    if sink_path() is not None:
+        # Not a secret — a uuid identifies a conversation and says nothing about who is having
+        # it, which is why it is also safe on every log line.
+        # `THREAD_HANDLE_CHARS`, shared with the export's file names: this caption and a
+        # downloaded file have to name a conversation the same way, or the file cannot be
+        # matched back to the handle the page showed.
+        st.caption(f"Thread `{st.session_state.thread_id[:THREAD_HANDLE_CHARS]}`")
     # A fresh uuid, not a cleared checkpointer: the old thread is orphaned rather than deleted
     # (nothing else can reach it), and the cached agent survives — rebuilding it here would
     # discard every *other* session's memory too, which is the bug this button looks like.
@@ -150,41 +489,151 @@ with st.sidebar:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.messages = []
 
-    st.subheader("Grounding scope")
-    for detail in GROUNDING_SCOPE_DETAILS:
-        st.markdown(f"- {detail}")
+    # **Four panels, all collapsed** (T12 item 1). The sidebar had grown to four stacked blocks
+    # of prose — roughly a screen and a half — so the panel a reader wanted was always below
+    # something they had already read, and the scope disclosure ADR-0007 requires was competing
+    # with a cluster listing for the same attention. Collapsing is the *whole* change: every
+    # word is still rendered, and `AppTest`'s block accessors recurse into an expander, so the
+    # tests that bind these words to `config` and to the committed ingest evidence still find
+    # them (`tests/test_app_smoke.py`, `tests/test_grounding_scope.py`).
+    with st.expander(":material/help: How to use FinBrief"):
+        # T12 item 3's other half: the three things a reader cannot guess from a chat box.
+        st.markdown(
+            "- **Ask about one company at a time.** Follow-ups resolve against it, so "
+            "*and its margins?* needs no name.\n"
+            "- **`[1]` markers are citations.** Each one resolves to an entry in the "
+            "**Sources** panel under the answer, with the filer's own words to check it "
+            "against.\n"
+            "- **Prices and ratios are not from the filings.** Filings carry no prices, so "
+            "hard figures come from the finance tools and arrive on their own cards.\n"
+            "- **Open *How I answered*** to see which queries ran and which retriever "
+            "surfaced each chunk."
+        )
+        st.caption(
+            "FinBrief answers research questions, not *should I buy this* — it refuses "
+            "personalised advice by design."
+        )
 
-    st.subheader("Configuration")
-    # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
-    # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
-    # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so a
-    # second line would be a gap that no longer exists — and the way this panel stays honest is
-    # that `agent.build_agent` reads these same two settings (nothing here restates them).
-    st.markdown(
-        f"**Model** `{settings.chat_model}`  \n"
-        f"**Strategy** `{settings.retrieval_strategy}"
-        f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
-        f"**Top-k** `{settings.retrieval_k}`"
-    )
-    st.caption(
-        "Every answer's *How I answered* panel shows the queries that ran and which "
-        "retriever surfaced each chunk (ADR-0004)."
-        if settings.retrieval_strategy is RetrievalStrategy.HYBRID
-        else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
-    )
+    # **A slot, filled at the very end of the script.** The sidebar runs before this run's turn
+    # has been answered, so building the buttons here would offer a file missing the exchange
+    # the reader just had — and they would not be able to tell, which is the worst version of
+    # that bug. Deferring is the whole fix; `render_export_buttons` is called once, below, from
+    # a transcript that includes this turn.
+    export_slot = st.empty()
+    # **Held open while a turn runs, rather than left blank.** An `st.empty()` does not reserve
+    # space, it clears the node the previous run drew there — so on the rerun that answers a
+    # question the buttons vanished for the length of the turn and returned with the answer,
+    # the same wart the spend panel had. A caption in their place is not the buttons and does
+    # not pretend to be: it says why they are gone, which is exactly the thing a disappearance
+    # cannot say. Only while a turn is in flight — on any other rerun the fill below is
+    # microseconds away and a flash of this sentence would be noise.
+    #
+    # **A caption and not a disabled button**, for a mechanical reason worth recording: two
+    # fills of one slot in a single run are two `download_button`s with identical parameters,
+    # and Streamlit raises `StreamlitDuplicateElementId` for that — measured, not assumed.
+    # Keeping the placeholder widget-free is what keeps this fix from being a crash.
+    if st.session_state.messages and answering_now():
+        with export_slot.container():
+            st.caption(
+                "Export returns when this turn finishes — the file has to contain the answer "
+                "you are about to read."
+            )
 
-    st.subheader("Universe")
-    st.caption(f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters.")
-    for cluster, tickers in CLUSTERS.items():
-        st.markdown(f"**{cluster.label}** — {', '.join(tickers)}")
-    # The thinnest cluster makes the crispest example, and picking it from the data keeps
-    # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
-    # the Universe changed.
-    example = min(UNIVERSE, key=lambda company: len(PEERS[company.ticker]))
-    st.caption(
-        f"Peers come only from this set, e.g. {example.ticker} vs. "
-        f"{', '.join(PEERS[example.ticker])}."
-    )
+    # A slot for the same reason the export has one: the meter reads the log, and this run's
+    # `agent_turn` line is written by the turn below. Built here it would report the spend as of
+    # the *previous* question, which on a cost panel is the one number a reader would act on.
+    #
+    # **Filled here as well as at the end, unlike the export's.** See `fill_spend_meter`: the
+    # deferral above is what made the panel disappear mid-turn, and a panel whose subject is
+    # *this conversation's cost* is one a reader looks at while the cost is being incurred. It
+    # is filled unconditionally rather than only while answering, so there is no rerun on which
+    # the sidebar has a hole where a panel was. That reads the log twice on such a rerun, which
+    # is affordable for the reason `observability/events.py` reads it eagerly at all — the
+    # volume is bounded by a human typing questions — and is not affordable in the one place it
+    # would matter, so `sink_offset` bounds it.
+    spend_slot = st.empty()
+    fill_spend_meter(spend_slot, answering=answering_now())
+
+    with st.expander(":material/policy: Grounding scope"):
+        for detail in GROUNDING_SCOPE_DETAILS:
+            st.markdown(f"- {detail}")
+        # A caption rather than a sixth bullet: the five above are what the KB is and is not,
+        # and this is where to go when they are not enough. Its words are `prompts.py`'s like
+        # every other line in this panel.
+        st.caption(GROUNDING_SCOPE_VERIFY)
+
+    with st.expander(":material/tune: Configuration"):
+        # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
+        # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
+        # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so
+        # a second line would be a gap that no longer exists — and the way this panel stays
+        # honest is that `agent.build_agent` reads these same two settings (nothing here
+        # restates them).
+        st.markdown(
+            f"**Model** `{settings.chat_model}`  \n"
+            f"**Strategy** `{settings.retrieval_strategy}"
+            f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
+            f"**Top-k** `{settings.retrieval_k}`"
+        )
+        # The per-chunk provenance this points at is ADR-0004's requirement; the citation lives
+        # here rather than in the caption, which an analyst reads for the pointer and not for
+        # the decision record (#13).
+        st.caption(
+            "Every answer's *How I answered* panel shows the queries that ran and which "
+            "retriever surfaced each chunk."
+            if settings.retrieval_strategy is RetrievalStrategy.HYBRID
+            else "Vector search only. Hybrid retrieval adds BM25 over the same query variants."
+        )
+
+    with st.expander(":material/apartment: Universe"):
+        # The summary line, plus the grouping that used to be a column of its own. Both derived
+        # from `CLUSTERS`, which stays the one place the grouping is computed.
+        # The ordering sentence is here rather than implied: the table shows no cluster column,
+        # so a reader who does not know the rows are grouped reads 15 in an arbitrary order and
+        # the clusters this line names are invisible in the thing underneath it.
+        st.caption(
+            f"{len(UNIVERSE)} companies in {len(CLUSTERS)} peer clusters — "
+            + " · ".join(
+                f"{cluster.label} ({len(tickers)})" for cluster, tickers in CLUSTERS.items()
+            )
+            + ". Rows follow that cluster order."
+        )
+        # **A table, because the grouped ticker list this replaces assumed ticker literacy**
+        # (#13). `**Healthcare** — JNJ, LLY, PFE` discloses the Universe only to a reader who
+        # already knows that `LLY` is Eli Lilly, and the scope of the knowledge base is the
+        # first thing this app owes a reader. `prompts.UNIVERSE_ROWS` owns the rows, and owns
+        # why there are two columns rather than three.
+        #
+        # **Nothing is pinned, because the pins are what truncated the names.** This carried
+        # three columns at measured widths summing to the sidebar's content width — 54 for the
+        # ticker, 60 for the `Item 7A` verdict, 91 for `Company` — and 91px does not finish a
+        # legal name: `Microsoft Corporatio`, `JPMorgan Chase & C`. With the third column gone
+        # the arithmetic no longer needs doing. `width="stretch"` fills the expander and
+        # `Company` takes everything `Ticker` does not, which is every pixel this panel has to
+        # give a name. (`width="stretch"` and not `use_container_width`, which is the deprecated
+        # spelling of the same thing in Streamlit 1.60 and warns.)
+        st.dataframe(
+            pd.DataFrame(UNIVERSE_ROWS),
+            hide_index=True,
+            width="stretch",
+            # All 15 rows, rather than the ten `"auto"` would show behind a nested
+            # scrollbar inside a sidebar that already scrolls. From the content, not a
+            # pixel count.
+            height="content",
+        )
+        # The thinnest cluster makes the crispest example, and picking it from the data keeps
+        # this panel entirely config-driven — a hardcoded ticker would be a KeyError the day
+        # the Universe changed.
+        #
+        # **Through `config.thinnest_cluster_filer` rather than a `min` here**, which is the one
+        # derivation `prompts.EXAMPLE_QUESTIONS` also reads. Two copies with different
+        # tie-breaks disagreed on screen — five clusters tie at two members, so this caption
+        # named TSLA while the example button asked about Bank of America (review of #13).
+        example = thinnest_cluster_filer()
+        st.caption(
+            f"Peers come only from this set, e.g. {example.ticker} vs. "
+            f"{', '.join(PEERS[example.ticker])}."
+        )
 
 
 def as_markdown(text: str) -> str:
@@ -280,6 +729,28 @@ def retriever_label(context: Context) -> str:
     return " + ".join(found) if found else "provenance not recorded"
 
 
+def accession_label(context: Context) -> str:
+    """The chunk's accession number, linked to the filing's own index page on EDGAR.
+
+    What turns a citation from a claim into something an analyst can check (user story 2). The
+    panel already shows the filer's words; this is where the words came from, one click away.
+
+    **The link is derived from this chunk's own accession**, never from a template written here
+    — `ingestion/edgar.filing_index_url` asks edgartools for the URL shape that
+    `FilingRef.url` already records, and resolves the CIK from the ticker rather than from the
+    accession's leading block, which belongs to the filer's agent. A link built any other way
+    is one that can point at a different company's filing while looking entirely correct, which
+    is why `tests/test_app_smoke.py` asserts the *rendered* link carries the chunk's own
+    accession rather than merely that a link is present.
+
+    Unlinked when the CIK does not resolve, and the accession is still shown: a missing link is
+    "we cannot address this filing on EDGAR", which is a different claim from "this citation
+    has no source" (CLAUDE.md).
+    """
+    url = filing_index_url(context.ticker, context.accession)
+    return f"[{context.accession}]({url})" if url else f"{context.accession} (no EDGAR link)"
+
+
 def variant_labels(search: Search) -> dict[str, str]:
     """Each variant this search ran, mapped to what to call it in the panel.
 
@@ -357,10 +828,13 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 label = labels.get(variant, "query")
                 st.markdown(f"{index}. `{label}` — {as_markdown(variant)}")
             if search.ticker_form is not None:
+                # The mechanism is ADR-0004's amendment (the T6 finding: the recovery is
+                # embedding-side and the ticker form is what carries it). The caption explains
+                # the mechanism, which is what an analyst needs; the citation stays here (#13).
                 st.caption(
                     "The ticker form is added deterministically from the Universe, not by a "
                     "model: a chunk's header carries `TSLA`, so a lexical search for *Tesla* "
-                    "would miss most of the filer (ADR-0004 amendment)."
+                    "would miss most of the filer."
                 )
             if not search.translated:
                 st.caption("Query translation was off, so only the question itself was run.")
@@ -405,11 +879,15 @@ def render_how_i_answered(searches: tuple[Search, ...]) -> None:
                 )
             if barren := barren_variants(search):
                 named = ", ".join(f"`{labels.get(variant, 'query')}`" for variant in barren)
+                # "Translation only ever *adds*" is ADR-0004's invariant, and the reason this
+                # caption can reassure rather than alarm. Cited here, not on screen: the reader
+                # needs to know the barren variant cost them nothing, not which ADR says so
+                # (#13).
                 st.caption(
                     f"Surfaced no chunk in the top-{len(search.contexts)}: {named}. Each ran "
                     "through every retriever this strategy uses; nothing they found survived "
                     "fusion. Translation only ever *adds*, so a variant that contributes "
-                    "nothing costs a retrieval round and changes no ranking (ADR-0004)."
+                    "nothing costs a retrieval round and changes no ranking."
                 )
 
 
@@ -481,12 +959,31 @@ def _render_quote(card: QuoteCard) -> None:
         f"{Unit.PRICE.format(quote.previous_close)}"
     )
     if quote.closes:
-        st.line_chart(
-            pd.DataFrame(
-                {"close": [close.close for close in quote.closes]},
-                index=[close.date for close in quote.closes],
+        # **`st.altair_chart` and not `st.line_chart`, and only for the y-axis.** Vega-Lite
+        # includes zero in a quantitative axis' domain by default, and `st.line_chart` — which
+        # is sugar over *this* call, its own docstring says so — offers no way to say
+        # otherwise. So a month of closes between 215 and 232 drew as a flat line two-thirds of
+        # the way up an axis running 0 → 100 → 200: the chart reporting "nothing happened"
+        # about the move a reader opened the card to see. `zero=False` scales it to the data.
+        #
+        # Everything else is `st.line_chart`'s own generated spec, reproduced rather than
+        # improved on, so this stays the change it says it is: the same nominal x over the ISO
+        # dates (`Close.date` is a string), the same gridlines, the same `close` axis title,
+        # and a hover tooltip in place of the one that came free.
+        history = pd.DataFrame(
+            {
+                "date": [close.date for close in quote.closes],
+                "close": [close.close for close in quote.closes],
+            }
+        )
+        st.altair_chart(
+            alt.Chart(history)
+            .mark_line()
+            .encode(
+                x=alt.X("date:N", axis=alt.Axis(grid=False), title=""),
+                y=alt.Y("close:Q", axis=alt.Axis(grid=True), scale=alt.Scale(zero=False)),
+                tooltip=["date", "close"],
             ),
-            y="close",
             height=180,
         )
         # `HISTORY_PERIOD_LABEL`, not "last month" typed again. That constant exists because the
@@ -494,7 +991,17 @@ def _render_quote(card: QuoteCard) -> None:
         # caption was a third copy (issue #9 review). The session count stays derived from the
         # data rather than from the label: `"1mo"` yields ~21 trading sessions, not 30, and the
         # exact number is a property of the response.
-        st.caption(f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions).")
+        #
+        # **The axis clause is the price of scaling to the data.** Two lines above this chart
+        # the card states a 52-week range, and an axis that no longer starts at zero starts
+        # wherever *this month* does — so the numbers running up the side are a month's
+        # extremes sitting directly under a year's, with nothing but this sentence to say they
+        # are different windows. A reader who takes the axis for the 52-week range reads a
+        # month of noise as a year of it.
+        st.caption(
+            f"Daily closes, {HISTORY_PERIOD_LABEL} ({len(quote.closes)} sessions) — the axis "
+            f"spans this window, not the 52-week range above."
+        )
 
 
 #: How many metric charts sit side by side before wrapping to a new row. Three keeps a
@@ -667,7 +1174,10 @@ def render_sources(contexts: tuple[Context, ...], *, searched: bool) -> None:
     # `status` block and put the panel out of `AppTest.expander`'s reach (seam 3).
     with st.expander(f":material/description: Sources ({len(contexts)})"):
         for context in contexts:
-            st.markdown(f"**[{context.rank}] {context.citation}**")
+            # The link rides on the citation line rather than in the caption below it: this is
+            # the line a reader reads to decide whether to trust the excerpt, and "where to
+            # check it" belongs beside "what it is". The caption under it is machine detail.
+            st.markdown(f"**[{context.rank}] {context.citation}** · {accession_label(context)}")
             st.caption(
                 f"`{context.chunk_id}` · {distance_label(context.distance)} · "
                 f"{retriever_label(context)}"
@@ -774,8 +1284,70 @@ def render_marker_note(report: MarkerReport) -> None:
     )
 
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+#: How many example buttons sit side by side. Two, because the labels are whole sentences:
+#: four across truncates every one of them on a laptop, and one per row pushes the first
+#: answer below the fold on the only screen where these are visible at all.
+_EXAMPLE_COLUMNS = 2
+
+
+def render_example_questions() -> None:
+    """The empty page's four starting points (T12 item 3, PLAN §2's *Interactive help / guide*).
+
+    **No user story, and the citation says so rather than borrowing one.** This shipped citing
+    "user story 20", which is *"a fresh browser session starts a clean conversation"* — nothing
+    to do with example questions (code review of #13). `docs/spec/finbrief.md` has no story for
+    onboarding at all; it puts a help guide in **Out of Scope**, and PLAN §2's Easy tail is the
+    only thing asking for this. A pointer into the spec that lands on the wrong line is worse
+    than no pointer, because the next reader checks the line rather than the claim.
+
+    **Shown only while the transcript is empty**, which is what keeps them an affordance rather
+    than furniture: they answer "what do I type", and that stops being the reader's question the
+    moment there is an answer on screen to read. Left up, four buttons would push every
+    subsequent answer down the page for the whole conversation.
+
+    `st.chat_input` cannot be given a value from code, so "seeding the input" is seeding the
+    **turn**: the click records the question in `session_state` and the block below consumes it
+    exactly where a typed question is consumed. That is one code path on purpose — a seeded
+    question therefore gets the length cap, the input gate, the transcript row and the panels,
+    and not a second thinner version of the turn that quietly skips one of them. The gate
+    especially: a seeding route that bypassed `screen()` would be a second door into the agent,
+    and it is the door worth trying precisely because it looks like UI convenience
+    (`test_a_seeded_question_is_screened_by_the_gate_like_any_other`).
+
+    Nothing here touches the cached agent. ADR-0008's isolation guarantee rests on that
+    instance being built once and shared, so "start me off" must mean a `session_state` write
+    and never a rebuild — which would discard every *other* session's memory, the same failure
+    the "Start over" button is written around.
+    """
+    st.caption("New here? Start with one of these — or just type a question.")
+    for start in range(0, len(EXAMPLE_QUESTIONS), _EXAMPLE_COLUMNS):
+        row = EXAMPLE_QUESTIONS[start : start + _EXAMPLE_COLUMNS]
+        # Always `_EXAMPLE_COLUMNS` columns, even for a short final row — the same reason
+        # `_render_metric_bars` does it: passing `len(row)` would stretch a lone button across
+        # the full width and make the last example look like the recommended one.
+        columns = st.columns(_EXAMPLE_COLUMNS)
+        for column, question in zip(columns, row, strict=False):
+            if column.button(question, width="stretch"):
+                # Through the constant, not `.pending_question`: the sidebar reads this key
+                # now (`answering_now`), and a key written under one spelling and read under
+                # another is a placeholder that stays blank on exactly the run it is for.
+                st.session_state[PENDING_QUESTION_KEY] = question
+
+
+# **An `st.empty()` slot rather than a plain render, and the reason is a one-frame wart.** The
+# buttons have to be *drawn* above the transcript, because a click is read from the widget on
+# the rerun that follows it — so `st.button` must be called before the question it seeded is
+# consumed below. But at that point in the script the transcript is still empty on exactly the
+# run where the click is being handled, so the naive version leaves four "New here?" buttons
+# sitting above the reader's own first answer until some later rerun clears them.
+#
+# A placeholder separates the two: the buttons are rendered into it (so the click is still
+# read — verified, not assumed) and the slot is emptied again below once this run turns out to
+# have a conversation in it. `test_the_examples_make_way_for_the_conversation` is the assertion.
+examples_slot = st.empty()
+if not st.session_state.messages:
+    with examples_slot.container():
+        render_example_questions()
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -815,7 +1387,41 @@ for message in st.session_state.messages:
                 render_sources(contexts, searched=message.get("searched", True))
             st.caption(DISCLAIMER)
 
-if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="disable"):
+# `key=QUESTION_KEY` so the sidebar can see a submitted question before this line runs — see the
+# constant. The value is still taken from the return here and not from `session_state`: this is
+# where the question is consumed, and one consumer is the rule the seeded half is built on too.
+typed = st.chat_input(
+    "Ask about a company in the Universe", key=QUESTION_KEY, submit_mode="disable"
+)
+
+# **Popped, not read** (T12 item 3). A seeded question left in `session_state` would be re-asked
+# on every rerun the page does for any other reason — a widget change, a panel opening — so one
+# click would bill a question per interaction. Consuming it here, *before* the turn runs, means
+# even a turn that raises or is refused cannot leave it behind to fire again
+# (`test_a_seeded_question_is_asked_once_and_not_again_on_the_next_rerun`).
+#
+# A typed question wins if both arrive in one run, which cannot currently happen — a click and
+# a submit are separate reruns — but the tie has to break somewhere, and the reader's own words
+# are the half that is unambiguous about what they meant.
+seeded = st.session_state.pop(PENDING_QUESTION_KEY, None)
+
+prompt = typed or seeded
+
+
+def answer_turn(prompt: str) -> None:
+    """One turn: screen the question, answer it, and leave the result in the transcript.
+
+    **A function with `return`s where this was a top-level block with `st.stop()`s.** The reason
+    is the export slot and not tidiness: `st.stop()` does not merely end the script, it stops
+    Streamlit accepting further elements, so anything rendered afterwards is silently discarded
+    — measured, with a `finally` writing into a placeholder after an `st.stop()` and producing
+    nothing at all. The export buttons have to be built from the transcript *including* this
+    turn, or a reader downloads a file missing the exchange they just had and cannot tell.
+
+    So the turn needs an exit the script survives. Three `st.stop()`s became three `return`s and
+    nothing else changed: this block was the last thing in the file, so ending it and ending the
+    script were the same act until there was something to render after it.
+    """
     # **One turn, one identifier, on every event this block emits** (T8, #10). The gate's
     # screening, the retrievals the agent's tool ran, the validator's verdict and the marker
     # check all land on separate lines with nothing else in common: a `retrieval` line carries
@@ -841,7 +1447,28 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                 f"actually want an answer about.",
                 icon=":material/text_fields:",
             )
-            st.stop()
+            return
+
+        # **The per-session throttle (T12 item 6) — cost and abuse limiting, not security.**
+        # `config.MAX_QUESTIONS_PER_SESSION` carries the argument; the short version is that a
+        # refresh resets this counter, so it bounds what one open tab can spend and stops
+        # nothing that is trying. ADR-0006's gate below is the security boundary, and conflating
+        # the two would be the more dangerous mistake in the pair — a reviewer who reads this as
+        # rate limiting stops looking for the thing that is.
+        #
+        # **After the length cap and before the gate**, which is where the two reasons agree.
+        # Cost: layer 3 is a paid classifier call, so a throttled question must not reach it.
+        # Abuse: a payload that the denylist would block still consumes a question, because
+        # otherwise the one caller worth throttling is the one that gets unlimited attempts.
+        if st.session_state.questions_asked >= MAX_QUESTIONS_PER_SESSION:
+            st.warning(
+                f"This session has asked its {MAX_QUESTIONS_PER_SESSION} questions. Refresh "
+                f"the page to start a new conversation — FinBrief caps questions per session "
+                f"to bound what a shared demo key can spend.",
+                icon=":material/hourglass_disabled:",
+            )
+            return
+        st.session_state.questions_asked += 1
 
         # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door
         # a human types through, which is what the front door is about; a gate inside the agent
@@ -872,7 +1499,7 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
             st.session_state.messages.append(
                 {"role": "assistant", "content": INJECTION_REFUSAL}
             )
-            st.stop()
+            return
 
         with st.chat_message("assistant"):
             try:
@@ -962,14 +1589,14 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                     st.session_state.messages.append(
                         {"role": "assistant", "content": ADVICE_REFUSAL}
                     )
-                    st.stop()
+                    return
 
                 st.markdown(as_markdown(reply.text))
                 # The citation-marker check (T3's finding, #5): every `[n]` against every number
                 # this *conversation* has issued, not just this turn's — see `issued_ranks`.
                 # Logged on every turn that renders an answer rather than only on a violation,
                 # so T10 (#11) has a denominator for the rate. **Not every turn**: the layer-4
-                # branch above `st.stop()`s first, so a refused answer contributes to neither
+                # branch above `return`s first, so a refused answer contributes to neither
                 # numerator nor denominator — which is the right denominator anyway, since the
                 # markers of an answer no reader saw are not a marker-resolution rate about
                 # anything.
@@ -999,3 +1626,25 @@ if prompt := st.chat_input("Ask about a company in the Universe", submit_mode="d
                         "turn": reply,
                     }
                 )
+
+
+if prompt:
+    # Retracted here rather than skipped above: this run has a question in it, so the empty
+    # page's affordance is no longer describing this page. See the slot's own comment.
+    examples_slot.empty()
+    answer_turn(prompt)
+
+# **Last, and that ordering is the point.** Every branch of `answer_turn` has run by now,
+# including the two refusals, so the transcript this reads is the one the reader is looking at.
+# Nothing at all when there is no conversation: a download button offering a file with no turns
+# in it reads as a broken feature rather than as an empty one.
+if st.session_state.messages:
+    with export_slot.container():
+        render_export_buttons(st.session_state.messages)
+
+# Also last, and for the same reason: this run's `agent_turn` line is written inside the turn
+# above, so a meter built in the sidebar would report the spend as of the *previous* question.
+# **The second of two fills, not the only one** — the sidebar filled this slot on the way past
+# so the panel is on screen for the wait, and this replaces it with the settled figures.
+# `answering` is `False` here whatever this run did: the turn is over, and its total is logged.
+fill_spend_meter(spend_slot, answering=False)

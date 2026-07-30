@@ -17,6 +17,7 @@ import os
 import re
 from collections.abc import Mapping
 
+from finbrief.caching import build_once
 from finbrief.config import (
     ConfigError,
     load_env,
@@ -59,6 +60,82 @@ _NEXT_ITEM: Mapping[Section, str] = {
 #: bare `Item 7` with the title on the next line had its real heading read as a TOC row and
 #: the fallback returned nothing at all for it (issue #3 review).
 _TOC_TAIL = re.compile(r"(\.{2,}|\s)\s*\d{1,4}(\s*[-–]\s*\d{1,4})?\s*$")
+
+
+#: Where a reader goes to check anything FinBrief says against the primary source. The
+#: sidebar's scope panel links it (`prompts.GROUNDING_SCOPE_VERIFY`); it is not a filing
+#: URL and is deliberately not built from one — full-text search is the entry point for a
+#: reader who wants a filing this app never ingested.
+EDGAR_SEARCH_URL = "https://www.sec.gov/edgar/search/"
+
+
+def _load_cik_lookup() -> Mapping[str, int]:
+    """edgartools' bundled ticker → CIK table, read from the package and never fetched.
+
+    `company_tickers.parquet` ships inside the `edgar` wheel, so this is a local file read:
+    `get_company_cik_lookup` reaches the network only through a fallback for a ticker the
+    bundle does not carry, and all fifteen Universe tickers are in it (bound by
+    `tests/test_edgar_links.py`). Calling it for an unknown ticker would attempt egress,
+    which is why `filing_index_url` below looks the ticker up in *this* mapping rather than
+    through `edgar.reference.find_cik`.
+
+    Imported inside the function like every other edgartools use here — pandas and pyarrow
+    come with it, and the app must not pay for them at import. Measured at 1.55s for the first
+    link and nothing measurable thereafter, paid inside the sources panel of a turn that has
+    already spent seconds on a model.
+    """
+    from edgar.reference.tickers import get_company_cik_lookup
+
+    return get_company_cik_lookup()
+
+
+#: Through `build_once` rather than `lru_cache`, like every other process-level singleton on
+#: the app's path (`caching.py`): the app resolves a URL per source in the panel, and two
+#: concurrent misses would each parse the parquet. Cheaper than the Chroma handle it protects
+#: and the same rule, so the next collaborator added here inherits the guard.
+_cik_lookup = build_once(_load_cik_lookup)
+
+
+def filing_index_url(ticker: str, accession: str) -> str:
+    """EDGAR's index page for one filing, or `""` when the ticker resolves to no CIK.
+
+    What makes a citation checkable: the sources panel renders each accession as a link to
+    this, so an analyst can open the filing the excerpt was cut from (user story 2).
+
+    **The URL shape is not written here.** `FilingRef.url` records it for the filings ingest
+    fetched, and it comes out of `Filing.homepage_url` — so this asks edgartools for the same
+    string rather than composing a second template that could drift from the one in the
+    committed evidence. `tests/test_edgar_links.py` binds the two: every URL in
+    `docs/verification/section-starts.md` was recorded from a real fetch, and this function
+    must reproduce all fifteen from ticker and accession alone.
+
+    **The CIK comes from the ticker, never from the accession**, for the reason `FilingRef`'s
+    docstring gives: an accession's leading block is the *filer agent's* CIK — JPM's 10-K is
+    `0001628280-…`, which is Donnelley's — so a URL composed from it points at the wrong
+    company's directory or at nothing.
+
+    `form` and `filing_date` are empty because `homepage_url` is a function of the CIK and the
+    accession and nothing else. Passing values a `Context` does not carry would be inventing
+    them; passing none says which two fields the derivation actually rests on.
+
+    Returns `""` rather than raising or guessing, and the caller renders the accession
+    unlinked: "we cannot resolve this filer's CIK" is not "this citation has no source"
+    (CLAUDE.md — an absence must not be reported as a measurement).
+    """
+    cik = _cik_lookup().get(ticker.strip().upper())
+    if cik is None or not accession.strip():
+        return ""
+    from edgar import Filing
+
+    return str(
+        Filing(
+            cik=int(cik),
+            company=ticker,
+            form="",
+            filing_date="",
+            accession_no=accession.strip(),
+        ).homepage_url
+    )
 
 
 def configure_edgar() -> None:

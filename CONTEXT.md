@@ -109,6 +109,20 @@ One candidate list's contribution to one chunk's fused rank: which **variant** �
 list*. The data behind "*why* hybrid wins" rather than merely that it does.
 _Avoid_: bare "provenance" — see **Chunk**.
 
+**Turn**:
+One exchange — the analyst's question and what FinBrief rendered in reply, whether that was an
+answer, a refusal, or nothing at all because the turn raised inside the agent. It is what `turn_id`
+names on every log line, what an `AgentTurn` carries, and therefore what *anything* counting turns
+counts. A transcript **message** is not a turn: an ordinary turn puts two rows on screen, so the
+export's file has a row per message and reports the two counts apart (`export.Transcript.turns`
+against `messages`). Two counts of one thing may still differ legitimately, and only by **scope**:
+the token meter counts the turns that reached the model, so a question the input gate blocked is a
+turn on screen and in the export and absent from the meter, which has nothing to meter for it.
+_Avoid_: "turn" for a chat message — one page reported a single question and its answer as both
+`1 turn(s)` (the meter) and `2 turn(s)` (the export caption) while both were right about their own
+arithmetic; and "turn" for the agent's internal steps, which is what `MAX_AGENT_STEPS` bounds. One
+turn may make many tool calls.
+
 **Grounded answer**:
 One turn's answer text together with the **Contexts** that grounded it — the unit the
 evaluation harness scores and the UI renders. The text carries **no disclaimer**: the

@@ -243,6 +243,27 @@ CLUSTERS: Mapping[PeerCluster, tuple[str, ...]] = _build_clusters(UNIVERSE)
 PEERS: Mapping[str, tuple[str, ...]] = _build_peers(CLUSTERS, UNIVERSE)
 
 
+def thinnest_cluster_filer() -> Company:
+    """The Universe member with the fewest peers — the crispest worked example, from the data.
+
+    **One derivation, because two of them disagreed on screen.** The sidebar's Universe
+    panel picks a company to illustrate "peers come only from this set", and
+    `prompts.EXAMPLE_QUESTIONS` picks one for its peer-comparison button. Both were written
+    as `min(UNIVERSE, key=...)` over the same idea with different tie-breaks — and five
+    clusters tie at two members, so the panel said `TSLA` while the button asked about Bank
+    of America, under a comment claiming the button was derived the way the panel is (code
+    review of #13).
+
+    `ticker` breaks the tie so the answer is deterministic across runs: on size alone it fell
+    out of dictionary order, stable per build and not across curation changes.
+
+    Here rather than in `prompts.py` because it is a fact about the Universe and not a
+    prompt, and `prompts.py` already reads this module — the other direction is the import
+    loop `GROUNDING_SCOPE` is careful about.
+    """
+    return min(UNIVERSE, key=lambda company: (len(PEERS[company.ticker]), company.ticker))
+
+
 # --------------------------------------------------------------------------------------
 # Finance tools: the free-tier budget and the input caps (T5, ADR-0009)
 # --------------------------------------------------------------------------------------
@@ -503,6 +524,25 @@ ANSWER_MAX_RETRIES = 2
 #: signatures.
 MAX_QUESTION_CHARS = 4000
 
+#: How many questions one browser session may ask before the app stops answering (T12 item 6).
+#:
+#: **Cost and abuse limiting, and explicitly not a security control.** A refresh mints a new
+#: `session_state` and therefore a new counter, so anyone who wants past this walks past it —
+#: and saying so is the point rather than a caveat: ADR-0006's input gate is the security
+#: boundary, and a session counter advertised as rate limiting would be a claim the code cannot
+#: support. What it does buy, on a public demo deployment with the author's own key behind it,
+#: is that one tab left open on a script cannot spend the budget for everyone.
+#:
+#: A real rate limit is keyed server-side on something the client does not choose — an account,
+#: an IP, a token bucket in a shared store — and needs the auth Tier-2 defers (ADR-0010 §6).
+#: That is a ticket, not a constant.
+#:
+#: Its sibling `MAX_QUESTION_CHARS` is a module constant rather than env-overridable and this
+#: follows it, for the same reason: both are bounds on what the one human-facing door accepts,
+#: and a deployment that wants a different answer is changing what the app *is* rather than
+#: configuring it.
+MAX_QUESTIONS_PER_SESSION = 40
+
 
 # --------------------------------------------------------------------------------------
 # Retrieval strategy switches (ADR-0004, ADR-0005)
@@ -627,6 +667,18 @@ class Settings:
     sec_edgar_user_agent: str
     chroma_dir: str
     checkpoint_db: str
+    #: What a million input / output tokens of `chat_model` cost, in dollars — or `None`, which
+    #: is the default and means *unpriced* (T12 item 5).
+    #:
+    #: **Configuration rather than a table in the repo, and `None` rather than a guess.** This
+    #: project reaches every model through OpenRouter, which fronts many upstreams and routes by
+    #: availability, so the price of a call is not something this codebase can assert — a
+    #: hardcoded figure would be a number nobody measured, going stale silently, in a panel
+    #: whose whole subject is spend. Unset, the meter reports tokens and says the cost is
+    #: unpriced; set, it multiplies. Two fields rather than one because input and output are
+    #: priced differently everywhere, and one blended figure would have to be wrong for both.
+    input_cost_per_mtok: float | None
+    output_cost_per_mtok: float | None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Settings:
@@ -673,6 +725,8 @@ class Settings:
             # Ephemeral by design on Streamlit Community Cloud; conversations are not durable
             # data, and losing them costs a conversation rather than the knowledge base.
             checkpoint_db=_string(env, "FINBRIEF_CHECKPOINT_DB", "data/checkpoints.sqlite"),
+            input_cost_per_mtok=_price(env, "FINBRIEF_INPUT_COST_PER_MTOK"),
+            output_cost_per_mtok=_price(env, "FINBRIEF_OUTPUT_COST_PER_MTOK"),
         )
 
 
@@ -729,6 +783,30 @@ def _integer(
         raise ConfigError(f"{name}={value} is below the minimum of {minimum}.")
     if maximum is not None and value > maximum:
         raise ConfigError(f"{name}={value} is above the maximum of {maximum}.")
+    return value
+
+
+def _price(env: Mapping[str, str], name: str) -> float | None:
+    """A dollars-per-million-tokens price, or `None` when unset — never a default figure.
+
+    There is deliberately no default to fall back on: an unset price means the cost meter
+    reports
+    tokens and says it cannot price them, which is honest, where a stand-in would put a dollar
+    figure on screen that no rate card produced.
+
+    Negative is refused rather than clamped, on the same reasoning `_integer` takes a `minimum`:
+    a negative price is a typo, and silently treating it as zero would report a spend of
+    nothing.
+    """
+    raw = _raw(env, name)
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name}={raw!r} is not a number of dollars.") from exc
+    if value < 0:
+        raise ConfigError(f"{name}={value} is negative; a price cannot be below zero.")
     return value
 
 

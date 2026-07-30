@@ -29,6 +29,18 @@ QUESTION = "What are Tesla's risk factors?"
 FOLLOW_UP = "And its debt?"
 
 
+def start_over(app):
+    """The *Start over* button, found by label rather than by index.
+
+    It was `app.sidebar.button[0]`, which is a positional claim about the whole sidebar: T12
+    added panels of their own, and `AppTest`'s block accessors recurse into an expander, so a
+    button added inside any panel above this one silently redirects every assertion below to a
+    different widget. The label is what the test is actually about.
+    """
+    (button,) = [b for b in app.sidebar.button if "Start over" in b.label]
+    return button
+
+
 @pytest.fixture(autouse=True)
 def stubbed_agent(monkeypatch, agent_builds):
     """Record every `(question, thread_id, agent)` the app asks about.
@@ -142,7 +154,7 @@ def test_starting_over_mints_a_fresh_thread_and_keeps_the_agent(app, stubbed_age
     app.chat_input[0].set_value(QUESTION).run()
     first = app.session_state.thread_id
 
-    app.sidebar.button[0].click().run()
+    start_over(app).click().run()
 
     assert app.session_state.thread_id != first
     assert app.session_state.messages == [], "and the transcript goes with the conversation"
@@ -159,7 +171,7 @@ def test_starting_over_does_not_reach_another_session(app, monkeypatch, stubbed_
     other.run()
     others_thread = other.session_state.thread_id
 
-    app.sidebar.button[0].click().run()
+    start_over(app).click().run()
 
     assert other.session_state.thread_id == others_thread
 
@@ -171,10 +183,38 @@ def test_the_page_states_that_a_refresh_starts_a_new_conversation(app):
     # difference between a design decision and an oversight.
     app.run()
 
+    # The *fact*, not the wording: this test is ADR-0008's binding that the consequence is
+    # stated at all, and the exact sentence has one owner —
+    # `test_app_smoke.test_the_refresh_semantics_stay_above_the_fold`, which also asserts that
+    # no panel is hiding it. A second copy of the literal here would be one more pair to drift.
     sidebar = " ".join(caption.value for caption in app.sidebar.caption)
     assert "refreshing" in sidebar.lower()
     assert "new conversation" in sidebar.lower()
-    assert "follow-ups" in sidebar.lower(), "and what memory buys, since it is the reason"
+
+
+def test_seeding_a_question_touches_session_state_and_not_the_cached_agent(app, stubbed_agent):
+    """T12 item 3, held against ADR-0008's one hard guarantee.
+
+    An example-question button is UI convenience, and the tempting implementation of "start
+    this conversation for me" is to reset the agent — which on this design would discard
+    **every other session's** memory, since the instance is `@st.cache_resource`d and shared.
+    That is the same failure `test_starting_over_does_not_reach_another_session` guards,
+    arriving through a second button.
+
+    So the click may add to `session_state` and may not rebuild anything: one construction
+    across the whole process, and the seeded turn lands on the session's existing thread.
+    """
+    from finbrief.prompts import EXAMPLE_QUESTIONS
+
+    app.run()
+    minted = app.session_state.thread_id
+
+    (button,) = [b for b in app.button if b.label == EXAMPLE_QUESTIONS[0]]
+    button.click().run()
+
+    assert len(stubbed_agent["built"]) == 1, "the click asked a question; it did not rebuild"
+    assert app.session_state.thread_id == minted, "and it stayed in the same conversation"
+    assert stubbed_agent["asked"][-1]["thread_id"] == minted
 
 
 def test_the_transcript_is_the_only_conversation_state_the_ui_keeps(app, stubbed_agent):

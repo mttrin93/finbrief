@@ -105,10 +105,28 @@ cross-checked against the ingest run's own evidence by `tests/test_grounding_sco
   come from the finance tools, not the filing text.
 - **One filing per company:** the most recent 10-K only, so the fiscal year differs by
   filer (NVDA is FY2026, the other fourteen FY2025). Each citation states its own year.
+- **Where these counts come from:** the ingest run's own evidence,
+  [`docs/verification/ingest-report.md`](./docs/verification/ingest-report.md) — per-company
+  chunk counts read back from the collection. The numbers above describe the knowledge base
+  as ADR-0007 defines it, derived from `config.py`, and are **not a live count of the index**
+  behind any particular deployment: a partial or stale ingest would leave them overstating
+  coverage, and the evidence file is what a reviewer checks them against. This bullet is here
+  and not in the app's scope panel on purpose — it answers a reviewer's question, and an
+  analyst mid-question is not asking it (#13).
 
 Retrieved text is shown verbatim in the sources panel: it renders through `st.text`, not
 Markdown, because a filer's own `$178,353` is a KaTeX expression to a Markdown renderer and
 a citation surface that silently reformats the figures is not a citation surface.
+
+Each source also carries its **accession number, linked to that filing's index page on
+EDGAR**, so a citation can be checked against the primary source rather than against the
+excerpt beside it (user story 2). The link is derived, not stored: the CIK comes from the
+ticker through edgartools' bundled table and the URL shape from `Filing.homepage_url`, which
+is the same string `FilingRef.url` records at ingest. It is derived *from the ticker* because
+an accession's leading block is the **filer agent's** CIK, not the company's — META's 10-K is
+accession `0001628280-…`, which is Donnelley's, and a URL built from it resolves to a
+different company's filings with no error anywhere. `tests/test_edgar_links.py` reproduces all
+15 recorded URLs from ticker and accession alone.
 
 ## What the live figures are, and are not
 
@@ -290,6 +308,113 @@ stale.
   over the conversation (`agent/citations.py`) rather than by each search for itself, because
   searches in one step run concurrently against identical state and would otherwise all number
   from `[1]`.
+
+## What a conversation cost, and what caps it
+
+Two sidebar panels, and the second one is easy to over-read — so it says what it is not.
+
+**The token meter reads the log rather than adding an instrument.** T8 already records per-field
+token counts on the agent loop's turn and on the planner's own call, so the meter is arithmetic
+over `observability/events.py` and nothing new is emitted. Three consequences:
+
+- **It exists only when the log does.** The counts live in the sink, which is opt-in, so with
+  `FINBRIEF_LOG_FILE` unset the panel says so instead of rendering `0`. A spend of zero is a claim
+  that the calls were free.
+- **It is scoped to this conversation, not to the file.** The sink is append-only across every run
+  and browser session that names it — a total over the whole of it is a total over all of them,
+  which is exactly how an evaluation artifact once published a planner p50 over 13 appended runs
+  (ADR-0011). Every turn id is prefixed with the conversation's, so the meter selects this
+  conversation's lines and nothing else.
+- **A partial total says so.** Each field carries its own denominator, so a total missing a call
+  it should have counted is shown as a floor with the counts printed beside it. And where the
+  *call count itself* is a floor — `agent_turn` writes its `calls` only once something reported
+  usage, so a turn that metered nothing is worth one — the figure carries `≥` rather than
+  claiming to be a count.
+- **The unmetered call is named on every total, complete or not.** The gate's zero-shot
+  classifier is deliberately never metered (ADR-0011), so one paid call per turn is structurally
+  absent from every figure, and the panel says so beside the figures. Deliberately *not* folded
+  into the partial banner, which is the bug the code review of #13 found here: "partial" is a
+  claim about reported-versus-counted calls and the classifier never enters that count, so a
+  conversation whose every metered call reported both fields — the ordinary outcome — showed no
+  caveat at all while this file and ADR-0011 both claimed one. A structural absence and a
+  reporting shortfall are two different claims and they get two different sentences.
+
+**No rate card ships in this repo.** `FINBRIEF_INPUT_COST_PER_MTOK` and
+`FINBRIEF_OUTPUT_COST_PER_MTOK` default to unset, and with no price the panel reports tokens and
+says it cannot price them. FinBrief reaches every model through OpenRouter, which fronts many
+upstreams and routes by availability, so the price of a call is not something this codebase can
+assert — a hardcoded figure would be a number nobody measured, going stale silently, in the one
+panel whose entire subject is spend. Two knobs rather than one because input and output are priced
+differently everywhere.
+
+**The per-session question cap is cost and abuse limiting, and it is not a security control.**
+`config.MAX_QUESTIONS_PER_SESSION` bounds how many questions one browser session is answered, so
+one tab left open on a script cannot spend a shared demo key's budget. **Refreshing the page
+resets it**, because the counter lives in `st.session_state` — anyone who wants past it walks past
+it, and saying so is the point rather than a caveat: the [security gate](#what-the-security-gate-does-layer-by-layer)
+is the boundary, and a reviewer who reads a session counter as rate limiting stops looking for the
+thing that is. A real rate limit is keyed server-side on something the client does not choose — an
+account, an IP, a token bucket in a shared store — and needs the auth Tier-2 defers. That is a
+ticket, not a constant.
+
+The counter increments **before** the gate, so a blocked payload consumes a question: otherwise
+the one caller worth throttling is the one that gets unlimited attempts. The length cap is free
+and refuses first, so an over-long paste costs nothing from the session's budget.
+
+## Taking a conversation away: JSON and CSV
+
+The sidebar offers the conversation as two downloads once there is one to take. Both are built
+from **the display transcript, not the checkpointer** — the export is what the analyst *saw*,
+and the two genuinely differ in both directions: a question the input gate blocked never reached
+the agent, so the checkpointer has no memory of it while the page shows the exchange; and an
+answer layer 4 refused is *in* the checkpointer while the page shows the refusal that replaced
+it. Exporting the agent's memory would hand a reader an answer that was withheld from them and
+omit a refusal they were given.
+
+- **Every `[n]` resolves against the file's own source list, and that list is the
+  conversation's.** Citations run in one sequence across a thread, so a follow-up can cite a
+  chunk an earlier turn retrieved — scoped per turn, an export would render that citation
+  unresolvable in a file whose own answers cite it. The JSON therefore carries one `sources`
+  table keyed by rank, and each turn names the ranks it retrieved.
+- **CSV is one row per (turn, source that turn retrieved).** A turn's answer repeats across its
+  source rows, which is the ordinary cost of a long format, and it buys the property that
+  matters: every source is a row with its own `rank`, so a marker resolves by scanning one
+  column rather than by parsing a list packed into a cell. A turn that retrieved nothing still
+  gets a row, with the source columns empty. Bodies carrying commas, quotes and blank lines are
+  written with `csv.writer` and asserted to come back byte-identical through `csv.reader`.
+- **Absences stay absent.** A refusal has no turn behind it, so whether it searched is *unknown*
+  and no key is written for it — not `false`, which would be a measurement of a turn that did
+  not happen. A chunk BM25 recovered has no vector distance and exports `null`, never `0.0`. In
+  CSV those are empty cells, because a spreadsheet averages a column without asking what its
+  blanks meant.
+- **The export is logged as a count and a format, never as a payload.** The file is the analyst's
+  own questions and the filer's prose, which is exactly what the log may not carry (ADR-0011;
+  the one bounded exception is a blocked question's normalised text). The line records how many
+  turns and sources went out, in which format, at what size.
+- **Text cells are guarded against a spreadsheet — and only the cells that need it.** A cell
+  opening `=`, `+`, `-` or `@` is evaluated as a formula on open by Excel and Sheets, and every
+  text cell here is model output or filing prose. Such a value is prefixed with `'` so it reaches
+  the spreadsheet as text. `=` and `@` unconditionally; `-` and `+` only when what follows is not
+  whitespace, which is what separates `-2+3` and the real DDE payload `-cmd|' /C calc'!A0` from a
+  markdown bullet. The first version guarded `-` unconditionally, and the code review of #13
+  measured what that cost: **0 of 5,842 ingested filing bodies open with a formula leader**, so
+  the rule never fired on the text it was written for and always fired on answers opening with a
+  bullet. Every cell that is not a formula leader now round-trips **byte-identical** through
+  `csv.reader`.
+- **Every answer carries the disclaimer the page shows beside it** — once at the JSON's top
+  level, on every CSV row. `GroundedAnswer.text` holds no disclaimer by design, so each surface
+  rendering it owes one, and an export is the surface most likely to be read by someone who never
+  saw the app. Per row rather than per file because a row is the unit a reader lifts into a note,
+  and a disclaimer it left behind did not travel with the claim it qualifies.
+
+**No PDF, and the reason is this project's dependency record rather than effort.** It needs a new
+library, and every library added here for quality or safety shipped a telemetry path enabled by
+default — all three of them, each switched off somewhere different (see *Three libraries, three
+that phone home by default* above). A rendering library is a worse bet than those three rather
+than a better one: it would be added for **presentation**, which buys none of the argument that
+made the other three worth their switches and their per-backend tests. JSON and CSV need no
+dependency at all — `json` and `csv` are stdlib — so the export ships with exactly the egress
+surface the page already had.
 
 ## Configuration
 

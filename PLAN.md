@@ -63,7 +63,7 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 | Conversation history + export | Checkpointer-backed history per `thread_id`; export button |
 | RAG process visualization | Expandable "How I answered" panel: original query → translated sub-queries → retrieved chunks w/ scores → final prompt |
 | Source citations | Inline `[1] TSLA 10-K 2025, Item 1A` style citations tied to the sources panel |
-| Interactive help / guide | Onboarding expander + `/help`-style command + example-question buttons |
+| Interactive help / guide | Onboarding expander + `/help`-style command + example-question buttons. **Built in part** (T12, #13): the panel and the four buttons ship; the `/help` command does **not** — `st.chat_input` is the only text entry, so a slash command means parsing one and routing it past the gate, which is a second door for a convenience. Open, not cut. |
 
 ### Optional — Medium (all ten)
 
@@ -72,9 +72,9 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 | Multi-model support | P1 | Model picker (e.g. `gpt-4o-mini`, `claude-haiku`, one open model) — trivial via OpenRouter model string |
 | Real-time KB/data updates | P1 | Live prices/news via tools; "refresh news into KB" button that ingests latest headlines into a `news` Chroma collection |
 | Prompt-injection protection | P1 | System-prompt hardening, retrieved-content quarantine framing ("data, not instructions"), injection test suite (Sprint 1 lesson patterns) |
-| Token usage & cost display | P1 | LangChain callbacks → per-message and session token/cost meter in sidebar |
+| Token usage & cost display | P1 | LangChain callbacks → per-message and session token/cost meter in sidebar. **Built in part** (T12, #13): the per-**conversation** meter ships, read from T8's logged counts rather than from callbacks (cheaper, and one reader instead of a second instrument). The per-**message** half does **not** — `agent_turn` already carries a turn's own spend, so it is a rendering job on the transcript row, not a new measurement. Open, not cut. |
 | Tool-call result visualization | P1 | Price history line chart, ratio comparison bar chart (vs. peers), news cards |
-| Conversation export (PDF/CSV/JSON) | P1 | JSON + CSV native; PDF via `reportlab`/`fpdf2` |
+| Conversation export (PDF/CSV/JSON) | P1 | JSON + CSV native; PDF via `reportlab`/`fpdf2`. **Built in part** (T12, #13): JSON and CSV ship on stdlib alone. **PDF declined**, and this is the row that asked for it — every library added to this project for quality or safety shipped a telemetry path enabled by default, and a rendering library would be added for *presentation*, which buys none of the argument that made those three worth their switches. Declined, not open. |
 | Remote MCP server connection | P1 | Connect one public remote MCP server via `langchain-mcp-adapters` (e.g. a fetch/search server); MCP security review from Part 4 applied and documented |
 | Rate limiting & API key mgmt | P1 | Per-session request throttle; keys via `.env` + `st.secrets`; never logged |
 | Logging & monitoring | P1 | Structured `logging` (JSON lines): queries, retrieval hits, tool calls, latency, token counts; feeds the analytics dashboard |
@@ -451,7 +451,8 @@ retrieval chain and landed with it — ticket T3, #5)
   *consume* these logs. Logging after evaluation would force re-running evaluation —
   so this is Tier-1 infrastructure, not polish.
 - Scope: log *capture* only (incl. token counts for cost analysis). The cost-*meter*
-  sidebar UI is Tier-2 (Phase 8).
+  sidebar UI is Tier-2 (Phase 8) — ✅ built there since, on `t11-tier2-app` (#13), and it reads
+  these counts rather than adding an instrument, which is what made it an hour's work.
 - **What was actually left when this phase started, and what it cut** (T8, #10; ADR-0011).
   A gap analysis first: every event this bullet list asks for was already emitted by an
   earlier ticket **except token counts** — `grep usage_metadata` returned nothing across
@@ -462,7 +463,9 @@ retrieval chain and landed with it — ticket T3, #5)
   LangGraph's tool executor) — plus the tokens.
 - Cut, with the reasons recorded rather than inferred: the **gate classifier's tokens**
   (`classify()` returns a bare `Verdict`, and it is the cheapest call in the system — so the
-  gate's spend is *unmeasured*, said out loud); **dollar cost** (Tier-2, Phase 8); a
+  gate's spend is *unmeasured*, said out loud — and the Phase-8 meter now says so **on screen**,
+  beside the figures, rather than only here); **dollar cost** (Tier-2, Phase 8 — ✅ built since,
+  #13, with no rate card in the repo: prices are configuration, and unset means unpriced); a
   **`docs/verification/` artifact** (every file there costs a paid run, and this phase's
   consumer is Phase 7, whose own artifact is the evidence); and **log rotation** (a rotating
   file renames mid-run and a globbing reader double-counts or misses).
@@ -510,11 +513,36 @@ retrieval chain and landed with it — ticket T3, #5)
 > **── Tier-1 gate ──** Everything above must be finished, evaluated, and
 > review-defensible before any Phase-8 work begins.
 
+**T11 status note — two UX fixes to Tier-1 surfaces, deliberately not ticked as Tier-2.** Both
+shipped on `t11-tier2-app` (#13) alongside that batch, and neither is a Phase-8 item: they repair
+surfaces Tier-1 had already delivered, so ticking them below would inflate Tier-2's count with
+work that adds no optional task.
+
+- **The sidebar's four prose blocks are now collapsed panels.** Presentation only — every word
+  still renders, and the tests binding the ADR-0007 grounding-scope disclosure to `config` and to
+  the committed ingest evidence still find it. Two sentences deliberately did *not* fold: ADR-0008
+  §4's refresh semantics (its obligation is worded "the sidebar says so", and a collapsed panel
+  states it only to a reader who clicks), and the thread id, which moved the other way and now
+  renders only when `FINBRIEF_LOG_FILE` names a sink to look it up in.
+- **The ratio card's metrics were already one-chart-per-metric** as of #9, so this batch verified
+  rather than rebuilt: a P/E and a debt-to-equity share `Unit.MULTIPLE` and not a scale, and on
+  one axis Ford's 4.26× leverage drew as three pixels beside a 162× peer-mean P/E. Recorded here
+  because it is a Tier-1 card, and because the *count* of charts is what the test asserts.
+
 **Phase 8 — Tier-2 (skill-stretch; build only after the Tier-1 gate, ~20 h)**
 Ordered by GenAI/RAG skill signal, deployment excepted on portfolio grounds (ADR-0010).
 Each item built only when fully understood; anything not defensible is cut before submission.
+
+> **Everything ticked so far is in the tail (6), and ADR-0010's order above is unchanged.** That
+> batch was picked by cost and demo value against a fixed deadline — four items at under an hour
+> each, on substrate Tier-1 had already built — and **not** by re-ranking the skill-signal
+> ordering, which stands as ADR-0010 wrote it. Said explicitly because the ticks would otherwise
+> read as a priority list whose bottom is finished and whose top is not, which is the opposite of
+> what the ordering claims.
+
 1. **Deploy + live URL** (Streamlit Community Cloud) + demo GIF — portfolio reach gates the
-   value of everything else.
+   value of everything else. **Not built, and still the highest-value remaining item**: it gates
+   the value of every item below it, including the four already ticked in the tail.
 2. **Re-ranking** — cross-encoder (`ms-marco-MiniLM-L-6-v2`) re-scoring the RRF-fused top-N
    to top-k. Constrained third A/B axis (shipped default ± rerank only), per-bucket in the
    existing harness. Pre-registered: precision lift on `semantic`, ~neutral on
@@ -529,9 +557,34 @@ Each item built only when fully understood; anything not defensible is cut befor
 5. **Real-time KB refresh** (ingest latest headlines/filings into Chroma on demand).
    - ⚠ Open Q (ask first): does live ingest stay idempotent (accession/id dedup) AND hold
      the ADR-0007 section-detection gate, without racing the cached retriever / agent state?
-6. *Generic tail — only if appetite remains, each cut-if-undefendable:* auth + watchlists ·
-   cost-meter sidebar UI · export (JSON/CSV/PDF) · analytics dashboard · scheduled KB updates
-   (GH Action) · rate limiting · help guide · multi-language toggle.
+6. *Generic tail — only if appetite remains, each cut-if-undefendable:*
+   - ✅ **done** (`t11-tier2-app`, #13) — four of the eight:
+     - **cost-meter sidebar UI** — reads the per-field token counts Phase 6 already logs, so it
+       is arithmetic over one reader rather than a new instrument. Reverses ADR-0011's own
+       declined item, and the reversal is recorded there. Absent, never zero; a partial total
+       says so, and the gate classifier it structurally cannot see is named on **every** total —
+       complete or not, since `partial` is a claim about reported-versus-counted calls and that
+       call never enters the count (code review of #13).
+     - **export (JSON/CSV)** — from the *display transcript*, not the checkpointer: the export is
+       what the analyst saw, and the two differ in both directions. Every answer carries
+       `prompts.DISCLAIMER`, since a downloaded file is read by someone who never saw the page
+       (code review of #13). **PDF declined**, and the
+       reason is a dependency judgement rather than effort: all three libraries added here for
+       quality or safety shipped a telemetry path enabled by default, and a rendering library
+       would be added for presentation, which buys none of the argument that made those three
+       worth their switches. Recorded in the README beside that table, and against §2's
+       *Conversation export (PDF/CSV/JSON)* row, which is the Medium that asked for all three.
+     - **rate limiting** — a per-session question counter, and **not a security control**: a
+       refresh resets it, so it bounds what one open tab can spend and stops nothing that is
+       trying. ADR-0006's gate is the boundary; ADR-0001's amendment records the reversal and
+       what a real rate limit would need (a server-side key the client does not choose).
+     - **help guide** — a "how to use" panel plus four example-question buttons, seeded through
+       the *same* path a typed question takes, so a seeded question is gated like any other. §2's
+       row also asks for a `/help`-style command, which is **not** built and is recorded there as
+       open: `st.chat_input` is the only text entry, so a slash command means parsing one and
+       routing it past the gate — a second door for a convenience.
+   - Still open: auth + watchlists · analytics dashboard · scheduled KB updates (GH Action) ·
+     multi-language toggle.
 - *Future work (deferred by ADR-0005):* adaptive per-query strategy routing.
 
 ## 7. Evaluation plan (what "working well" means)
