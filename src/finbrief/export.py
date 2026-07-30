@@ -9,6 +9,15 @@ refusal that replaced it (ADR-0006's stated consequence). Exporting the agent's 
 therefore hand a reader an answer that was withheld from them and omit a refusal they were
 given. An export that disagrees with the screen it was taken from is worse than no export.
 
+**A turn is an exchange; a row is a message; the two are counted and named apart.** This module
+holds one `ExportedMessage` per transcript row, because that is the shape a reader wants — a
+question and its answer are different cells — but a *turn* in this project is one exchange:
+`turn_id` names one on every log line and `AgentTurn` carries one. Calling a row a turn is how
+the export's caption came to report a single question and its answer as `2 turn(s)` while the
+sidebar's token meter, counting `turn_id`s, reported `across 1 turn(s)` — one page, one
+conversation, one word, two numbers (CONTEXT.md's **Turn**). So `Transcript.messages` is the
+rows, `Transcript.turns` is the count of exchanges, and the caption prints both.
+
 **Every `[n]` resolves against the file's own source list, and the list is the conversation's
 rather than the turn's.** `agent/citations.py` numbers a thread's sources in one running
 sequence, so a follow-up may legitimately cite `[1]` from a chunk an *earlier* turn retrieved —
@@ -66,7 +75,11 @@ EXPORT_FORMAT = "finbrief-transcript"
 #: Bumped when a consumer would have to change. Additive fields do not move it — a reader of
 #: version 1 tolerates a new key for the same reason every `from_payload` on the checkpoint path
 #: does.
-EXPORT_VERSION = 1
+#:
+#: **2**: version 1's `turns` list is `messages`, and the CSV's `turn_index` is `message_index`.
+#: A rename is not additive — a consumer reading `payload["turns"]` gets a `KeyError` — and that
+#: is the point of the bump: the key it used to read counted messages while calling them turns.
+EXPORT_VERSION = 2
 
 #: The columns one retrieved source fills — everything between `searched` and the trailing
 #: `disclaimer`. Named as a tuple so `_row`'s empty-source padding is derived from it; see
@@ -83,20 +96,24 @@ _SOURCE_COLUMNS: tuple[str, ...] = (
     "body",
 )
 
-#: The CSV's columns, in order. **One shape: a row per (turn, source that turn retrieved.)**
+#: The CSV's columns, in order. **One shape: a row per (message, source it retrieved.)**
 #:
 #: The alternative was a row per turn with the sources packed into a cell, and this is the
 #: better trade for the one property that matters: every source is a row carrying its own
 #: `rank`, so an `[n]` resolves by scanning one column instead of by parsing a list out of a
-#: cell — in a format whose whole point is that a spreadsheet can read it. The cost is that a
-#: turn's answer repeats across its source rows, which is the ordinary price of a long format
-#: and is stated here rather than discovered.
+#: cell — in a format whose whole point is that a spreadsheet can read it. The cost is that an
+#: answer repeats across its source rows, which is the ordinary price of a long format and is
+#: stated here rather than discovered.
 #:
-#: A turn that retrieved nothing still gets a row, with the source columns *empty*. It said
+#: A message that retrieved nothing still gets a row, with the source columns *empty*. It said
 #: something, so it belongs in the file; and an empty cell is an absence where `0` would be a
 #: measurement.
+#:
+#: `message_index` and not `turn_index`: the index counts transcript rows, and a turn is an
+#: exchange of two of them (see the module docstring). The old name made a spreadsheet's own
+#: `MAX(turn_index)` twice the number the app's token meter showed for the same conversation.
 CSV_COLUMNS: tuple[str, ...] = (
-    "turn_index",
+    "message_index",
     "role",
     "content",
     "searched",
@@ -201,14 +218,18 @@ class ExportedSource:
 
 
 @dataclass(frozen=True, slots=True)
-class ExportedTurn:
-    """One row of the transcript as it was rendered.
+class ExportedMessage:
+    """One row of the transcript as it was rendered — **a message, not a turn**.
 
-    `searched` and `retrieved_ranks` are `None` for a turn there is nothing to say it about — a
+    Named for what it is: a turn is the analyst's question *and* the reply, so a turn is two of
+    these (CONTEXT.md's **Turn**, and this module's docstring for the caption the old name
+    broke).
+
+    `searched` and `retrieved_ranks` are `None` for a row there is nothing to say it about — a
     refusal the agent never produced, or a row written by a build that stored neither. `None`
     here means *omitted* from the output, not `false` and not `[]`: "the agent did not search"
     and "we cannot say whether it searched" are different claims, and only the first is a fact
-    about a turn.
+    about a reply.
     """
 
     role: str
@@ -217,7 +238,7 @@ class ExportedTurn:
     retrieved_ranks: tuple[int, ...] | None = None
 
     def as_payload(self) -> dict[str, Any]:
-        """The JSON object for this turn, carrying no key it has no value for."""
+        """The JSON object for this message, carrying no key it has no value for."""
         payload: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.searched is not None:
             payload["searched"] = self.searched
@@ -228,11 +249,28 @@ class ExportedTurn:
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
-    """A conversation ready to render: the turns, and the table their `[n]`s resolve into."""
+    """A conversation ready to render: the messages, and the table their `[n]`s resolve into."""
 
     thread_id: str
-    turns: tuple[ExportedTurn, ...]
+    messages: tuple[ExportedMessage, ...]
     sources: tuple[ExportedSource, ...]
+
+    @property
+    def turns(self) -> int:
+        """How many **exchanges** this conversation holds — the project's unit of a turn.
+
+        Counted by the analyst's own rows, which is what an exchange begins with: `app/Home.py`
+        appends the user row first and then at most one reply row — an answer, a gate refusal or
+        an advice refusal — and appends *no* reply row at all when the turn raised inside the
+        agent. So a question whose answer never arrived is still one turn here, which is the
+        count the token meter shows for it too (its answering lines are in the log under one
+        `turn_id`). Halving `len(messages)` would call that turn a half.
+
+        An `int` where this attribute used to be the tuple of rows, deliberately: `len()` on a
+        count raises `TypeError`, so a caller written against version 1's meaning fails loudly
+        rather than rendering the old wrong number under the new right name.
+        """
+        return sum(1 for message in self.messages if message.role == "user")
 
     @classmethod
     def of(cls, messages: Iterable[Mapping[str, Any]], *, thread_id: str) -> Transcript:
@@ -245,7 +283,7 @@ class Transcript:
         describe the same row differently, which is the class of disagreement this repo keeps
         finding.
         """
-        turns: list[ExportedTurn] = []
+        rows: list[ExportedMessage] = []
         # Keyed by rank so a chunk two turns both surfaced is one source with one number: two
         # entries under one rank would make the table ambiguous at exactly the rank being looked
         # up. First writer wins, which is the turn that was numbered first.
@@ -256,8 +294,8 @@ class Transcript:
             contexts, searched = _grounding(message)
             for context in contexts or ():
                 sources.setdefault(context.rank, ExportedSource.of(context))
-            turns.append(
-                ExportedTurn(
+            rows.append(
+                ExportedMessage(
                     role=role,
                     content=content,
                     searched=searched,
@@ -268,7 +306,7 @@ class Transcript:
             )
         return cls(
             thread_id=thread_id,
-            turns=tuple(turns),
+            messages=tuple(rows),
             # Sorted by the number that cites them: the table is a lookup, and a reader
             # resolving `[7]` scans for 7. Insertion order is search order and usually agrees,
             # but a follow-up citing an earlier chunk touches them out of sequence.
@@ -323,7 +361,11 @@ def as_json(transcript: Transcript) -> str:
         # someone who never saw the app, which is where that rule matters most rather than
         # least. It was missing here while the page rendered it four times (code review of #13).
         "disclaimer": DISCLAIMER,
-        "turns": [turn.as_payload() for turn in transcript.turns],
+        # A row per message, under the name `messages`. No turn *count* beside it: a reader
+        # counts the `"role": "user"` rows exactly as `Transcript.turns` does, and a second
+        # number here is a third thing that can disagree — the reason `spend.TOKEN_FIELDS`
+        # omits `total_tokens`.
+        "messages": [message.as_payload() for message in transcript.messages],
         # One list, at the top level, holding every body once — which is what makes it the
         # resolution table rather than a per-turn copy that could disagree with itself.
         "sources": [
@@ -345,7 +387,7 @@ def as_json(transcript: Transcript) -> str:
 
 
 def as_csv(transcript: Transcript) -> str:
-    """The conversation as CSV — one row per (turn, source it retrieved). See `CSV_COLUMNS`.
+    """The conversation as CSV — one row per (message, source it retrieved). See `CSV_COLUMNS`.
 
     Written through `csv.writer` rather than by joining strings, which is not a style
     preference: a filing body carries commas by the hundred, `"` around defined terms and
@@ -357,22 +399,23 @@ def as_csv(transcript: Transcript) -> str:
     writer = csv.writer(out)
     writer.writerow(CSV_COLUMNS)
     by_rank = {source.rank: source for source in transcript.sources}
-    for index, turn in enumerate(transcript.turns):
-        retrieved = [by_rank[rank] for rank in (turn.retrieved_ranks or ()) if rank in by_rank]
-        # A turn with no sources still gets one row: `[None]` is the "and nothing to say about
-        # its sources" case, not a row that is skipped.
+    for index, message in enumerate(transcript.messages):
+        ranks = message.retrieved_ranks or ()
+        retrieved = [by_rank[rank] for rank in ranks if rank in by_rank]
+        # A message with no sources still gets one row: `[None]` is the "and nothing to say
+        # about its sources" case, not a row that is skipped.
         for source in retrieved or [None]:
-            writer.writerow(_row(index, turn, source))
+            writer.writerow(_row(index, message, source))
     return out.getvalue()
 
 
-def _row(index: int, turn: ExportedTurn, source: ExportedSource | None) -> list[str]:
+def _row(index: int, message: ExportedMessage, source: ExportedSource | None) -> list[str]:
     """One CSV record. Every absent value is `""` — an empty cell, never a stand-in."""
     return [
         str(index),
-        turn.role,
-        _text(turn.content),
-        "" if turn.searched is None else str(turn.searched).lower(),
+        message.role,
+        _text(message.content),
+        "" if message.searched is None else str(message.searched).lower(),
         *(
             # Derived from `_SOURCE_COLUMNS`, not counted by hand — see `CSV_COLUMNS`.
             [""] * len(_SOURCE_COLUMNS)
@@ -433,12 +476,20 @@ def log_export(transcript: Transcript, *, fmt: str, size: int) -> None:
     on the line is how many turns and sources went out, in which format, at what size — enough
     to answer "is anyone using this, and how big do these get" and nothing that reconstructs a
     conversation.
+
+    **`turns` counts exchanges here, as it does on every other line in the sink.** It counted
+    messages until the caption's disagreement with the token meter was diagnosed, which made
+    this the one `turns` field in the log meaning something else — and a field whose name is
+    right everywhere but here is the drift `observability/events.py` pairs one emitter with one
+    reader to prevent. `messages` is the row count, beside it rather than instead of it: the two
+    answer different questions about how big these files get.
     """
     log_event(
         logger,
         "transcript_export",
         format=fmt,
-        turns=len(transcript.turns),
+        turns=transcript.turns,
+        messages=len(transcript.messages),
         sources=len(transcript.sources),
         bytes=size,
     )

@@ -252,9 +252,15 @@ def render_export_buttons(messages: list[dict[str, object]]) -> None:
     rerun would count reruns and call them exports.
     """
     exported = Transcript.of(messages, thread_id=st.session_state.thread_id)
+    # **Turns and messages are two counts, because they are two units.** A turn is an exchange —
+    # what `turn_id` names on every log line and what the `Token spend` panel counts three
+    # panels up — and the file holds a row per *message*, so one question and its answer are one
+    # turn and two rows. This caption said `2 turn(s)` for that conversation while the meter
+    # beside it said `across 1 turn(s)`: one page, one word, two numbers (`export.py`, and
+    # CONTEXT.md's **Turn**).
     st.caption(
-        f"Export this conversation — {len(exported.turns)} turn(s), "
-        f"{len(exported.sources)} source(s)."
+        f"Export this conversation — {exported.turns} turn(s), "
+        f"{len(exported.messages)} message(s), {len(exported.sources)} source(s)."
     )
     for label, suffix, body, mime in (
         ("JSON", "json", as_json(exported), "application/json"),

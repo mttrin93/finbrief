@@ -69,6 +69,52 @@ def a_three_turn_conversation():
     ]
 
 
+# --------------------------------------------------------------------------------------
+# The unit: a turn is an exchange, a row is a message (CONTEXT.md's **Turn**)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_turn_is_an_exchange_while_a_row_is_a_message():
+    """Two counts over one transcript, because they count different things.
+
+    The fixture is three exchanges in six rows, and 2:1 is exactly the ratio that let a message
+    count pass for a turn count on the caption: it read `2 turn(s)` for a single question and
+    its answer while the token meter three panels up read `across 1 turn(s)`.
+    `tests/test_app_smoke.py::test_the_export_caption_and_the_spend_meter_count_turns_the_same_way`
+    binds the rendered pair; this pins the arithmetic the caption reads.
+    """
+    exported = Transcript.of(a_three_turn_conversation(), thread_id=THREAD)
+
+    assert exported.turns == 3, "three questions, three exchanges"
+    assert len(exported.messages) == 6, "and two rows each"
+
+
+def test_a_turn_whose_answer_never_arrived_is_still_one_turn():
+    """The shape that ratio does not hold for — which is why `turns` counts the questions.
+
+    `app/Home.py`'s generic `except` branch renders the failure with `st.error` and appends
+    **no** assistant row, so a turn that raised inside the agent leaves a question with nothing
+    after it. Halving the row count would report it as half a turn; the meter reports one
+    (its answering lines are in the log under one `turn_id`, with no total beside them), and a
+    caption that disagreed with the meter about it would be this same bug in a rarer branch.
+    """
+    rows = [
+        {"role": "user", "content": "What are Tesla's risk factors?"},
+        an_assistant_row("Tesla names supply-chain concentration [1].", (a_context(1),)),
+        {"role": "user", "content": "And its margins?"},
+    ]
+
+    exported = Transcript.of(rows, thread_id=THREAD)
+
+    assert exported.turns == 2, "two questions asked; the second got no reply"
+    assert len(exported.messages) == 3
+
+
+# --------------------------------------------------------------------------------------
+# Citation resolution
+# --------------------------------------------------------------------------------------
+
+
 def test_the_export_carries_one_source_list_the_whole_conversation_resolves_against():
     """**The invariant the ticket names, and the one a per-turn export fails.**
 
@@ -84,9 +130,9 @@ def test_the_export_carries_one_source_list_the_whole_conversation_resolves_agai
     assert ranks == {1, 2}, "one table for the conversation, deduplicated by rank"
     cited = [
         marker
-        for turn in exported.turns
-        if turn.role == "assistant"
-        for marker in numeric_markers(turn.content)
+        for message in exported.messages
+        if message.role == "assistant"
+        for marker in numeric_markers(message.content)
     ]
     # The precondition first: with no markers at all the loop below asserts nothing, and the
     # third turn's `[1]` is the whole point of the fixture.
@@ -144,7 +190,7 @@ def test_a_conversation_that_retrieved_nothing_exports_an_empty_source_list():
     payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
 
     assert payload["sources"] == []
-    assert payload["turns"][1]["retrieved_ranks"] == []
+    assert payload["messages"][1]["retrieved_ranks"] == []
 
 
 def test_a_refusal_exports_the_refusal_and_claims_nothing_about_a_turn():
@@ -164,9 +210,9 @@ def test_a_refusal_exports_the_refusal_and_claims_nothing_about_a_turn():
 
     payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
 
-    assert payload["turns"][1]["content"] == INJECTION_REFUSAL
-    assert payload["turns"][3]["content"] == ADVICE_REFUSAL
-    for refused in (payload["turns"][1], payload["turns"][3]):
+    assert payload["messages"][1]["content"] == INJECTION_REFUSAL
+    assert payload["messages"][3]["content"] == ADVICE_REFUSAL
+    for refused in (payload["messages"][1], payload["messages"][3]):
         assert "searched" not in refused, "the agent never ran, so there is nothing to report"
         assert "retrieved_ranks" not in refused
         assert set(refused) == {"role", "content"}, f"no invented fields; got {sorted(refused)}"
@@ -186,8 +232,8 @@ def test_a_turn_that_searched_and_found_nothing_is_not_a_turn_that_did_not_searc
         as_json(Transcript.of([searched_nothing, never_searched], thread_id=THREAD))
     )
 
-    assert payload["turns"][0]["searched"] is True
-    assert payload["turns"][1]["searched"] is False
+    assert payload["messages"][0]["searched"] is True
+    assert payload["messages"][1]["searched"] is False
 
 
 def test_a_chunk_with_no_vector_distance_exports_null_and_not_a_number():
@@ -214,10 +260,10 @@ def test_a_transcript_row_from_an_older_shape_exports_what_it_has():
 
     payload = json.loads(as_json(Transcript.of([older, oldest], thread_id=THREAD)))
 
-    assert payload["turns"][0]["retrieved_ranks"] == [1]
-    assert payload["turns"][0]["searched"] is True
+    assert payload["messages"][0]["retrieved_ranks"] == [1]
+    assert payload["messages"][0]["searched"] is True
     assert [s["rank"] for s in payload["sources"]] == [1]
-    assert set(payload["turns"][1]) == {"role", "content"}, "nothing is invented for it"
+    assert set(payload["messages"][1]) == {"role", "content"}, "nothing is invented for it"
 
 
 class TurnFromAnOlderBuild:
@@ -248,8 +294,8 @@ def test_a_turn_that_cannot_say_whether_it_searched_says_nothing():
 
     payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
 
-    assert set(payload["turns"][0]) == {"role", "content"}, (
-        f"a turn that cannot say says nothing; got {sorted(payload['turns'][0])}"
+    assert set(payload["messages"][0]) == {"role", "content"}, (
+        f"a turn that cannot say says nothing; got {sorted(payload['messages'][0])}"
     )
     assert payload["sources"] == []
 
@@ -262,8 +308,8 @@ def test_a_turn_that_can_say_it_did_not_search_says_so():
 
     payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
 
-    assert payload["turns"][0]["searched"] is False
-    assert payload["turns"][0]["retrieved_ranks"] == []
+    assert payload["messages"][0]["searched"] is False
+    assert payload["messages"][0]["retrieved_ranks"] == []
 
 
 # --------------------------------------------------------------------------------------
@@ -276,7 +322,7 @@ def test_the_json_names_its_own_format_and_the_thread_it_came_from():
 
     assert payload["format"] == EXPORT_FORMAT
     assert payload["thread_id"] == THREAD
-    assert [turn["role"] for turn in payload["turns"]] == [
+    assert [message["role"] for message in payload["messages"]] == [
         "user",
         "assistant",
         "user",
@@ -305,7 +351,7 @@ def test_every_exported_source_field_is_a_json_primitive():
 
 
 # --------------------------------------------------------------------------------------
-# CSV shape: one row per (turn, source that turn retrieved)
+# CSV shape: one row per (message, source that message retrieved)
 # --------------------------------------------------------------------------------------
 
 
@@ -314,10 +360,10 @@ def read_csv(text: str) -> list[list[str]]:
     return list(csv.reader(io.StringIO(text)))
 
 
-def test_the_csv_is_one_row_per_turn_and_source_it_retrieved():
-    # **The shape, stated once.** A turn's answer is repeated across its source rows, which is
-    # the ordinary cost of a long format and buys the property that matters: every source is a
-    # row with its own `rank`, so `[n]` resolves by scanning one column rather than by parsing a
+def test_the_csv_is_one_row_per_message_and_source_it_retrieved():
+    # **The shape, stated once.** An answer is repeated across its source rows, which is the
+    # ordinary cost of a long format and buys the property that matters: every source is a row
+    # with its own `rank`, so `[n]` resolves by scanning one column rather than by parsing a
     # list packed into a cell.
     exported = Transcript.of(a_three_turn_conversation(), thread_id=THREAD)
 
@@ -325,9 +371,9 @@ def test_the_csv_is_one_row_per_turn_and_source_it_retrieved():
 
     assert rows[0] == list(CSV_COLUMNS)
     body = rows[1:]
-    # Six turns; the one that retrieved two chunks contributes two rows and the other five
-    # contribute one each.
-    assert len(body) == 7, f"6 turns, one of them with 2 sources; got {len(body)}"
+    # Six messages — three exchanges — and the one that retrieved two chunks contributes two
+    # rows while the other five contribute one each.
+    assert len(body) == 7, f"6 messages, one of them with 2 sources; got {len(body)}"
     ranks = [row[CSV_COLUMNS.index("source_rank")] for row in body]
     assert sorted(filter(None, ranks)) == ["1", "2"]
 
@@ -465,12 +511,13 @@ def test_a_download_is_named_for_the_conversation_it_came_from():
 
 def test_the_csv_and_the_json_describe_the_same_conversation():
     # Two renderings, one transcript. A count that disagrees between them means one of the two
-    # readers is dropping a turn, and nothing else would say so.
+    # readers is dropping a row, and nothing else would say so.
     exported = Transcript.of(a_three_turn_conversation(), thread_id=THREAD)
 
     payload = json.loads(as_json(exported))
     rows = read_csv(as_csv(exported))[1:]
 
-    assert len({row[CSV_COLUMNS.index("turn_index")] for row in rows}) == len(payload["turns"])
+    indices = {row[CSV_COLUMNS.index("message_index")] for row in rows}
+    assert len(indices) == len(payload["messages"])
     csv_ranks = {r[CSV_COLUMNS.index("source_rank")] for r in rows} - {""}
     assert csv_ranks == {str(source["rank"]) for source in payload["sources"]}
