@@ -164,7 +164,7 @@ published **100%** accuracy. **Prefer a check that exercises the thing over one 
 prefer an equality over a bound, and for any check about an adversarial input, assert that the
 input arrived.**
 
-The newest instance is a Streamlit-specific trap, so it is written down rather than
+One instance is a Streamlit-specific trap, so it is written down rather than
 rediscovered: **`AppTest.get("...")` returns `[]` for an element type it does not know, instead
 of raising.** `st.bar_chart` and `st.line_chart` both reach the element tree as
 `vega_lite_chart`, for which `AppTest` ships no typed accessor — they arrive as `UnknownElement`
@@ -174,6 +174,29 @@ the tree for `type == "vega_lite_chart"`; it also descends into `st.columns`, wh
 `app.chat_message[n]` does not, so a chart inside a column is invisible to the obvious lookup as
 well. A new `app.get(...)` against an element `AppTest` has no wrapper for is a vacuous
 assertion by default (issue #9 review).
+
+The newest are three more of Streamlit's, and they come as a set because the first is a bug the
+second hides and the third is what you hit fixing it. **`st.empty()` does not reserve space, it
+*clears*** — it enqueues an `Empty` delta, which on a rerun removes whatever the previous run
+drew at that position. So a slot created early and filled at the end of the script is not
+"pending" for the gap between: it is *blank*, and it stays blank for as long as the script sits
+inside a blocking call. That is how the sidebar's `Token spend` panel came to vanish for the
+whole of every answer and return when the turn completed, while the three panels beside it never
+moved — they are rendered inline (manual testing of #13). A slot whose fill is deferred past a
+model call needs a **second, eager fill**, and `app/Home.py`'s two are the pattern. **And
+`AppTest` cannot see a mid-run screen at all**: it runs the script to completion, so a slot
+holds only its *last* fill and an eager fill's contents are unreachable by any assertion on the
+element tree — a `KeyboardInterrupt` from a stubbed seam does not rescue it either, it fails
+the whole `app.run()`. Pin the **order** instead (record the call sequence of what each fill
+reads and assert it as an equality — `test_the_meter_is_read_before_the_turn_as_well_as_after`;
+patch the collaborator on *its own module*, since `AppTest` re-execs the page and its
+`from x import y` therefore picks the patch up), pin every
+content state that survives to the end of the script, and say in the file which branch is left
+uncovered rather than writing an assertion that cannot reach it. Then: **two fills of one slot
+in a single run are a duplicate element, not a replacement** — identical `download_button`
+parameters raise `StreamlitDuplicateElementId`, so a widget-bearing placeholder is a crash and
+the eager half has to be widget-free (measured; `test_the_export_placeholder_does_not_duplicate_
+the_download_buttons` is the guard).
 
 **Single sources of truth.** Respect these or the invariant they protect is gone:
 
