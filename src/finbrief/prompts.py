@@ -158,7 +158,7 @@ GROUNDING_SCOPE_DETAILS: tuple[str, ...] = (
 
 
 # --------------------------------------------------------------------------------------
-# The empty page's four questions (T11 item 3)
+# The empty page's four questions (T12 item 3)
 # --------------------------------------------------------------------------------------
 
 #: An arbitrary but *stable* Universe member for the filing-shaped examples. Indexed rather

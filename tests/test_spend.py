@@ -1,4 +1,4 @@
-"""The token and cost meter, over the log T8 writes (T11 item 5, #12).
+"""The token and cost meter, over the log T8 writes (T12 item 5, #13).
 
 Driven through the **real emitter and the real reader** — `log_event` writes the lines and
 `events.read_events` parses them — for the reason `test_event_log.py` does it: the pair is what

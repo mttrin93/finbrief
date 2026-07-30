@@ -503,7 +503,7 @@ ANSWER_MAX_RETRIES = 2
 #: signatures.
 MAX_QUESTION_CHARS = 4000
 
-#: How many questions one browser session may ask before the app stops answering (T11 item 6).
+#: How many questions one browser session may ask before the app stops answering (T12 item 6).
 #:
 #: **Cost and abuse limiting, and explicitly not a security control.** A refresh mints a new
 #: `session_state` and therefore a new counter, so anyone who wants past this walks past it —
@@ -647,7 +647,7 @@ class Settings:
     chroma_dir: str
     checkpoint_db: str
     #: What a million input / output tokens of `chat_model` cost, in dollars — or `None`, which
-    #: is the default and means *unpriced* (T11 item 5).
+    #: is the default and means *unpriced* (T12 item 5).
     #:
     #: **Configuration rather than a table in the repo, and `None` rather than a guess.** This
     #: project reaches every model through OpenRouter, which fronts many upstreams and routes by

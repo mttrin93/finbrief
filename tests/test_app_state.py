@@ -32,7 +32,7 @@ FOLLOW_UP = "And its debt?"
 def start_over(app):
     """The *Start over* button, found by label rather than by index.
 
-    It was `app.sidebar.button[0]`, which is a positional claim about the whole sidebar: T11
+    It was `app.sidebar.button[0]`, which is a positional claim about the whole sidebar: T12
     added panels of their own, and `AppTest`'s block accessors recurse into an expander, so a
     button added inside any panel above this one silently redirects every assertion below to a
     different widget. The label is what the test is actually about.
@@ -190,7 +190,7 @@ def test_the_page_states_that_a_refresh_starts_a_new_conversation(app):
 
 
 def test_seeding_a_question_touches_session_state_and_not_the_cached_agent(app, stubbed_agent):
-    """T11 item 3, held against ADR-0008's one hard guarantee.
+    """T12 item 3, held against ADR-0008's one hard guarantee.
 
     An example-question button is UI convenience, and the tempting implementation of "start
     this conversation for me" is to reset the agent — which on this design would discard

@@ -1,4 +1,4 @@
-"""Exporting a conversation the analyst can keep — JSON and CSV (T11 item 4, #12).
+"""Exporting a conversation the analyst can keep — JSON and CSV (T12 item 4, #13).
 
 **The source is the display transcript, never the checkpointer**, and that is the decision the
 rest of this module follows from: the export is what the analyst *saw*. The two differ in both

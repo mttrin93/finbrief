@@ -145,7 +145,7 @@ def shared_agent():
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
-# **Where this session's window of the sink begins** (T11 item 5). Marked once, before this
+# **Where this session's window of the sink begins** (T12 item 5). Marked once, before this
 # session has appended anything, so the spend meter reads forward from here instead of over a
 # file that accumulates every run and every other session that named it — the shape ADR-0011's
 # T10 amendment records, where a p50 over 13 appended runs was published as one run's.
@@ -159,7 +159,7 @@ if "sink_offset" not in st.session_state:
     log_path = resolve_log_file(os.environ)
     st.session_state.sink_offset = 0 if log_path is None else sink_offset(log_path)
 
-# **The per-session question counter** (T11 item 6). Cost and abuse limiting and **not a
+# **The per-session question counter** (T12 item 6). Cost and abuse limiting and **not a
 # security control** — `config.MAX_QUESTIONS_PER_SESSION` states why at length: a refresh mints
 # a new `session_state` and therefore a new counter, so anyone who wants past this walks past
 # it. ADR-0006's input gate is the security boundary; this is a bound on what one open tab can
@@ -169,7 +169,7 @@ if "questions_asked" not in st.session_state:
 
 
 def render_export_buttons(messages: list[dict[str, object]]) -> None:
-    """Take this conversation away, as JSON or as CSV (T11 item 4, user story 25).
+    """Take this conversation away, as JSON or as CSV (T12 item 4, user story 25).
 
     **Defined above the sidebar block rather than beside the other render functions**, which is
     a constraint of this file and not a preference: the sidebar runs at module scope, so a name
@@ -216,7 +216,7 @@ def render_export_buttons(messages: list[dict[str, object]]) -> None:
 
 
 def render_spend_meter() -> None:
-    """This conversation's token spend, and its cost when one is configured (T11 item 5).
+    """This conversation's token spend, and its cost when one is configured (T12 item 5).
 
     **Reads the log T8 already writes rather than adding an instrument**, which is what makes
     this affordable: the counts are on `agent_turn` and `query_translation` already, and
@@ -294,7 +294,7 @@ def _tokens(count: int | None) -> str:
 
 with st.sidebar:
     st.subheader("Conversation")
-    # **Above the fold, and deliberately not in a panel** (T11 item 1). ADR-0008 §4 makes this
+    # **Above the fold, and deliberately not in a panel** (T12 item 1). ADR-0008 §4 makes this
     # an obligation in these words — "the sidebar says so" — because a user who is not told
     # reads a lost conversation as a bug, and a reviewer cannot tell an accepted consequence
     # from an oversight. A collapsed panel states it only to a reader who clicks, so the
@@ -304,7 +304,7 @@ with st.sidebar:
         "resolves against the company you were just discussing. Memory lasts as long as this "
         "browser session: refreshing the page starts a new conversation."
     )
-    # **Only when there is somewhere to look it up** (T11 item 1). The thread id is the handle
+    # **Only when there is somewhere to look it up** (T12 item 1). The thread id is the handle
     # on this conversation *in the sink*: `log_turn` below prefixes every `turn_id` with it, so
     # it is what makes a log line lead back to a conversation. With `FINBRIEF_LOG_FILE` unset
     # there is no log, and the caption is then a hex string in front of an analyst with nothing
@@ -328,7 +328,7 @@ with st.sidebar:
         st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.messages = []
 
-    # **Four panels, all collapsed** (T11 item 1). The sidebar had grown to four stacked blocks
+    # **Four panels, all collapsed** (T12 item 1). The sidebar had grown to four stacked blocks
     # of prose — roughly a screen and a half — so the panel a reader wanted was always below
     # something they had already read, and the scope disclosure ADR-0007 requires was competing
     # with a cluster listing for the same attention. Collapsing is the *whole* change: every
@@ -336,7 +336,7 @@ with st.sidebar:
     # tests that bind these words to `config` and to the committed ingest evidence still find
     # them (`tests/test_app_smoke.py`, `tests/test_grounding_scope.py`).
     with st.expander(":material/help: How to use FinBrief"):
-        # T11 item 3's other half: the three things a reader cannot guess from a chat box.
+        # T12 item 3's other half: the three things a reader cannot guess from a chat box.
         st.markdown(
             "- **Ask about one company at a time.** Follow-ups resolve against it, so "
             "*and its margins?* needs no name.\n"
@@ -997,7 +997,7 @@ _EXAMPLE_COLUMNS = 2
 
 
 def render_example_questions() -> None:
-    """The empty page's four starting points (T11 item 3, user story 20).
+    """The empty page's four starting points (T12 item 3, user story 20).
 
     **Shown only while the transcript is empty**, which is what keeps them an affordance rather
     than furniture: they answer "what do I type", and that stops being the reader's question the
@@ -1088,7 +1088,7 @@ for message in st.session_state.messages:
 
 typed = st.chat_input("Ask about a company in the Universe", submit_mode="disable")
 
-# **Popped, not read** (T11 item 3). A seeded question left in `session_state` would be re-asked
+# **Popped, not read** (T12 item 3). A seeded question left in `session_state` would be re-asked
 # on every rerun the page does for any other reason — a widget change, a panel opening — so one
 # click would bill a question per interaction. Consuming it here, *before* the turn runs, means
 # even a turn that raises or is refused cannot leave it behind to fire again
@@ -1143,7 +1143,7 @@ def answer_turn(prompt: str) -> None:
             )
             return
 
-        # **The per-session throttle (T11 item 6) — cost and abuse limiting, not security.**
+        # **The per-session throttle (T12 item 6) — cost and abuse limiting, not security.**
         # `config.MAX_QUESTIONS_PER_SESSION` carries the argument; the short version is that a
         # refresh resets this counter, so it bounds what one open tab can spend and stops
         # nothing that is trying. ADR-0006's gate below is the security boundary, and conflating

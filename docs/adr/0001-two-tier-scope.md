@@ -27,7 +27,7 @@ regardless of how much Tier-2 gets done.
 
 ---
 
-## Amendment (ticket T11, issue #12) — two of the demoted mediums come back
+## Amendment (ticket T12, issue #13) — two of the demoted mediums come back
 
 **What this reverses.** The eight "polish" mediums above were demoted to Tier-2 because they
 "reinforce none of the core", and two of them are named in that list: the **cost-meter UI** and

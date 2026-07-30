@@ -385,7 +385,7 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
 
 
 def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control():
-    """T11 item 6. The number is bound; the disclaimer is bound; both for the same reason.
+    """T12 item 6. The number is bound; the disclaimer is bound; both for the same reason.
 
     ADR-0001's amendment records this reversal and puts the danger plainly: a reviewer who
     reads a session counter as rate limiting stops looking for the thing that is. So the README

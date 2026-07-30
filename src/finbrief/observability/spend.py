@@ -1,4 +1,4 @@
-"""What this conversation cost — read back out of the log T8 already writes (T11 item 5, #12).
+"""What this conversation cost — read back out of the log T8 already writes (T12 item 5, #13).
 
 **This module parses nothing.** `observability/events.py` is the one reader of the sink,
 paired with the one emitter, and adding a second parser here is exactly the drift that pairing

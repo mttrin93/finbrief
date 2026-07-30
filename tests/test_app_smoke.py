@@ -1585,7 +1585,7 @@ def test_a_refused_answer_renders_no_sources_panel(app, monkeypatch):
 
     app.chat_input[0].set_value("Is Tesla a buy?").run()
 
-    # Scoped to the turn, not to the page: since T11 the *sidebar* holds four collapsed panels
+    # Scoped to the turn, not to the page: since T12 the *sidebar* holds four collapsed panels
     # of its own, so `not app.expander` would now fail on a page that renders the refusal
     # perfectly. What the test is about is the panels belonging to this answer.
     assert not app.chat_message[1].expander, "no sources panel and no 'How I answered'"
@@ -1633,7 +1633,7 @@ def test_an_answer_whose_markers_all_resolve_gets_no_note(app, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# Sidebar density, and the two obligations that survive it (T11 items 1 and 3)
+# Sidebar density, and the two obligations that survive it (T12 items 1 and 3)
 # --------------------------------------------------------------------------------------
 
 
@@ -1649,7 +1649,7 @@ def sidebar_panel(app, label: str):
 
 
 def test_the_sidebar_prose_is_collapsed_by_default(app):
-    # T11 item 1. The sidebar had four stacked blocks of prose above the fold, so the panel a
+    # T12 item 1. The sidebar had four stacked blocks of prose above the fold, so the panel a
     # reader wants was always below something they had already read. Collapsing is the whole
     # change — every panel is still there, and `test_the_page_states_what_the_answers_are_
     # grounded_in` still finds its words, because `AppTest`'s block accessors recurse into an
@@ -1705,7 +1705,7 @@ def test_the_refresh_semantics_stay_above_the_fold(app):
 def test_the_thread_id_is_shown_only_when_there_is_a_log_to_find_it_in(
     app, monkeypatch, tmp_path
 ):
-    # T11 item 1. The thread id is the handle on a conversation *in the sink* — it is what a
+    # T12 item 1. The thread id is the handle on a conversation *in the sink* — it is what a
     # `turn_id` is prefixed with (`app/Home.py`'s `log_turn`), so it is actionable exactly when
     # `FINBRIEF_LOG_FILE` names somewhere to grep. With the sink off it is a hex string in front
     # of an analyst with nothing to do with it.
@@ -1723,7 +1723,7 @@ def test_the_thread_id_is_shown_only_when_there_is_a_log_to_find_it_in(
 
 
 def test_the_help_panel_explains_how_to_ask_and_stays_collapsed(app):
-    # T11 item 3's other half. A reader arriving at a chat box does not know that this one is
+    # T12 item 3's other half. A reader arriving at a chat box does not know that this one is
     # grounded in four Items of fifteen 10-Ks, that `[n]` resolves to a panel below the answer,
     # or that the figures come from tools rather than the filings — and the answer to all three
     # is already on the page in pieces.
@@ -1738,7 +1738,7 @@ def test_the_help_panel_explains_how_to_ask_and_stays_collapsed(app):
 
 
 # --------------------------------------------------------------------------------------
-# The token and cost meter (T11 item 5)
+# The token and cost meter (T12 item 5)
 # --------------------------------------------------------------------------------------
 
 
@@ -1885,7 +1885,7 @@ def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------------------
-# The per-session throttle (T11 item 6)
+# The per-session throttle (T12 item 6)
 # --------------------------------------------------------------------------------------
 
 
@@ -1966,7 +1966,7 @@ def test_the_throttle_is_not_described_as_a_security_control(app, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# Export (T11 item 4)
+# Export (T12 item 4)
 # --------------------------------------------------------------------------------------
 
 
@@ -2059,7 +2059,7 @@ def test_a_refusal_is_part_of_what_gets_exported(app, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# Example questions (T11 item 3)
+# Example questions (T12 item 3)
 # --------------------------------------------------------------------------------------
 
 
