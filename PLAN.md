@@ -63,7 +63,7 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 | Conversation history + export | Checkpointer-backed history per `thread_id`; export button |
 | RAG process visualization | Expandable "How I answered" panel: original query → translated sub-queries → retrieved chunks w/ scores → final prompt |
 | Source citations | Inline `[1] TSLA 10-K 2025, Item 1A` style citations tied to the sources panel |
-| Interactive help / guide | Onboarding expander + `/help`-style command + example-question buttons |
+| Interactive help / guide | Onboarding expander + `/help`-style command + example-question buttons. **Built in part** (T12, #13): the panel and the four buttons ship; the `/help` command does **not** — `st.chat_input` is the only text entry, so a slash command means parsing one and routing it past the gate, which is a second door for a convenience. Open, not cut. |
 
 ### Optional — Medium (all ten)
 
@@ -72,9 +72,9 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 | Multi-model support | P1 | Model picker (e.g. `gpt-4o-mini`, `claude-haiku`, one open model) — trivial via OpenRouter model string |
 | Real-time KB/data updates | P1 | Live prices/news via tools; "refresh news into KB" button that ingests latest headlines into a `news` Chroma collection |
 | Prompt-injection protection | P1 | System-prompt hardening, retrieved-content quarantine framing ("data, not instructions"), injection test suite (Sprint 1 lesson patterns) |
-| Token usage & cost display | P1 | LangChain callbacks → per-message and session token/cost meter in sidebar |
+| Token usage & cost display | P1 | LangChain callbacks → per-message and session token/cost meter in sidebar. **Built in part** (T12, #13): the per-**conversation** meter ships, read from T8's logged counts rather than from callbacks (cheaper, and one reader instead of a second instrument). The per-**message** half does **not** — `agent_turn` already carries a turn's own spend, so it is a rendering job on the transcript row, not a new measurement. Open, not cut. |
 | Tool-call result visualization | P1 | Price history line chart, ratio comparison bar chart (vs. peers), news cards |
-| Conversation export (PDF/CSV/JSON) | P1 | JSON + CSV native; PDF via `reportlab`/`fpdf2` |
+| Conversation export (PDF/CSV/JSON) | P1 | JSON + CSV native; PDF via `reportlab`/`fpdf2`. **Built in part** (T12, #13): JSON and CSV ship on stdlib alone. **PDF declined**, and this is the row that asked for it — every library added to this project for quality or safety shipped a telemetry path enabled by default, and a rendering library would be added for *presentation*, which buys none of the argument that made those three worth their switches. Declined, not open. |
 | Remote MCP server connection | P1 | Connect one public remote MCP server via `langchain-mcp-adapters` (e.g. a fetch/search server); MCP security review from Part 4 applied and documented |
 | Rate limiting & API key mgmt | P1 | Per-session request throttle; keys via `.env` + `st.secrets`; never logged |
 | Logging & monitoring | P1 | Structured `logging` (JSON lines): queries, retrieval hits, tool calls, latency, token counts; feeds the analytics dashboard |
@@ -562,19 +562,27 @@ Each item built only when fully understood; anything not defensible is cut befor
      - **cost-meter sidebar UI** — reads the per-field token counts Phase 6 already logs, so it
        is arithmetic over one reader rather than a new instrument. Reverses ADR-0011's own
        declined item, and the reversal is recorded there. Absent, never zero; a partial total
-       says so and names the gate classifier it structurally cannot see.
+       says so, and the gate classifier it structurally cannot see is named on **every** total —
+       complete or not, since `partial` is a claim about reported-versus-counted calls and that
+       call never enters the count (code review of #13).
      - **export (JSON/CSV)** — from the *display transcript*, not the checkpointer: the export is
-       what the analyst saw, and the two differ in both directions. **PDF declined**, and the
+       what the analyst saw, and the two differ in both directions. Every answer carries
+       `prompts.DISCLAIMER`, since a downloaded file is read by someone who never saw the page
+       (code review of #13). **PDF declined**, and the
        reason is a dependency judgement rather than effort: all three libraries added here for
        quality or safety shipped a telemetry path enabled by default, and a rendering library
        would be added for presentation, which buys none of the argument that made those three
-       worth their switches. Recorded in the README beside that table.
+       worth their switches. Recorded in the README beside that table, and against §2's
+       *Conversation export (PDF/CSV/JSON)* row, which is the Medium that asked for all three.
      - **rate limiting** — a per-session question counter, and **not a security control**: a
        refresh resets it, so it bounds what one open tab can spend and stops nothing that is
        trying. ADR-0006's gate is the boundary; ADR-0001's amendment records the reversal and
        what a real rate limit would need (a server-side key the client does not choose).
      - **help guide** — a "how to use" panel plus four example-question buttons, seeded through
-       the *same* path a typed question takes, so a seeded question is gated like any other.
+       the *same* path a typed question takes, so a seeded question is gated like any other. §2's
+       row also asks for a `/help`-style command, which is **not** built and is recorded there as
+       open: `st.chat_input` is the only text entry, so a slash command means parsing one and
+       routing it past the gate — a second door for a convenience.
    - Still open: auth + watchlists · analytics dashboard · scheduled KB updates (GH Action) ·
      multi-language toggle.
 - *Future work (deferred by ADR-0005):* adaptive per-query strategy routing.
