@@ -291,6 +291,50 @@ stale.
   searches in one step run concurrently against identical state and would otherwise all number
   from `[1]`.
 
+## What a conversation cost, and what caps it
+
+Two sidebar panels, and the second one is easy to over-read — so it says what it is not.
+
+**The token meter reads the log rather than adding an instrument.** T8 already records per-field
+token counts on the agent loop's turn and on the planner's own call, so the meter is arithmetic
+over `observability/events.py` and nothing new is emitted. Three consequences:
+
+- **It exists only when the log does.** The counts live in the sink, which is opt-in, so with
+  `FINBRIEF_LOG_FILE` unset the panel says so instead of rendering `0`. A spend of zero is a claim
+  that the calls were free.
+- **It is scoped to this conversation, not to the file.** The sink is append-only across every run
+  and browser session that names it — a total over the whole of it is a total over all of them,
+  which is exactly how an evaluation artifact once published a planner p50 over 13 appended runs
+  (ADR-0011). Every turn id is prefixed with the conversation's, so the meter selects this
+  conversation's lines and nothing else.
+- **A partial total says so, and names the call it cannot see.** Each field carries its own
+  denominator, so a total missing a call it should have counted is shown as a floor with the
+  counts printed beside it. The gate's zero-shot classifier is deliberately never metered
+  (ADR-0011), which means one paid call per turn is structurally absent from every figure — and
+  the panel says that rather than letting the total imply otherwise.
+
+**No rate card ships in this repo.** `FINBRIEF_INPUT_COST_PER_MTOK` and
+`FINBRIEF_OUTPUT_COST_PER_MTOK` default to unset, and with no price the panel reports tokens and
+says it cannot price them. FinBrief reaches every model through OpenRouter, which fronts many
+upstreams and routes by availability, so the price of a call is not something this codebase can
+assert — a hardcoded figure would be a number nobody measured, going stale silently, in the one
+panel whose entire subject is spend. Two knobs rather than one because input and output are priced
+differently everywhere.
+
+**The per-session question cap is cost and abuse limiting, and it is not a security control.**
+`config.MAX_QUESTIONS_PER_SESSION` bounds how many questions one browser session is answered, so
+one tab left open on a script cannot spend a shared demo key's budget. **Refreshing the page
+resets it**, because the counter lives in `st.session_state` — anyone who wants past it walks past
+it, and saying so is the point rather than a caveat: the [security gate](#what-the-security-gate-does-layer-by-layer)
+is the boundary, and a reviewer who reads a session counter as rate limiting stops looking for the
+thing that is. A real rate limit is keyed server-side on something the client does not choose — an
+account, an IP, a token bucket in a shared store — and needs the auth Tier-2 defers. That is a
+ticket, not a constant.
+
+The counter increments **before** the gate, so a blocked payload consumes a question: otherwise
+the one caller worth throttling is the one that gets unlimited attempts. The length cap is free
+and refuses first, so an over-long paste costs nothing from the session's budget.
+
 ## Taking a conversation away: JSON and CSV
 
 The sidebar offers the conversation as two downloads once there is one to take. Both are built

@@ -384,6 +384,46 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
     )
 
 
+def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control():
+    """T11 item 6. The number is bound; the disclaimer is bound; both for the same reason.
+
+    ADR-0001's amendment records this reversal and puts the danger plainly: a reviewer who
+    reads a session counter as rate limiting stops looking for the thing that is. So the README
+    may not quote the cap without the sentence that a refresh resets it, and it may not quote a
+    *stale* cap either — this is the file that binds prose to `config`.
+    """
+    from finbrief.config import MAX_QUESTIONS_PER_SESSION
+
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+
+    # A whole number, not a substring: `40` inside `140` is the vacuous match this file's own
+    # amendment-four finding is about.
+    assert re.search(rf"(?<![\d.\-]){MAX_QUESTIONS_PER_SESSION}(?![\d])", readme), (
+        f"the README no longer states the {MAX_QUESTIONS_PER_SESSION}-question session cap"
+    )
+    assert "Refreshing the page resets it" in readme
+    assert "not a security control" in readme
+
+
+def test_the_readme_does_not_quote_a_price_as_though_it_were_measured():
+    """The absence that has to stay an absence, asserted from the other direction.
+
+    Both cost knobs default to unset and the README's argument is that no rate card belongs in
+    this repo — so the prose must not carry a dollar-per-million figure presented as FinBrief's
+    cost. `.env.example` may show a *sample* value beside a commented switch; the README may not
+    state one as fact, because that is the "figure nobody measured" the design rejects.
+    """
+    from finbrief.config import Settings
+
+    settings = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"})
+    assert settings.input_cost_per_mtok is None, "unpriced is the default"
+    assert settings.output_cost_per_mtok is None
+
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" in readme, "the knob is documented"
+    assert "no rate card" in readme.lower(), "and so is the reason there is no default"
+
+
 def test_no_test_imports_through_the_tests_package():
     """`from fakes import …`, never `from tests.fakes import …` — and the difference is CI.
 

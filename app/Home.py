@@ -40,6 +40,7 @@ from finbrief.config import (
     CLUSTERS,
     HISTORY_PERIOD_LABEL,
     MAX_QUESTION_CHARS,
+    MAX_QUESTIONS_PER_SESSION,
     PEERS,
     UNIVERSE,
     ConfigError,
@@ -56,6 +57,7 @@ from finbrief.export import (
     log_export,
 )
 from finbrief.finance.ratios import Metric, Unit
+from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
 # Aliased, and the alias is the point: this module already binds `turn` at module scope — the
@@ -64,6 +66,7 @@ from finbrief.observability.logging_setup import configure_logging, log_event
 # died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
 # would not have.
 from finbrief.observability.logging_setup import turn as log_turn
+from finbrief.observability.spend import conversation_spend
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -142,6 +145,28 @@ def shared_agent():
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
+# **Where this session's window of the sink begins** (T11 item 5). Marked once, before this
+# session has appended anything, so the spend meter reads forward from here instead of over a
+# file that accumulates every run and every other session that named it — the shape ADR-0011's
+# T10 amendment records, where a p50 over 13 appended runs was published as one run's.
+# Correctness comes from the `turn_id` filter in `observability/spend.py`; this bounds how much
+# of the file has to be parsed on each rerun, which is the half that grows without limit.
+#
+# Deliberately **not** re-marked by "Start over": that mints a new `thread_id`, so the filter
+# already excludes the previous conversation's lines and re-marking would only narrow the window
+# for no gain.
+if "sink_offset" not in st.session_state:
+    log_path = resolve_log_file(os.environ)
+    st.session_state.sink_offset = 0 if log_path is None else sink_offset(log_path)
+
+# **The per-session question counter** (T11 item 6). Cost and abuse limiting and **not a
+# security control** — `config.MAX_QUESTIONS_PER_SESSION` states why at length: a refresh mints
+# a new `session_state` and therefore a new counter, so anyone who wants past this walks past
+# it. ADR-0006's input gate is the security boundary; this is a bound on what one open tab can
+# spend.
+if "questions_asked" not in st.session_state:
+    st.session_state.questions_asked = 0
+
 
 def render_export_buttons(messages: list[dict[str, object]]) -> None:
     """Take this conversation away, as JSON or as CSV (T11 item 4, user story 25).
@@ -188,6 +213,83 @@ def render_export_buttons(messages: list[dict[str, object]]) -> None:
             # questions and the filer's prose, which is exactly what these kept lines may not
             # carry (`export.log_export`, ADR-0011).
             log_export(exported, fmt=suffix, size=len(data))
+
+
+def render_spend_meter() -> None:
+    """This conversation's token spend, and its cost when one is configured (T11 item 5).
+
+    **Reads the log T8 already writes rather than adding an instrument**, which is what makes
+    this affordable: the counts are on `agent_turn` and `query_translation` already, and
+    `observability/spend.py` does the arithmetic through the one reader. So the meter exists
+    only when the sink does — `FINBRIEF_LOG_FILE` unset means there is nothing to read, and
+    this says so rather than rendering zeros, because a spend of `0` is a claim that the calls
+    were free.
+
+    Read from **this session's own window** of the file (`events.sink_offset`, taken once when
+    the session starts) and filtered to this conversation's turn ids. The offset is for read
+    cost; the filter is for correctness, and the module docstring argues why that is the sharper
+    of the two here — the sink is shared, and a total over the whole of it is a total over every
+    run that ever named it (ADR-0011).
+
+    Nothing is emitted here. The instrument is at the layer that produces the behaviour and this
+    is the layer that displays it — ADR-0011's amendment is explicit that an event wired to a
+    page is an event measuring clicks.
+    """
+    path = resolve_log_file(os.environ)
+    if path is None:
+        st.caption(
+            "Token spend is read from the event log, which is off. Set `FINBRIEF_LOG_FILE` to "
+            "meter this conversation."
+        )
+        return
+    spend = conversation_spend(
+        read_events(path, start_offset=st.session_state.sink_offset),
+        thread_id=st.session_state.thread_id,
+    )
+    if not spend.measured:
+        # **Not zeros.** Either nothing has been asked yet, or the provider reported no usage
+        # block at all — and neither is "this conversation cost nothing". OpenRouter fronts many
+        # upstreams and whether a given one meters itself is not ours to assert
+        # (`observability/tokens.py`).
+        st.caption(
+            f"No usage reported yet for this conversation "
+            f"({spend.calls} model call(s) across {spend.turns} turn(s))."
+        )
+        return
+    st.markdown(
+        f"**Input** `{_tokens(spend.input.total)}`  \n"
+        f"**Output** `{_tokens(spend.output.total)}`  \n"
+        f"**Calls** `{spend.calls}` across `{spend.turns}` turn(s)"
+    )
+    dollars = spend.dollars(
+        input_per_mtok=settings.input_cost_per_mtok,
+        output_per_mtok=settings.output_cost_per_mtok,
+    )
+    if dollars is None:
+        st.caption(
+            "Cost is not priced: set `FINBRIEF_INPUT_COST_PER_MTOK` and "
+            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card. No price is "
+            "assumed, because this app reaches every model through OpenRouter's routing."
+        )
+    else:
+        st.markdown(f"**Cost** `${dollars:.4f}`")
+    if spend.partial:
+        # **Said beside the figure, not folded into it.** A total missing a call it should have
+        # counted is a floor, and a floor presented as a total is the silent narrowing this
+        # whole path is built against — so the denominators are printed rather than the
+        # shortfall being left for a reader to infer.
+        st.warning(
+            f"Partial: {spend.input.reported_calls} of {spend.calls} call(s) reported input "
+            f"tokens and {spend.output.reported_calls} reported output tokens, so the figures "
+            f"above are a floor. The input gate's classifier is never metered (ADR-0011), so "
+            f"one call per turn is missing from them by design.",
+            icon=":material/data_alert:",
+        )
+
+
+def _tokens(count: int | None) -> str:
+    """`12,431`, or the word for a count nothing reported. Never `0` for an absence."""
+    return "not reported" if count is None else f"{count:,}"
 
 
 with st.sidebar:
@@ -257,6 +359,11 @@ with st.sidebar:
     # that bug. Deferring is the whole fix; `render_export_buttons` is called once, below, from
     # a transcript that includes this turn.
     export_slot = st.empty()
+
+    # A slot for the same reason the export has one: the meter reads the log, and this run's
+    # `agent_turn` line is written by the turn below. Built here it would report the spend as of
+    # the *previous* question, which on a cost panel is the one number a reader would act on.
+    spend_slot = st.empty()
 
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
@@ -1036,6 +1143,27 @@ def answer_turn(prompt: str) -> None:
             )
             return
 
+        # **The per-session throttle (T11 item 6) — cost and abuse limiting, not security.**
+        # `config.MAX_QUESTIONS_PER_SESSION` carries the argument; the short version is that a
+        # refresh resets this counter, so it bounds what one open tab can spend and stops
+        # nothing that is trying. ADR-0006's gate below is the security boundary, and conflating
+        # the two would be the more dangerous mistake in the pair — a reviewer who reads this as
+        # rate limiting stops looking for the thing that is.
+        #
+        # **After the length cap and before the gate**, which is where the two reasons agree.
+        # Cost: layer 3 is a paid classifier call, so a throttled question must not reach it.
+        # Abuse: a payload that the denylist would block still consumes a question, because
+        # otherwise the one caller worth throttling is the one that gets unlimited attempts.
+        if st.session_state.questions_asked >= MAX_QUESTIONS_PER_SESSION:
+            st.warning(
+                f"This session has asked its {MAX_QUESTIONS_PER_SESSION} questions. Refresh "
+                f"the page to start a new conversation — FinBrief caps questions per session "
+                f"to bound what a shared demo key can spend.",
+                icon=":material/hourglass_disabled:",
+            )
+            return
+        st.session_state.questions_asked += 1
+
         # **The input gate (ADR-0006 layers 1–3), here and not in the agent.** This is the door
         # a human types through, which is what the front door is about; a gate inside the agent
         # loop would also screen the *model's* tool arguments as if an analyst had typed them,
@@ -1207,3 +1335,8 @@ if prompt:
 if st.session_state.messages:
     with export_slot.container():
         render_export_buttons(st.session_state.messages)
+
+# Also last, and for the same reason: this run's `agent_turn` line is written inside the turn
+# above, so a meter built in the sidebar would report the spend as of the *previous* question.
+with spend_slot.container(), st.expander(":material/toll: Token spend"):
+    render_spend_meter()
