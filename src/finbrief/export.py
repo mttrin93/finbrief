@@ -23,7 +23,18 @@ ranks it retrieved. `tests/test_export.py` carries the cross-turn case as the in
 spreadsheet averages a column without asking what its blanks meant. A chunk BM25 recovered has
 no vector distance (ADR-0004 §3) and exports `null`, never `0.0`. And nothing here is invented:
 the fields are the ones the sources panel renders, because that is what "what the analyst saw"
-means.
+means. **The rule holds for a turn that is present but cannot answer, too**, which is where it
+broke: a `getattr` default of `False`/`()` on a turn stored by an older build wrote
+`searched: false` and `retrieved_ranks: []` as facts, so "did not search" and "cannot say"
+arrived as the same claim (`_grounding`, code review of #13). A default that looks like data is
+the quietest form of this failure, because nothing downstream can tell it from a measurement.
+
+**Every answer carries `prompts.DISCLAIMER`** — once at the JSON's top level, and on every CSV
+row. `GroundedAnswer.text` deliberately holds no disclaimer, so every surface rendering it owes
+one beside it (CLAUDE.md), and this is the surface where that matters most rather than least: a
+file in a downloads folder is read by someone who never saw the page, and a spreadsheet row is
+the unit a reader lifts out into a note. Per row rather than per file for exactly that reason —
+a disclaimer the row left behind did not travel with the claim it qualifies.
 
 **No PDF.** It needs a new dependency, and three of the libraries this project added for
 quality or safety shipped a telemetry path enabled by default (`guardrails-ai`, `uvloop`,
@@ -45,6 +56,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from finbrief.observability.logging_setup import log_event
+from finbrief.prompts import DISCLAIMER
 from finbrief.retrieval.retrieve import Context
 
 #: What the JSON calls itself. A reader that finds a file in a downloads folder six months later
@@ -55,6 +67,21 @@ EXPORT_FORMAT = "finbrief-transcript"
 #: version 1 tolerates a new key for the same reason every `from_payload` on the checkpoint path
 #: does.
 EXPORT_VERSION = 1
+
+#: The columns one retrieved source fills — everything between `searched` and the trailing
+#: `disclaimer`. Named as a tuple so `_row`'s empty-source padding is derived from it; see
+#: `CSV_COLUMNS`.
+_SOURCE_COLUMNS: tuple[str, ...] = (
+    "source_rank",
+    "citation",
+    "chunk_id",
+    "ticker",
+    "section",
+    "fiscal_year",
+    "distance",
+    "retrievers",
+    "body",
+)
 
 #: The CSV's columns, in order. **One shape: a row per (turn, source that turn retrieved.)**
 #:
@@ -73,23 +100,36 @@ CSV_COLUMNS: tuple[str, ...] = (
     "role",
     "content",
     "searched",
-    "source_rank",
-    "citation",
-    "chunk_id",
-    "ticker",
-    "section",
-    "fiscal_year",
-    "distance",
-    "retrievers",
-    "body",
+    # Spliced rather than re-typed, so `_row`'s empty-source padding is `len(_SOURCE_COLUMNS)`
+    # and the two cannot fall out of step. They could before: the padding was nine literal `""`s
+    # positionally coupled to this tuple, so a tenth source column added to the populated branch
+    # and not to the empty one would have written short rows — and every test here indexes by
+    # name, so the header would still have matched and the shift would have been silent (code
+    # review of #13).
+    *_SOURCE_COLUMNS,
+    # Last, and repeated on **every** row rather than stated once — see `_row`.
+    "disclaimer",
 )
 
 #: The characters a spreadsheet executes when they open a cell. Excel and Sheets both evaluate
 #: `=`, `+`, `-` and `@` on open, and every text cell here is either model output or a filer's
-#: prose — neither of which this repo writes. Prefixed rather than stripped, so the text
-#: survives intact and still round-trips through `csv.reader`, which is the consumer this
-#: format is specified against.
+#: prose — neither of which this repo writes.
 _FORMULA_LEADERS = frozenset("=+-@")
+
+#: The two leaders that are also ordinary prose, and so are guarded conditionally.
+#:
+#: **The guard was firing on the common case and never on the case it was written for.**
+#: Measured over the ingested corpus: **0 of 5,842 filing bodies** begin with a formula leader,
+#: while `-` is how every markdown bullet begins — so an answer opening `- Server products grew
+#: [1]` was prefixed and the one text this column was meant to protect never was. That is a
+#: guard whose only observable effect is mangling (code review of #13).
+#:
+#: **Split on whitespace, not on "a digit or a paren".** A markdown bullet is `-` or `+`
+#: *followed by a space* — CommonMark requires it — so whitespace is exactly the prose case. The
+#: narrower rule the review proposed (guard only before a digit or `(`) would have let
+#: `-cmd|' /C calc'!A0` through — a real DDE payload, and the reason this constant exists at
+#: all. `=` and `@` stay unconditional, because neither opens a sentence.
+_AMBIGUOUS_LEADERS = frozenset("+-")
 
 #: How much of a `thread_id` stands in for the conversation in something a human reads.
 #:
@@ -244,12 +284,25 @@ def _grounding(
     The three shapes `app/Home.py` renders, in its order. `getattr` on the turn for the reason
     every reader on that path is tolerant: a row holding an `AgentTurn` built before a field
     existed replays here too.
+
+    **And the sentinel is `None`, not `()` and not `False`** — which is the whole rule this
+    module is built around and it was broken right here. `getattr(turn, "searched", False)`
+    exported `"searched": false` for a turn that cannot say, and `getattr(turn, "contexts", ())`
+    exported `"retrieved_ranks": []`: "the agent did not search" and "we cannot say whether it
+    searched" written as the same claim, in the function whose docstring says they are different
+    ones (code review of #13). A default that *looks* like data is the honest-absence failure in
+    its quietest form, because nothing downstream can tell it from a measurement.
     """
     if message.get("role") != "assistant":
         return None, None
     turn = message.get("turn")
     if turn is not None:
-        return tuple(getattr(turn, "contexts", ())), bool(getattr(turn, "searched", False))
+        contexts = getattr(turn, "contexts", None)
+        searched = getattr(turn, "searched", None)
+        return (
+            None if contexts is None else tuple(contexts),
+            None if searched is None else bool(searched),
+        )
     contexts = message.get("contexts")
     if contexts is not None:
         # `searched` defaults True exactly as the replay loop defaults it: before the agent
@@ -265,6 +318,11 @@ def as_json(transcript: Transcript) -> str:
         "format": EXPORT_FORMAT,
         "version": EXPORT_VERSION,
         "thread_id": transcript.thread_id,
+        # **`GroundedAnswer.text` carries no disclaimer, so every surface rendering it owes one
+        # beside it** (CLAUDE.md) — and this file is the surface most likely to be read by
+        # someone who never saw the app, which is where that rule matters most rather than
+        # least. It was missing here while the page rendered it four times (code review of #13).
+        "disclaimer": DISCLAIMER,
         "turns": [turn.as_payload() for turn in transcript.turns],
         # One list, at the top level, holding every body once — which is what makes it the
         # resolution table rather than a per-turn copy that could disagree with itself.
@@ -316,7 +374,8 @@ def _row(index: int, turn: ExportedTurn, source: ExportedSource | None) -> list[
         _text(turn.content),
         "" if turn.searched is None else str(turn.searched).lower(),
         *(
-            ["", "", "", "", "", "", "", "", ""]
+            # Derived from `_SOURCE_COLUMNS`, not counted by hand — see `CSV_COLUMNS`.
+            [""] * len(_SOURCE_COLUMNS)
             if source is None
             else [
                 str(source.rank),
@@ -330,12 +389,38 @@ def _row(index: int, turn: ExportedTurn, source: ExportedSource | None) -> list[
                 _text(source.body),
             ]
         ),
+        # **On every row, not once at the top.** A row is the unit a reader lifts out of a
+        # spreadsheet — into a note, an email, a slide — and a disclaimer in a header the row
+        # left behind is a disclaimer that did not travel with the claim it qualifies.
+        DISCLAIMER,
     ]
 
 
 def _text(value: str) -> str:
-    """`value`, guarded against a spreadsheet reading it as a formula (`_FORMULA_LEADERS`)."""
-    return f"'{value}" if value[:1] in _FORMULA_LEADERS else value
+    """`value`, guarded against a spreadsheet reading it as a formula (`_FORMULA_LEADERS`).
+
+    Prefixed with `'` rather than stripped, so nothing is lost: a consumer that finds a cell
+    opening `'=` knows the apostrophe is the guard. Every cell that is *not* a formula leader
+    round-trips byte-identical through `csv.reader`, which is the consumer this format is
+    specified against — and since the guard no longer fires on markdown bullets, that is now
+    every cell this app has been observed to produce (`_AMBIGUOUS_LEADERS`).
+    """
+    return f"'{value}" if _is_formula(value) else value
+
+
+def _is_formula(value: str) -> bool:
+    """Whether a spreadsheet would try to *evaluate* this cell rather than show it.
+
+    `=` and `@` unconditionally; `-` and `+` only when what follows is not whitespace, which is
+    what separates `-2+3` and `-cmd|' /C calc'!A0` from `- Server products grew [1]`. See
+    `_AMBIGUOUS_LEADERS` for the measurement behind that split.
+    """
+    lead = value[:1]
+    if lead not in _FORMULA_LEADERS:
+        return False
+    if lead in _AMBIGUOUS_LEADERS:
+        return not value[1:2].isspace()
+    return True
 
 
 def log_export(transcript: Transcript, *, fmt: str, size: int) -> None:

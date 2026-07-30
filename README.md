@@ -373,9 +373,21 @@ omit a refusal they were given.
   own questions and the filer's prose, which is exactly what the log may not carry (ADR-0011;
   the one bounded exception is a blocked question's normalised text). The line records how many
   turns and sources went out, in which format, at what size.
-- **Text cells are guarded against a spreadsheet.** A cell opening `=`, `+`, `-` or `@` is
-  evaluated as a formula on open by Excel and Sheets, and every text cell here is model output or
-  filing prose. Such a value is prefixed so it is treated as text, and still round-trips.
+- **Text cells are guarded against a spreadsheet — and only the cells that need it.** A cell
+  opening `=`, `+`, `-` or `@` is evaluated as a formula on open by Excel and Sheets, and every
+  text cell here is model output or filing prose. Such a value is prefixed with `'` so it reaches
+  the spreadsheet as text. `=` and `@` unconditionally; `-` and `+` only when what follows is not
+  whitespace, which is what separates `-2+3` and the real DDE payload `-cmd|' /C calc'!A0` from a
+  markdown bullet. The first version guarded `-` unconditionally, and the code review of #13
+  measured what that cost: **0 of 5,842 ingested filing bodies open with a formula leader**, so
+  the rule never fired on the text it was written for and always fired on answers opening with a
+  bullet. Every cell that is not a formula leader now round-trips **byte-identical** through
+  `csv.reader`.
+- **Every answer carries the disclaimer the page shows beside it** — once at the JSON's top
+  level, on every CSV row. `GroundedAnswer.text` holds no disclaimer by design, so each surface
+  rendering it owes one, and an export is the surface most likely to be read by someone who never
+  saw the app. Per row rather than per file because a row is the unit a reader lifts into a note,
+  and a disclaimer it left behind did not travel with the claim it qualifies.
 
 **No PDF, and the reason is this project's dependency record rather than effort.** It needs a new
 library, and every library added here for quality or safety shipped a telemetry path enabled by

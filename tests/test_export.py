@@ -31,7 +31,7 @@ from finbrief.export import (
     as_json,
     file_name,
 )
-from finbrief.prompts import ADVICE_REFUSAL, INJECTION_REFUSAL
+from finbrief.prompts import ADVICE_REFUSAL, DISCLAIMER, INJECTION_REFUSAL
 from finbrief.security.markers import numeric_markers
 
 THREAD = "3294dcff-0f78-4e82-a07c-47e8552e378f"
@@ -220,6 +220,52 @@ def test_a_transcript_row_from_an_older_shape_exports_what_it_has():
     assert set(payload["turns"][1]) == {"role", "content"}, "nothing is invented for it"
 
 
+class TurnFromAnOlderBuild:
+    """A `turn` object stored before `contexts` and `searched` were fields on it.
+
+    The shape that outlives a deploy: `app/Home.py` appends the whole `AgentTurn` into
+    `session_state`, and on the first rerun after a deploy the rows already there were built by
+    the previous one. A `getattr` default is the only thing standing between it and the export.
+    """
+
+    text = "An answer from a build that stored neither."
+
+
+def test_a_turn_that_cannot_say_whether_it_searched_says_nothing():
+    """`None` means omitted — not `false`, and not `[]`.
+
+    This is the module's headline rule and it was broken on exactly this row:
+    `getattr(turn, "searched", False)` exported `"searched": false` and
+    `getattr(turn, "contexts", ())` exported `"retrieved_ranks": []`, so "the agent did not
+    search" and "we cannot say whether it searched" were written as the same claim (code review
+    of #13). Nothing downstream can tell a default that looks like data from a measurement,
+    which is why the assertion is on the *keys* and not on their values.
+
+    The refusal case above covers a row with no `turn` at all; this one covers a row with a
+    `turn` that cannot answer — a different branch of `_grounding`, and the one that regressed.
+    """
+    rows = [{"role": "assistant", "content": "…", "turn": TurnFromAnOlderBuild()}]
+
+    payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
+
+    assert set(payload["turns"][0]) == {"role", "content"}, (
+        f"a turn that cannot say says nothing; got {sorted(payload['turns'][0])}"
+    )
+    assert payload["sources"] == []
+
+
+def test_a_turn_that_can_say_it_did_not_search_says_so():
+    # The counterpart, without which the test above would pass on an export that dropped
+    # `searched` altogether: a real `AgentTurn` that searched nothing reports `false`, because
+    # that is a fact about the turn rather than an absence.
+    rows = [an_assistant_row("Answered from the conversation.", ())]
+
+    payload = json.loads(as_json(Transcript.of(rows, thread_id=THREAD)))
+
+    assert payload["turns"][0]["searched"] is False
+    assert payload["turns"][0]["retrieved_ranks"] == []
+
+
 # --------------------------------------------------------------------------------------
 # JSON shape
 # --------------------------------------------------------------------------------------
@@ -322,8 +368,8 @@ def test_a_body_with_commas_quotes_and_newlines_round_trips_through_csv_reader()
 def test_a_content_cell_that_looks_like_a_formula_is_not_exported_as_one():
     # A cell opening `=`, `+`, `-` or `@` is executed as a formula by Excel and Sheets on open,
     # and the text of a cell here is model output and filing text — neither of which this repo
-    # controls. The value is prefixed so a spreadsheet treats it as text, and it still
-    # round-trips through `csv.reader`, which is the consumer this format is specified against.
+    # controls. The value is prefixed so a spreadsheet treats it as text, and the text itself is
+    # not lost.
     rows = [an_assistant_row("=1+1 is what the filing states.", ())]
 
     parsed = read_csv(as_csv(Transcript.of(rows, thread_id=THREAD)))
@@ -331,6 +377,80 @@ def test_a_content_cell_that_looks_like_a_formula_is_not_exported_as_one():
     cell = parsed[1][CSV_COLUMNS.index("content")]
     assert not cell.startswith("="), "a spreadsheet would evaluate this on open"
     assert "=1+1 is what the filing states." in cell, "and the text itself is not lost"
+
+
+def test_a_bulleted_answer_is_not_mistaken_for_a_formula():
+    """The guard fired on the common case and never on the case it was written for.
+
+    Measured over the ingested corpus: **0 of 5,842 filing bodies** open with a formula leader,
+    while `-` is how every markdown bullet opens — so the only observable effect of the `-` rule
+    was prefixing ordinary answers, and the README's "byte-identical" claim was false for the
+    likeliest answer shape there is (code review of #13).
+
+    Split on **whitespace**, which is what a bullet has and a formula does not. Asserted
+    byte-identical rather than by containment, because that is the property the prose claims.
+    """
+    bulleted = "- Server products grew [1].\n- Cloud grew too [1]."
+    rows = [an_assistant_row(bulleted, ())]
+
+    parsed = read_csv(as_csv(Transcript.of(rows, thread_id=THREAD)))
+
+    assert parsed[1][CSV_COLUMNS.index("content")] == bulleted
+
+
+def test_a_payload_that_opens_with_a_dash_is_still_guarded():
+    """The other half, and the reason the split is whitespace and not "a digit or a paren".
+
+    `-cmd|' /C calc'!A0` is a real DDE payload and it opens with a letter, so a rule guarding
+    `-` only before a digit or `(` would have let the one thing this constant exists for
+    straight through while still mangling bullets. Both figures and payloads are covered here,
+    since a rule catching only one of them would pass a test naming the other.
+    """
+    for dangerous in ("-cmd|' /C calc'!A0", "-2+3 is the delta.", "+1 on that", "@SUM(A1:A9)"):
+        rows = [an_assistant_row(dangerous, ())]
+
+        parsed = read_csv(as_csv(Transcript.of(rows, thread_id=THREAD)))
+
+        cell = parsed[1][CSV_COLUMNS.index("content")]
+        assert cell == f"'{dangerous}", f"{dangerous!r} must reach a spreadsheet as text"
+
+
+def test_every_row_is_as_wide_as_the_header_whatever_it_carries():
+    # The empty-source padding used to be nine literal `""`s positionally coupled to
+    # `CSV_COLUMNS`, so a tenth source column added to the populated branch and not to the empty
+    # one would have written short rows — and every assertion in this file indexes by name, so
+    # the header would still have matched and the shift would have been silent (code review of
+    # #13). Both branches, because the bug is a disagreement *between* them.
+    exported = Transcript.of(a_three_turn_conversation(), thread_id=THREAD)
+
+    rows = read_csv(as_csv(exported))
+
+    widths = {len(row) for row in rows}
+    assert widths == {len(CSV_COLUMNS)}, f"every row is {len(CSV_COLUMNS)} wide; got {widths}"
+    populated = [r for r in rows[1:] if r[CSV_COLUMNS.index("source_rank")]]
+    empty = [r for r in rows[1:] if not r[CSV_COLUMNS.index("source_rank")]]
+    assert populated and empty, "both branches are exercised by this fixture"
+
+
+def test_both_formats_carry_the_disclaimer_the_page_renders():
+    """`GroundedAnswer.text` carries no disclaimer, so every surface rendering it owes one.
+
+    CLAUDE.md's rule, and this is the surface where it matters most rather than least: a file in
+    a downloads folder is read by someone who never saw the app, and a CSV row is the unit a
+    reader lifts into a note or a slide. So the JSON carries it once at the top and the CSV
+    carries it on **every row** — a disclaimer in a header the row left behind did not travel
+    with the claim it qualifies. It was missing from both while the page rendered it four times
+    (code review of #13).
+    """
+    exported = Transcript.of(a_three_turn_conversation(), thread_id=THREAD)
+
+    payload = json.loads(as_json(exported))
+    rows = read_csv(as_csv(exported))
+
+    assert payload["disclaimer"] == DISCLAIMER
+    assert "disclaimer" in CSV_COLUMNS
+    cells = [row[CSV_COLUMNS.index("disclaimer")] for row in rows[1:]]
+    assert cells and set(cells) == {DISCLAIMER}, "on every row, not only the first"
 
 
 def test_a_download_is_named_for_the_conversation_it_came_from():
