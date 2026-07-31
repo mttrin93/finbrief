@@ -18,10 +18,17 @@ keeps across reruns (`thread_id`, `messages`, `sink_offset`, `questions_asked`) 
 widget key and is re-created by the widget on the run that carries a submission; and
 `@st.cache_resource` is process-scoped, so it is untouched by a script that never calls the
 cached function.
+
+**And the key list is derived from `Home.py`, not typed here.** `home_session_keys()` parses
+that file's AST, because the alternative is the field-name-literal weakness this repo keeps
+catching: a list of five string literals is a test that cannot notice a *seventh* key, which is
+precisely the thing the test is for (code review of #14). `app/` is not importable — the pages
+are scripts Streamlit execs — so the source is read rather than the module.
 """
 
 from __future__ import annotations
 
+import ast
 import io
 import logging
 from pathlib import Path
@@ -31,7 +38,81 @@ from streamlit.testing.v1 import AppTest
 
 from finbrief.observability.logging_setup import configure_logging, log_event, turn
 
-PAGE = str(Path(__file__).parents[1] / "app" / "pages" / "1_Analytics.py")
+APP = Path(__file__).parents[1] / "app"
+PAGE = str(APP / "pages" / "1_Analytics.py")
+HOME = APP / "Home.py"
+
+#: `st.session_state`'s own methods, which are not keys. Attribute access is how Streamlit
+#: exposes both, so a walk over `st.session_state.<name>` picks up `.get` and `.pop` too.
+_SESSION_STATE_METHODS = frozenset(
+    {"get", "pop", "setdefault", "keys", "values", "items", "clear", "update", "to_dict"}
+)
+
+#: The three of those methods that take a key as their **first argument**, which is a fourth
+#: spelling and the one this parser missed at first: `QUESTION_KEY` reaches session state only
+#: through `st.session_state.get(QUESTION_KEY)`, so filtering the method name and stopping there
+#: dropped it. The equality in
+#: `test_the_derived_home_key_list_is_the_one_home_actually_uses` is what
+#: caught that, which is the argument for pinning a parser with one rather than with a subset.
+_KEYED_METHODS = frozenset({"get", "pop", "setdefault"})
+
+
+def home_session_keys() -> frozenset[str]:
+    """Every `session_state` key `app/Home.py` touches, **read out of its source**.
+
+    Derived rather than typed, and the reason is the field-name-literal weakness this repo has
+    caught repeatedly: the first version of the isolation test below listed five keys as string
+    literals, so a *seventh* key added to `Home.py` would not have been noticed by the one test
+    whose job is to know what `Home.py` owns (code review of #14). `app/` is not an importable
+    package — the pages are scripts Streamlit execs — so the source is parsed.
+
+    **Four spellings, because `Home.py` uses four**: `st.session_state.messages` for the keys it
+    keeps across reruns, `st.session_state[PENDING_QUESTION_KEY]` by subscript, and
+    `st.session_state.get(QUESTION_KEY)` / `.pop(...)`, where the key is an *argument* and not
+    the attribute — the last of which this walk missed on its first pass. Module constants are
+    resolved to their values in all three of the latter.
+    """
+    tree = ast.parse(HOME.read_text(encoding="utf-8"))
+    constants = {
+        target.id: node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name) and isinstance(node.value.value, str)
+    }
+
+    def named(node: ast.expr) -> str | None:
+        """A key written as a literal, or as a module constant resolved to its value."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return constants.get(node.id)
+        return None
+
+    def on_session_state(node: ast.expr) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "session_state"
+
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        # `st.session_state.messages`
+        if on_session_state(getattr(node, "value", None)) and isinstance(node, ast.Attribute):
+            if node.attr not in _SESSION_STATE_METHODS:
+                keys.add(node.attr)
+        # `st.session_state[QUESTION_KEY]`
+        elif on_session_state(getattr(node, "value", None)) and isinstance(node, ast.Subscript):
+            if (key := named(node.slice)) is not None:
+                keys.add(key)
+        # `st.session_state.get(QUESTION_KEY)` — the key is an argument, not the attribute.
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(func := node.func, ast.Attribute)
+            and func.attr in _KEYED_METHODS
+            and on_session_state(func.value)
+            and node.args
+            and (key := named(node.args[0])) is not None
+        ):
+            keys.add(key)
+    return frozenset(keys)
 
 
 @pytest.fixture
@@ -820,19 +901,50 @@ def test_the_page_never_builds_the_cached_agent(page, seeded, agent_builds):
     assert agent_builds == []
 
 
+def test_the_derived_home_key_list_is_the_one_home_actually_uses():
+    """The parser behind the isolation test, bound — because an empty set would pass it.
+
+    `home_session_keys()` reads `app/Home.py`'s AST, and a walk that silently matched nothing
+    would make the test below vacuous while looking thorough: it would assert that none of *no*
+    keys appear. So the derived set is pinned against what `Home.py` demonstrably does — both
+    spellings, and the constant-resolved pair — with an equality rather than a subset, since a
+    key
+    the parser invents is as much a defect as one it misses.
+    """
+    keys = home_session_keys()
+
+    assert keys == {
+        # The four `Home.py` keeps across reruns, reached as attributes.
+        "thread_id",
+        "messages",
+        "sink_offset",
+        "questions_asked",
+        # And the two reached by subscript through a module constant.
+        "question",
+        "pending_question",
+    }
+
+
 def test_the_page_writes_no_session_state_key_the_main_page_owns(page, seeded):
     """The other half of the isolation claim a one-script test can assert.
 
-    `app/Home.py` owns these five keys and reads them on every rerun. This page is a reader of a
-    file and has no state of its own, so any of them appearing here would mean it had started
-    keeping some — which is how a second page comes to disturb the first.
+    The keys are **derived from `app/Home.py`'s source**, not listed here: the first version
+    typed
+    five literals, so a seventh key added to `Home.py` would have gone unchecked by the one test
+    whose subject is what `Home.py` owns (code review of #14). `home_session_keys()` is the walk
+    and the test above is what stops it passing on an empty set.
+
+    This page is a reader of a file and keeps no state at all, so *any* of those keys appearing
+    here would mean it had started keeping some — which is how a second page comes to disturb
+    the
+    first.
     """
     logger, _ = seeded
     a_session(logger)
 
     page.run()
 
-    for key in ("thread_id", "messages", "sink_offset", "questions_asked", "pending_question"):
+    for key in sorted(home_session_keys()):
         assert key not in page.session_state, f"{key} belongs to app/Home.py"
 
 
