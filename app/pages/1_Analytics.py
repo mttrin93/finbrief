@@ -8,11 +8,10 @@ instrument belongs where the behaviour is produced and a page is only ever a rea
 
 **Five states, five sentences, no empty charts.** `FINBRIEF_LOG_FILE` unset, named but never
 written, naming a path that will not open, written but holding no events, and readable are five
-different things, and the first four each stop here with the sentence that fits. Below that
-every panel keeps the same rule: a
-figure nothing measured says so where the number would have been. That is the trap the sidebar's
-spend meter hit during #13 — a panel that vanishes, or renders `0`, cannot be told apart from a
-broken feature.
+different things, and the first four each stop here with the sentence that fits. Below that each
+panel keeps the same rule: a figure nothing measured says so where the number would have been.
+That is the trap the sidebar's spend meter hit during #13 — a panel that vanishes, or renders
+`0`, cannot be told apart from a broken feature.
 
 **It touches nothing `app/Home.py` owns.** No `st.session_state` key it writes, and no call to
 `shared_agent()` — the `@st.cache_resource` agent carries ADR-0008's two-session isolation
@@ -166,7 +165,7 @@ def tally_chart(counted: Tally, *, what: str, height: int = 220) -> None:
         )
 
 
-# --- The header: which of the four states this sink is in --------------------------------
+# --- The header: which of the five states this sink is in --------------------------------
 
 
 def render_header(sink: Sink) -> bool:
@@ -242,20 +241,15 @@ def render_header(sink: Sink) -> bool:
     columns[3].metric("Malformed lines", f"{sink.malformed:,}")
     if sink.first_event is not None and sink.last_event is not None:
         st.caption(
+            # **The pool, on the line that already names it.** The caption under the title
+            # already says these are the harness's own lines; what it does not say is the
+            # scope, and that is the half worth keeping — ADR-0011's T10 amendment records what
+            # forgetting it costs: a planner p50 over 13 appended runs published under a header
+            # claiming the figures were one run's. No field distinguishes an app session from an
+            # evaluation run, so the page states the pool rather than guessing at it.
             f"Spanning {sink.first_event:%Y-%m-%d %H:%M} to "
-            f"{sink.last_event:%Y-%m-%d %H:%M} UTC."
+            f"{sink.last_event:%Y-%m-%d %H:%M} UTC — the whole file, not one session or run."
         )
-    # **The caveat that qualifies every number below it**, and it is above them rather than in a
-    # footnote for that reason. ADR-0011's T10 amendment is the record of what it costs to
-    # forget: a planner p50 over 13 appended runs, published in an artifact whose own header
-    # claimed the figures were one run's.
-    st.info(
-        "**This is the whole file, which is every run that ever named it** — app sessions, "
-        "evaluation runs and smoke runs in one append-only stream. No field distinguishes "
-        "them, and this page does not guess: the figures below are the file's, not a session's "
-        "and not a run's.",
-        icon=":material/layers:",
-    )
     return True
 
 

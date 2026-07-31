@@ -373,7 +373,9 @@ def test_a_populated_log_renders_its_header_and_its_panels(page, seeded):
     # the total (code review of #14).
     assert "Lines parsed" in body
     assert "Malformed lines" in body
-    assert "every run that ever named it" in body
+    # The pool the figures belong to, which nothing else on the page says — folded into the span
+    # line rather than carried by a callout that restated the caption under the title.
+    assert "the whole file, not one session or run" in body
     assert charts(page), "a populated log draws charts"
 
 
