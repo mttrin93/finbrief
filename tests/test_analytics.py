@@ -873,6 +873,43 @@ def test_any_one_of_the_four_tool_events_alone_makes_the_panel_measured(sink, se
     assert tool_summary(events(path)).measured is True
 
 
+def test_an_unavailable_tool_is_tallied_by_tool_and_by_error_type(sink):
+    """The cross-tab the ticket asked for, which the tool-only tally is not.
+
+    "`get_recent_news` failed 40 times" and "…40 times on `HTTPError`" are different findings,
+    and only the second tells a reader whether one source is down or one ticker will not parse.
+    The first version aggregated the tool alone (code review of #14).
+    """
+    logger, path = sink
+    log_event(logger, "tool_unavailable", tool="get_recent_news", ticker="F", error="HTTPError")
+    log_event(logger, "tool_unavailable", tool="get_recent_news", ticker="X", error="HTTPError")
+    log_event(logger, "tool_unavailable", tool="get_recent_news", ticker="F", error="Timeout")
+    log_event(logger, "tool_unavailable", tool="get_stock_data", ticker="F", error="Timeout")
+
+    tools = tool_summary(events(path))
+    assert tools.unavailable.rows == (("get_recent_news", 3), ("get_stock_data", 1))
+    assert tools.unavailable_by_error.rows == (
+        ("get_recent_news · HTTPError", 2),
+        ("get_recent_news · Timeout", 1),
+        ("get_stock_data · Timeout", 1),
+    )
+    assert tools.unavailable_by_error.absent == 0
+
+
+def test_a_pair_tally_files_a_line_missing_either_half_as_absent(sink):
+    # A `tool_unavailable` with a tool and no error type cannot say which tool failed how, and
+    # filing it under the tool alone would put a row in a cross-tab that is not a pair.
+    logger, path = sink
+    log_event(logger, "tool_unavailable", tool="get_recent_news", error="HTTPError")
+    log_event(logger, "tool_unavailable", tool="get_recent_news")  # before `error` existed
+    log_event(logger, "tool_unavailable", error="HTTPError")
+
+    tools = tool_summary(events(path))
+    assert tools.unavailable_by_error.rows == (("get_recent_news · HTTPError", 1),)
+    assert tools.unavailable_by_error.absent == 2
+    assert tools.unavailable_by_error.lines == 3
+
+
 def test_the_tool_summary_publishes_no_cache_hit_rate(sink):
     """A deliberate absence, asserted so it cannot be added without a decision.
 

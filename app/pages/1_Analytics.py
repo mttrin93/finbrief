@@ -379,6 +379,13 @@ def render_agent(log) -> None:
             f"count and are in no part of that rate — absent, not divergent."
         )
     st.markdown(f"Turn latency: {figures(behaviour.turn_latency)}")
+    # **Both were aggregated and rendered nowhere** (code review of #14), and "searches per
+    # turn" is one of the figures the ticket names — a p50 of 1 over turns that mostly search
+    # once is a different picture from a mean, which is why the whole `Distribution` prints.
+    st.markdown(
+        f"Searches per turn: {figures(behaviour.searches_per_turn, unit='search(es)')}  \n"
+        f"Finance calls per turn: {figures(behaviour.finance_calls, unit='call(s)')}"
+    )
     st.markdown("**Tools chosen**")
     tally_chart(behaviour.tools_used, what="tool selections")
     render_citations(log)
@@ -439,14 +446,23 @@ def render_tools(log) -> None:
         "about. A question answered from the filings alone names no ticker in the log — the "
         "lines carry counts and lengths, never the question."
     )
+    # The explicit field, printed rather than left as the input to a rate that cannot be
+    # computed — see the caption below. It was aggregated and rendered nowhere.
+    st.markdown(f"Age of the data served: {figures(tools.age_seconds, unit='s')}")
     st.markdown("**Refusals, failures and stale fallbacks**")
     tally_chart(tools.refused, what="validation refusals")
     tally_chart(tools.unavailable, what="unavailable sources")
+    # Tool **and** error type, the cross-tab the ticket asked for and the tally above is not:
+    # "`get_recent_news` failed 40 times" and "…40 times on `HTTPError`" are different findings,
+    # and only the second distinguishes a source that is down from a ticker that will not parse.
+    # Both are drawn, because the coarser count is what a reader looks at first.
+    tally_chart(tools.unavailable_by_error, what="unavailable sources by error type")
     tally_chart(tools.stale_fallbacks, what="stale fallbacks")
     st.caption(
         "There is no cache hit rate here on purpose: `age_seconds` is rounded to whole seconds "
         "at the emitter, so a hit 400 ms after a fetch is indistinguishable from a miss. The "
-        "stale rate and the fallback count are explicit fields, so they are what is reported."
+        "stale rate, the age above and the fallback count are explicit fields, so they are "
+        "what is reported."
     )
 
 

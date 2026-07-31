@@ -672,6 +672,72 @@ def test_the_gate_panel_keeps_its_verdict_heading_when_the_classifier_never_ran(
     assert "No classifier verdicts in this log" in body
 
 
+def test_every_aggregate_the_agent_and_tool_panels_compute_has_a_renderer(page, seeded):
+    """A figure aggregated and rendered nowhere is work nobody can read.
+
+
+    Four shipped that way — `searches_per_turn`, `finance_calls`, `age_seconds` and an
+    `Arm.hits` that could be deleted with every test still green (code review of #14). This
+    walks the dataclasses rather than listing the fields, so a fifth aggregate added without
+    a surface fails here instead of waiting for the next review.
+
+    **Seeded so every panel is measured and every tally is empty**, which is the only state
+    where a renderer proves itself in text: `tally_chart` draws a `vega_lite_chart` when it
+    has rows and `AppTest` puts nothing from it in the element text, so a chart cannot be
+    distinguished from a missing call. Its *absence* sentence names the panel's own `what`
+    string, and that can be. One `stale_fallback` makes `ToolSummary.measured` true with
+    every other tool tally empty; one bare `agent_turn` does the same for `AgentBehaviour`.
+    """
+    from dataclasses import fields
+
+    from finbrief.observability.analytics import AgentBehaviour, ToolSummary
+
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(logger, "agent_turn", latency_ms=4200)
+        log_event(logger, "stale_fallback", source="quotes", key="AAPL", age_seconds=120)
+
+    page.run()
+
+    body = text(page)
+    #: The string on the page that proves each field has a renderer. For a `Tally` that is the
+    #: absence sentence `tally_chart` prints, because a drawn chart leaves no text behind.
+    renders = {
+        # AgentBehaviour
+        "turns": "turn(s)",
+        "searches": "search(es)",
+        "divergence": "divergence: **not measured**",
+        "grounded": "grounded: **not measured**",
+        "searched": "searched the KB: **not measured**",
+        "tools_used": "No tool selections in this log",
+        "searches_per_turn": "Searches per turn: **not measured**",
+        "finance_calls": "Finance calls per turn: **not measured**",
+        "turn_latency": "Turn latency: p50",
+        # ToolSummary
+        "calls": "**0** successful call(s)",
+        "by_tool": "No tool calls in this log",
+        "by_ticker": "No tool calls with a ticker in this log",
+        "stale": "served stale: **not measured**",
+        "age_seconds": "Age of the data served: **not measured**",
+        "refused": "No validation refusals in this log",
+        "unavailable": "No unavailable sources in this log",
+        "unavailable_by_error": "No unavailable sources by error type in this log",
+        "stale_fallbacks": "Refusals, failures and stale fallbacks",
+    }
+    # Rendered only when non-zero, which is the whole contract — each has its own test above.
+    conditional = {"divergence_absent"}
+
+    for owner in (AgentBehaviour, ToolSummary):
+        for field in fields(owner):
+            if field.name in conditional:
+                continue
+            assert field.name in renders, (
+                f"{owner.__name__}.{field.name} is aggregated and this test does not know "
+                f"where the page renders it — give it a surface, or delete it"
+            )
+            assert renders[field.name] in body, f"{owner.__name__}.{field.name}"
+
+
 # --- Isolation from the main page --------------------------------------------------------
 
 

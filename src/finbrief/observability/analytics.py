@@ -436,6 +436,26 @@ def tally_each(events: Iterable[Event], field: str, *, label: str) -> Tally:
     return Tally(label=label, rows=_ordered(counter), lines=len(selected), absent=absent)
 
 
+def tally_pair(events: Iterable[Event], first: str, second: str, *, label: str) -> Tally:
+    """Count the `first` × `second` pairs across `events` — one row per observed combination.
+
+    A cross-tab as a composite key rather than a nested mapping, because the consumer is a bar
+    chart and a chart wants rows. A line missing **either** field is absent: a
+    `tool_unavailable` with a tool and no error type cannot say which tool failed how, and
+    filing it under the tool alone would put a row in this tally that is not a pair.
+    """
+    selected = list(events)
+    counter: Counter[str] = Counter()
+    absent = 0
+    for event in selected:
+        left, right = event.field(first), event.field(second)
+        if left is None or right is None:
+            absent += 1
+        else:
+            counter[f"{left} · {right}"] += 1
+    return Tally(label=label, rows=_ordered(counter), lines=len(selected), absent=absent)
+
+
 def distribution(events: Iterable[Event], field: str, *, label: str) -> Distribution:
     """`field`'s numeric values across `events`, and how many lines carried none.
 
@@ -792,6 +812,11 @@ class ToolSummary:
     age_seconds: Distribution
     refused: Tally
     unavailable: Tally
+    #: `tool_unavailable` as **tool × error type**, which is what the ticket asked for and what
+    #: `unavailable` alone is not: "`get_recent_news` failed 40 times" and "`get_recent_news`
+    #: failed 40 times on `HTTPError`" are different findings, and only the second says whether
+    #: one source is down or one ticker is unparseable (code review of #14).
+    unavailable_by_error: Tally
     stale_fallbacks: Tally
 
     @property
@@ -826,6 +851,9 @@ def tool_summary(log: EventLog) -> ToolSummary:
         age_seconds=distribution(calls, "age_seconds", label="data age"),
         refused=tally(log.of("tool_refused"), "reason", label="refusal"),
         unavailable=tally(log.of("tool_unavailable"), "tool", label="tool"),
+        unavailable_by_error=tally_pair(
+            log.of("tool_unavailable"), "tool", "error", label="tool × error"
+        ),
         stale_fallbacks=tally(log.of("stale_fallback"), "source", label="source"),
     )
 
@@ -977,13 +1005,19 @@ def spend_over_time(log: EventLog) -> SpendOverTime:
 
 @dataclass(frozen=True, slots=True)
 class Arm:
-    """One `strategy` × `translation` configuration, and the retrievals that ran under it."""
+    """One `strategy` × `translation` configuration, and the retrievals that ran under it.
+
+    There was a `hits` distribution here too, aggregated and rendered nowhere — deleting it
+    left every test green, which is what a field nothing consumes looks like (code review of
+    #14). The count behind each cell is `latency.count`, which is what the ticket asked for; the
+    number of chunks a retrieval returned is `k`, a configured constant, and a distribution over
+    it says nothing a reader of this panel wants.
+    """
 
     label: str
     strategy: str
     translation: bool
     latency: Distribution
-    hits: Distribution
 
 
 @dataclass(frozen=True, slots=True)
@@ -1025,7 +1059,6 @@ def retrieval_latency(log: EventLog) -> RetrievalLatency:
             strategy=strategy,
             translation=translated,
             latency=distribution(events, "latency_ms", label=_arm_label(strategy, translated)),
-            hits=distribution(events, "hits", label="hits"),
         )
         for (strategy, translated), events in sorted(
             grouped.items(), key=lambda row: (-len(row[1]), row[0])
