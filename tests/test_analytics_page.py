@@ -284,10 +284,44 @@ def test_a_populated_log_renders_its_header_and_its_panels(page, seeded):
 
     body = text(page)
     assert str(path) in body
-    # The header's three counts, and the caveat that qualifies everything under them.
+    # The header's four counts, and the caveat that qualifies everything under them.
     assert "Events" in body
+    # **Not derivable from the two beside it**, which is why the header carries it:
+    # `read_events`
+    # skips blank lines, so events plus malformed is a lower bound on what was read rather than
+    # the total (code review of #14).
+    assert "Lines parsed" in body
+    assert "Malformed lines" in body
     assert "every run that ever named it" in body
     assert charts(page), "a populated log draws charts"
+
+
+def test_the_header_counts_the_lines_it_read_and_not_the_lines_in_the_file(page, seeded):
+    """ "Lines parsed" is what the reader looked at, and blank lines are not among them.
+
+    `read_events` skips a blank line entirely — it is in neither `events` nor `malformed` — so
+    the
+    header's own count is the honest denominator that `malformed` is a share of, and it is not
+    the
+    file's line count. Asserted with blanks in the file so the two numbers genuinely differ.
+    """
+    logger, path = seeded
+    with turn("t:1"):
+        log_event(logger, "agent_turn", searches=1, verbatim_searches=1, latency_ms=4200)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n\n")
+        handle.write("not an event\n")
+
+    page.run()
+
+    body = text(page)
+    assert "Lines parsed" in body
+    # One event plus one unreadable line. The two blanks are in neither, and the file has four.
+    assert "2" in body and "not an event" not in body
+    metrics = {block.label: block.value for block in page.metric}
+    assert metrics["Events"] == "1"
+    assert metrics["Lines parsed"] == "2"
+    assert metrics["Malformed lines"] == "1"
 
 
 def test_the_activity_panel_counts_screenings_turns_and_says_why_they_differ(page, seeded):
@@ -570,6 +604,35 @@ def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
     # it as missed.
     assert "first term alone" in body
     assert "recorded as missed" in body
+
+
+def test_a_kept_planner_refusal_is_named_with_nothing_excluded_beside_it(page, seeded):
+    """A measurement that was a clause of a caption about two other counts.
+
+    "N planners ran and returned nothing and are kept" was inside the exclusion sentence, so a
+    log
+    with nothing excluded — the ordinary case — never said it. A real fact about planner
+    behaviour
+    suppressed by the absence of two unrelated counts (code review of #14).
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(
+            logger,
+            "query_translation",
+            max_sub_queries=3,
+            sub_queries=0,
+            latency_ms=700,
+            input_tokens=180,
+            output_tokens=4,
+        )
+
+    page.run()
+
+    body = text(page)
+    assert "Excluded and counted" not in body, "nothing was excluded in this log"
+    assert "1 planner round(s) ran and returned no sub-query" in body
+    assert "bias the p50 upward" in body
 
 
 def test_the_retrieval_panel_points_at_the_measurement_of_record(page, seeded):

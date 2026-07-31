@@ -159,6 +159,18 @@ class Sink:
     def malformed(self) -> int:
         return 0 if self.log is None else self.log.malformed
 
+    @property
+    def lines(self) -> int:
+        """Lines that were **parsed** — events plus the ones that could not be read as events.
+
+        Reported because it is not derivable from the two numbers beside it: `read_events` skips
+        blank lines entirely, so they are in neither count and `events + malformed` is a
+        *lower bound* on the file's lines rather than the total (code review of #14). The ticket
+        asks the header for "lines parsed", and this is the honest reading of that — what the
+        reader looked at, which is the denominator `malformed` is a share of.
+        """
+        return self.events + self.malformed
+
 
 def open_sink(path: Path | str | None) -> Sink:
     """Resolve the sink at `path` into one of `SinkState`'s five cases.
@@ -623,8 +635,16 @@ def gate_summary(
         by_layer=tally(blocks, "layer", label="layer"),
         by_rule=tally(blocks, "rule", label="rule"),
         classifier_ran=_rate(screenings, "classifier_ran", label="classifier reached"),
+        # Over the screenings the classifier **ran** for, which is the population a verdict
+        # breakdown is about — and the filter is on `classifier_ran` rather than on
+        # `classifier_verdict is not None`, which is what it was. Filtering on the field being
+        # tallied makes `Tally.absent` structurally zero: a third state the type reports and
+        # this
+        # call could never produce, so the number said nothing (code review of #14). Keyed on
+        # `classifier_ran`, an absent verdict on a line where layer 3 *did* run is a real
+        # absence — a fail-open, which `FAIL_OPEN_EVENTS` counts and this now shows as `absent`.
         verdicts=tally(
-            [e for e in screenings if e.field("classifier_verdict") is not None],
+            [e for e in screenings if e.field("classifier_ran")],
             "classifier_verdict",
             label="verdict",
         ),

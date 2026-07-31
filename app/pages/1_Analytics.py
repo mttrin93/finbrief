@@ -232,10 +232,14 @@ def render_header(sink: Sink) -> bool:
         return False
 
     st.markdown(f"Reading `{sink.path}`")
-    columns = st.columns(3)
+    columns = st.columns(4)
     columns[0].metric("Events", f"{sink.events:,}")
-    columns[1].metric("Size", f"{sink.size_bytes / 1024:,.0f} KiB")
-    columns[2].metric("Malformed lines", f"{sink.malformed:,}")
+    # **Not derivable from the two beside it**, which is why it is a metric of its own: blank
+    # lines are skipped by the reader and counted in neither, so a reader adding events to
+    # malformed would get a lower bound on what was read (code review of #14).
+    columns[1].metric("Lines parsed", f"{sink.lines:,}")
+    columns[2].metric("Size", f"{sink.size_bytes / 1024:,.0f} KiB")
+    columns[3].metric("Malformed lines", f"{sink.malformed:,}")
     if sink.first_event is not None and sink.last_event is not None:
         st.caption(
             f"Spanning {sink.first_event:%Y-%m-%d %H:%M} to "
@@ -602,8 +606,18 @@ def render_planner(log) -> None:
         st.caption(
             f"Excluded and counted: {planner.unmetered_lines} line(s) reported no tokens, so "
             f"no model was called, and {planner.disabled_lines} had the planner disabled by "
-            f"configuration. {planner.refusals_kept} planner(s) ran and returned nothing and "
-            f"are **kept** — a refusal still paid for a full round."
+            f"configuration."
+        )
+    # **Its own sentence, because it is its own measurement.** This was a clause of the
+    # exclusion
+    # caption, so a log with nothing excluded — the ordinary case — never said how many planners
+    # ran and refused, which is a real fact about planner behaviour suppressed by the absence of
+    # two unrelated counts (code review of #14).
+    if planner.refusals_kept:
+        st.caption(
+            f"{planner.refusals_kept} planner round(s) ran and returned no sub-query, and are "
+            f"**kept** in the figures above — a refusal still paid for a full chat round, and "
+            f"dropping them would bias the p50 upward."
         )
 
 

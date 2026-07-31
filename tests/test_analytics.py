@@ -515,6 +515,30 @@ def test_the_gate_summary_never_carries_the_normalised_question(sink):
     assert "instructions" not in repr(gate).replace("override-instructions", "")
 
 
+def test_a_classifier_that_ran_and_returned_no_verdict_is_an_absence_not_a_gap(sink):
+    """`Tally.absent` here was structurally zero, so the number it reported said nothing.
+
+    The verdict tally filtered on `classifier_verdict is not None` and then tallied
+    `classifier_verdict` — filtering on the field being counted, which makes the type's third
+    state unreachable by construction (code review of #14). Keyed on `classifier_ran` instead,
+    an
+    absent verdict on a line where layer 3 *did* run is a real absence: the fail-open, which is
+    the one thing about this layer worth seeing beside its verdicts.
+    """
+    logger, path = sink
+    a_screening(logger, classifier_ran=True, classifier_verdict="safe")
+    a_screening(logger, classifier_ran=True, classifier_verdict="injection", blocked=True)
+    # Layer 3 ran and the provider failed: `classify` returns `undecided` and writes no verdict.
+    a_screening(logger, classifier_ran=True, classifier_verdict=None)
+    # And a denylisted question, which never reached layer 3 at all — not this population.
+    a_screening(logger, blocked=True, layer="denylist", rule="x", classifier_ran=False)
+
+    gate = gate_summary(events(path))
+    assert gate.verdicts.rows == (("injection", 1), ("safe", 1))
+    assert gate.verdicts.lines == 3, "the screenings layer 3 ran for"
+    assert gate.verdicts.absent == 1, "it ran and returned nothing — a fail-open, not a gap"
+
+
 def test_the_gate_summary_reports_its_latency_against_both_budgets(sink):
     logger, path = sink
     for latency in (900, 950, 1100):
