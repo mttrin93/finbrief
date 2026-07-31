@@ -425,7 +425,7 @@ and Hard. The numbers `3.1`…`3.21` below are a **local convention of this repo
 list in the order I recorded it, and are used only as stable subsection anchors. [the README's Part 3](../README.md#32-all-21-with-status) is the full 21-row table, named rather than numbered, so
 nothing here depends on the numbering being anyone else's.
 
-Thirteen are built: **Easy 4/4 · Medium 6/10 · Hard 3/7**, against a bar of 2 medium + 1 hard.
+Fourteen are built: **Easy 4/4 · Medium 6/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
 
 ## Easy
 
@@ -1047,6 +1047,75 @@ budget and earned it — a figure cleared on eight of eight passes, with an argu
 numbers printed side by side ever since. Nothing equivalent exists here: there is no argument that
 3.3 seconds of added latency is acceptable for an analyst's turn, and moving the number to
 wherever the measurement landed is pre-registration in reverse.
+
+### 3.19 Advanced analytics dashboard
+
+A second Streamlit page, `app/pages/1_Analytics.py`, over the event log
+[3.14](#314-logging--monitoring) already writes. **It adds no instrument**, and that is the whole
+reason it was affordable: the events, the reader, the `turn_id` join and the per-field token counts
+were built by T8 and had no user-facing surface. Nothing on the page emits a line either — ADR-0011
+is explicit that an event wired to a page can be reached by a human clicking and by nothing else,
+so a dashboard is only ever a reader.
+
+**One reader, and the arithmetic above it.** The page parses nothing.
+`observability/analytics.py` takes an `EventLog` from the one reader and does arithmetic on it,
+which is `observability/spend.py`'s shape for `spend.py`'s reason. The statistics are deliberately
+**not** in `events.py`: that module returns samples, because a p50 belongs to the report quoting it
+and `security/report.py` already owns one — a third owner of that word is how two of them come to
+disagree. The cost of keeping the contract is that `analytics.Rate` and `analytics.p50` duplicate
+the harness's, since the app may not import `evaluation/`; both pairs are **bound by test**, and
+`PLANNER_DISABLED_CAP` is now a third copy in the same binding.
+
+**Four absent states, because a page cannot refuse to render.** The harness's reader raises when it
+has nothing (`latency.load_log`); a page has to say something instead. So the sink resolves to one
+of four: `FINBRIEF_LOG_FILE` unset, named but never written, present but holding no events, and
+readable. The third carries `EventLog.malformed`, because a file nobody wrote and a file whose
+lines are not ours are different problems and only one is worth investigating. Below that every
+panel repeats the rule: a figure nothing measured says so where the number would be, and
+`Distribution.within` returns `bool | None` so "not measured" can never render as "missed". This is
+the trap the cost meter hit during T12 — a panel that disappears cannot be told apart from a broken
+feature.
+
+| panel | reads | the claim it is careful about |
+|---|---|---|
+| Activity | `input_gate`, `agent_turn`, `chat_turn_failed` | screenings come only from the app's chat input, so a harness run contributes turns with no screening — the two counts are not two views of one number |
+| The gate | `input_gate`, the three fail-open events | blocks tallied by layer and rule over **blocked lines only**, since an allowed screening writes `layer: null`; the p50 against **both** budgets, revised beside pre-registered |
+| The agent | `agent_turn`, `citation_markers` | divergence is the *complement* of `verbatim`, and it is measured rather than enforced (ADR-0003) — a resolved pronoun is a permitted rewrite, so it describes behaviour rather than counting faults |
+| Tools | `tool_call`, `tool_refused`, `tool_unavailable`, `stale_fallback` | "tickers the finance tools were called for", not "tickers asked about" — a filings-only question names no ticker in a log that carries no user content |
+| Spend | `agent_turn`, `query_translation` | each field against its own denominator, and the unmetered gate classifier named **unconditionally** |
+| Retrieval | `retrieval` | split by `strategy` × `translation`, and pointed at `evaluation.md` as the measurement of record |
+| The planner | `query_translation` | **one of the two terms** in ADR-0005's clause, which the panel says, because the composed figure is recorded as missed |
+
+**Two omissions are decisions, and tests hold them.** The page renders no blocked question's
+`normalised` text: that field is ADR-0006's one bounded exception to no-user-content, argued for an
+auditor with a grep, and folding does not make a question illegible — so a dashboard is a wider
+surface than the bound was argued for. And it publishes no cache hit rate: `tool_call.age_seconds`
+is `round()`ed at the emitter, so a hit 400 ms after a fetch is indistinguishable from a miss, and
+a rate over it could be wrong invisibly. The stale rate and the fallback count are explicit fields,
+so they are what is reported.
+
+**The pool is the whole file, and the header says so.** A statistic over this sink is a statistic
+over every run and app session that ever named it, and **no field distinguishes an app session from
+an evaluation run** — ADR-0011's T10 amendment is the record of what forgetting that costs. A
+heuristic on `turn_id` shape would be a separation nothing could check, so the page names the pool
+instead of narrowing it.
+
+**What it makes readable that nothing did.** T5's square-bracket adherence rate is reported as
+*unmeasured* in `docs/verification/evaluation.md`, because `citation_markers` is emitted by
+`app/Home.py` and by nothing else and the tool-calling eval's ten live agent turns produced zero
+such lines. This page aggregates them, so the rate exists for any period the sink was enabled during
+real use. It does **not** close the deferral, and it says so where the number is: the population is
+whoever used the app, which is *observational over logged sessions* rather than the controlled
+measurement over a stratified set the artifact asks for.
+
+**Isolation from the main page.** The page builds no agent — the `@st.cache_resource` instance
+carries ADR-0008's two-session isolation guarantee and rebuilding it would discard every session's
+memory — and writes no `session_state` key `app/Home.py` owns. All three claims are asserted, along
+with the file's own size before and after a run, which is the one instrument a misrouted log line
+cannot fool. The **navigation-level** claim — that switching pages leaves the thread id, the
+transcript and the example-button slot alone — is verified **by hand** and named as uncovered in
+`tests/test_analytics_page.py`, because `AppTest` runs one script and cannot navigate. An assertion
+that appeared to cover it would be worse than the gap.
 
 ### 3.21 RAGAs evaluation
 

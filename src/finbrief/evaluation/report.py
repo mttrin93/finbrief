@@ -1198,6 +1198,20 @@ def deferrals_section(measured: Mapping[str, str] | None = None) -> str:
             "is produced rather than to where it is displayed, which is a change to shipped "
             "code "
             "and belongs in its own ticket rather than in a measurement run.",
+            "",
+            # **The pointer, added by T13 (#14).** The instrument stayed where it was; what
+            # changed is that something now *reads* it. The analytics page aggregates
+            # `citation_markers` over whatever sessions the sink holds, which is a weaker claim
+            # than this table wanted and a real one — so it is named here rather than left for a
+            # reader to conclude the rate is unobtainable.
+            "**Where it *is* readable, since T13 (#14).** The analytics page "
+            "(`app/pages/1_Analytics.py`) aggregates these lines over the event log, so the "
+            "rate exists for any period the sink was enabled during real use. It is "
+            "**observational over logged sessions** rather than the controlled measurement "
+            "this row asks for — the population is whoever used the app, not a stratified set "
+            "— and "
+            "it does not close this deferral. It does mean the instrument is no longer "
+            "write-only.",
         ]
     if not measured:
         lines += [

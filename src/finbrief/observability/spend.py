@@ -229,7 +229,7 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
     calls = 0
     floored = 0
     for event in mine:
-        made, is_floor = _calls_behind(event)
+        made, is_floor = calls_behind(event)
         calls += made
         floored += is_floor
         for name in TOKEN_FIELDS:
@@ -253,8 +253,13 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
     )
 
 
-def _calls_behind(event: Event) -> tuple[int, bool]:
+def calls_behind(event: Event) -> tuple[int, bool]:
     """How many paid chat calls one line represents, and whether that number is a floor.
+
+    **Public because `observability/analytics.py` shares it rather than copying it** (T13, #14).
+    The dashboard totals the same two events over a whole sink where this panel totals them over
+    one conversation, and "how many paid calls does this line stand behind" is one question: two
+    implementations of it are two answers the day one of them learns about a new cap.
 
     `agent_turn` says so itself (`calls`, written only once something was reported — so its
     absence means the turn reported no usage at all, not that it made none, and the fallback is

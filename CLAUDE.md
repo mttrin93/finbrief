@@ -390,6 +390,20 @@ the_download_buttons` is the guard).
   the log is shaped as a run's
   record rather than as the harness's primary input — T10 gets provenance from
   `Retrieval.contexts` in-process, and needs the log only for latency, tokens and live-run facts.
+  **Everything above the reader is arithmetic, and it goes in a module of its own**: `spend.py`
+  (one conversation, by `turn_id`) and since T13 `analytics.py` (the whole file, for
+  `app/pages/1_Analytics.py`) both take an `EventLog` and parse nothing. Statistics stay *out* of
+  `events.py` on purpose — it returns samples, because a p50 belongs to the report quoting it and
+  `security/report.py` already owns one; a third owner of that word is how two of them come to
+  disagree. The price of keeping that contract is that `analytics.Rate`/`analytics.p50` duplicate
+  `evaluation/deferrals.Rate`/`evaluation/latency.p50` (the app may not import the harness), so
+  both pairs are **bound by test** like `spend.PLANNER_SILENT_CAP` and
+  `latency.PLANNER_DISABLED_CAP` — which `analytics` makes a third copy of, in the same binding.
+  A page reading this sink owes **four** states and not two, because a page cannot refuse to
+  render the way `latency.load_log` refuses to proceed: off, named-but-never-written,
+  present-but-no-events (carrying `malformed`, since an empty file and a file of unreadable lines
+  are different problems) and readable. `Distribution.within` is `bool | None` for the same
+  reason — "not measured" may not render as "missed".
   Never a secret in `fields`, and **never a question or a query variant**: a variant is derived
   from user content and these lines are kept. Counts, lengths and verdicts only — which is why the
   `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself

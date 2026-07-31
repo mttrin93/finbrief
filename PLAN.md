@@ -452,7 +452,10 @@ retrieval chain and landed with it — ticket T3, #5)
   so this is Tier-1 infrastructure, not polish.
 - Scope: log *capture* only (incl. token counts for cost analysis). The cost-*meter*
   sidebar UI is Tier-2 (Phase 8) — ✅ built there since, on `t11-tier2-app` (#13), and it reads
-  these counts rather than adding an instrument, which is what made it an hour's work.
+  these counts rather than adding an instrument, which is what made it an hour's work. The
+  **analytics dashboard** (Phase 8, `t13-analytics-dashboard`, #14) is the second reader of this
+  same capture and adds no instrument either: it is where `citation_markers` — emitted here,
+  read by nothing until then — finally has something aggregating it.
 - **What was actually left when this phase started, and what it cut** (T8, #10; ADR-0011).
   A gap analysis first: every event this bullet list asks for was already emitted by an
   earlier ticket **except token counts** — `grep usage_metadata` returned nothing across
@@ -533,16 +536,18 @@ work that adds no optional task.
 Ordered by GenAI/RAG skill signal, deployment excepted on portfolio grounds (ADR-0010).
 Each item built only when fully understood; anything not defensible is cut before submission.
 
-> **Everything ticked so far is in the tail (6), and ADR-0010's order above is unchanged.** That
-> batch was picked by cost and demo value against a fixed deadline — four items at under an hour
-> each, on substrate Tier-1 had already built — and **not** by re-ranking the skill-signal
-> ordering, which stands as ADR-0010 wrote it. Said explicitly because the ticks would otherwise
-> read as a priority list whose bottom is finished and whose top is not, which is the opposite of
-> what the ordering claims.
+> **Everything ticked so far is in the tail (6), and ADR-0010's order above is unchanged.** Those
+> five items were picked by cost and demo value against a fixed deadline — each of them on
+> substrate Tier-1 had already built — and **not** by re-ranking the skill-signal ordering, which
+> stands as ADR-0010 wrote it. Said explicitly because the ticks would otherwise read as a
+> priority list whose bottom is finished and whose top is not, which is the opposite of what the
+> ordering claims. The pattern in what got done is worth naming rather than leaving as a
+> coincidence: four of the five *read* an instrument Tier-1 had already built and shipped no new
+> measurement of their own, which is exactly why they cost an hour each.
 
 1. **Deploy + live URL** (Streamlit Community Cloud) + demo GIF — portfolio reach gates the
    value of everything else. **Not built, and still the highest-value remaining item**: it gates
-   the value of every item below it, including the four already ticked in the tail.
+   the value of every item below it, including the five already ticked in the tail.
 2. **Re-ranking** — cross-encoder (`ms-marco-MiniLM-L-6-v2`) re-scoring the RRF-fused top-N
    to top-k. Constrained third A/B axis (shipped default ± rerank only), per-bucket in the
    existing harness. Pre-registered: precision lift on `semantic`, ~neutral on
@@ -583,8 +588,41 @@ Each item built only when fully understood; anything not defensible is cut befor
        row also asks for a `/help`-style command, which is **not** built and is recorded there as
        open: `st.chat_input` is the only text entry, so a slash command means parsing one and
        routing it past the gate — a second door for a convenience.
-   - Still open: auth + watchlists · analytics dashboard · scheduled KB updates (GH Action) ·
-     multi-language toggle.
+   - ✅ **done** (`t13-analytics-dashboard`, #14) — a fifth:
+     - **analytics dashboard** — a second Streamlit page (`app/pages/1_Analytics.py`) over the
+       event log. Like the cost meter above it **reads Phase 6's instrument rather than adding
+       one**, which is what made it affordable: the events, the reader, the `turn_id` join and
+       the per-field token counts were all built by T8 and had no user-facing surface. The
+       arithmetic is `observability/analytics.py` — parsing nothing, taking an `EventLog`, on
+       `spend.py`'s precedent — because `events.py` returns samples and refuses statistics on
+       purpose, and a third owner of the word *p50* is how two of them come to disagree.
+       Seven panels: activity, the gate (blocks by layer and rule, both latency budgets, the
+       three fail-open paths), the agent's behaviour, tools, token spend, retrieval latency and
+       the planner's round.
+     - **What it makes readable that nothing did.** T5's square-bracket adherence rate is
+       reported as *unmeasured* in `docs/verification/evaluation.md` because `citation_markers`
+       is emitted by the app and by nothing else, so T10's ten live agent turns produced none of
+       those lines (ADR-0011's amendment). This page aggregates them. It does **not** close the
+       deferral and says so where the number is: observational over logged sessions, not the
+       controlled measurement over a stratified set the artifact asks for.
+     - **Four absent states, because a page cannot refuse to render.** Sink off, named but never
+       written, present but holding no events, readable — and the third carries the malformed-line
+       count, since an empty file and a file of unreadable lines are different problems. Below
+       that, a figure nothing measured says so where the number would be, and "not measured" can
+       never render as "missed". Two omissions are deliberate and both are asserted by tests: no
+       blocked question's normalised text (ADR-0006's bounded exception was argued for an audit
+       with a grep, not for a dashboard) and no cache hit rate (`age_seconds` is rounded at the
+       emitter, so a hit inside a second is indistinguishable from a miss).
+     - **The pool is the whole file, stated in the header** rather than narrowed by a heuristic on
+       `turn_id` shape — ADR-0011's T10 amendment is the record of what a statistic over a shared
+       sink costs, and a separation nothing can check is this repo's own recurring defect.
+     - Tests are hermetic `AppTest` against a sink seeded through `log_event` itself. The
+       **navigation-level** isolation claim — that switching pages leaves `app/Home.py`'s
+       `thread_id`, transcript and example-button slot alone — is verified by hand and named as
+       uncovered in the test file, because `AppTest` runs one script and cannot navigate; what is
+       covered is the page-level half (no agent built, no key `Home.py` owns written, no log line
+       emitted).
+   - Still open: auth + watchlists · scheduled KB updates (GH Action) · multi-language toggle.
 - *Future work (deferred by ADR-0005):* adaptive per-query strategy routing.
 
 ## 7. Evaluation plan (what "working well" means)
