@@ -317,9 +317,11 @@ def render_gate(log) -> None:
         tally_chart(gate.by_layer, what="blocked screenings")
         st.markdown("**Blocks by rule**")
         tally_chart(gate.by_rule, what="denylist rule hits")
-        if gate.verdicts.measured:
-            st.markdown("**Classifier verdicts**")
-            tally_chart(gate.verdicts, what="classifier verdicts")
+        # Heading and absence sentence unconditionally, like the two tallies above it. The
+        # guard this replaces removed the heading too, so a log where layer 3 never ran looked
+        # like a page missing a panel rather than one reporting that the layer never ran.
+        st.markdown("**Classifier verdicts**")
+        tally_chart(gate.verdicts, what="classifier verdicts")
 
     st.markdown("**Layers that failed open**")
     tally_chart(gate.fail_open, what="fail-open events")
@@ -528,10 +530,14 @@ def render_retrieval(log) -> None:
     pools = retrieval_latency(log)
     if not pools.measured:
         absent("timed retrievals")
-        return
-    st.markdown(f"Every retrieval: {figures(pools.overall)}")
-    for arm in pools.arms:
-        st.markdown(f"`{arm.label}` — {figures(arm.latency)}")
+    else:
+        st.markdown(f"Every retrieval: {figures(pools.overall)}")
+        for arm in pools.arms:
+            st.markdown(f"`{arm.label}` — {figures(arm.latency)}")
+    # **Outside the branch**, and that is the same correction the citation panel needed: this
+    # counts `retrieval` lines with no configuration on them, and gating it on whether any
+    # `latency_ms` was reported hides one absence behind another. A log of untimed retrievals is
+    # exactly where a reader wants to know how many were unattributable.
     if pools.unattributed:
         st.caption(
             f"{pools.unattributed} retrieval line(s) carried no strategy or no translation "

@@ -569,6 +569,72 @@ def test_a_log_of_only_ingest_lines_charts_nothing_and_says_which_panels_are_emp
     assert body.count("Nothing is charted") >= 3
 
 
+def test_the_tools_panel_renders_a_stale_fallback_with_no_call_beside_it(page, seeded):
+    """Two modules, four events, and the panel may not gate one module's on the other's.
+
+    `stale_fallback` is `finance/cache.py`'s, written where a refresh raised and a cached value
+    was served instead; the other three are `tools/finance.py`'s. A session where every fetch
+    fell back and the tool then failed at a later tier writes fallbacks with no successful call,
+    and the panel rendered "No tool calls, refusals or failures" over two of them (code review
+    of #14).
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(logger, "stale_fallback", source="quotes", key="AAPL", age_seconds=120)
+        log_event(logger, "stale_fallback", source="news", key="TSLA", age_seconds=300)
+
+    page.run()
+
+    body = text(page)
+    assert "No tool calls, refusals or failures" not in body, "two of them are right here"
+    assert charts(page), "the fallback tally is a chart"
+    # And the counts that genuinely are absent still say so, rather than reading as zero calls.
+    assert "**0** successful call(s)" in body
+    assert "served stale: **not measured**" in body
+
+
+def test_an_unattributable_retrieval_is_named_even_when_nothing_was_timed(page, seeded):
+    """The same shape one level down: a count gated on a *field*'s absence, not an event's.
+
+    `unattributed` is retrieval lines carrying no configuration, and it sat inside the branch
+    that requires some line to have reported `latency_ms`. A log of untimed retrievals is
+    exactly where a reader wants that number, and it was the case that suppressed it.
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(logger, "retrieval", hits=5)  # no strategy, no translation, no latency
+
+    page.run()
+
+    body = text(page)
+    assert "No timed retrievals in this log" in body, "the absence of a p50 is still stated"
+    assert "1 retrieval line(s) carried no strategy" in body, (
+        "and the count is not hidden by it"
+    )
+
+
+def test_the_gate_panel_keeps_its_verdict_heading_when_the_classifier_never_ran(page, seeded):
+    # A denylisted question never reaches layer 3, so `classifier_verdict` is absent on every
+    # line. The heading is owed anyway: a missing heading reads as a missing feature, which is
+    # the distinction this whole page is built to keep.
+    logger, _ = seeded
+    with turn("t:1"):
+        a_screening(
+            logger,
+            blocked=True,
+            layer="denylist",
+            rule="override-instructions",
+            classifier_ran=False,
+            classifier_verdict=None,
+        )
+
+    page.run()
+
+    body = text(page)
+    assert "Classifier verdicts" in body
+    assert "No classifier verdicts in this log" in body
+
+
 # --- Isolation from the main page --------------------------------------------------------
 
 

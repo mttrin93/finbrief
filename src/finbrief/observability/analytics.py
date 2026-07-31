@@ -772,7 +772,23 @@ class ToolSummary:
 
     @property
     def measured(self) -> bool:
-        return self.calls > 0 or self.refused.measured or self.unavailable.measured
+        """Whether **any** of this panel's four events arrived.
+
+        `stale_fallbacks` is in the list, and its absence from it was the third instance of
+        absence-swallowing-absence on this branch (code review of #14). The four events do not
+        come from one place: `tool_call`, `tool_refused` and `tool_unavailable` are
+        `tools/finance.py`'s, and `stale_fallback` is `finance/cache.py`'s — written on the path
+        where a refresh raised and a cached value was served instead. A session where every
+        fetch fell back and the tool then failed at a later tier writes fallbacks with no
+        successful call beside them, and the panel said "No tool calls, refusals or failures in
+        this log" over two of them.
+        """
+        return (
+            self.calls > 0
+            or self.refused.measured
+            or self.unavailable.measured
+            or self.stale_fallbacks.measured
+        )
 
 
 def tool_summary(log: EventLog) -> ToolSummary:

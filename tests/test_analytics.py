@@ -784,6 +784,57 @@ def test_the_tool_summary_splits_calls_refusals_and_failures(sink):
     assert tools.stale_fallbacks.rows == (("quotes", 1),)
 
 
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param(
+            lambda logger: log_event(
+                logger, "stale_fallback", source="quotes", key="AAPL", age_seconds=120
+            ),
+            id="stale_fallback",
+        ),
+        pytest.param(
+            lambda logger: log_event(
+                logger,
+                "tool_refused",
+                tool="get_stock_data",
+                argument_chars=6,
+                reason="too_long",
+            ),
+            id="tool_refused",
+        ),
+        pytest.param(
+            lambda logger: log_event(
+                logger,
+                "tool_unavailable",
+                tool="get_recent_news",
+                ticker="F",
+                error="HTTPError",
+            ),
+            id="tool_unavailable",
+        ),
+        pytest.param(lambda logger: a_tool_call(logger), id="tool_call"),
+    ],
+)
+def test_any_one_of_the_four_tool_events_alone_makes_the_panel_measured(sink, seed):
+    """One test per event, because the panel reads four and they come from two modules.
+
+    `stale_fallback` was missing from `measured`, so a log holding only those rendered "No tool
+    calls, refusals or failures" over two of them — the third instance of
+    absence-swallowing-absence on this branch (code review of #14). It is not a hypothetical
+    pairing: `tool_call`/`tool_refused`/`tool_unavailable` are `tools/finance.py`'s and
+    `stale_fallback` is `finance/cache.py`'s, written where a refresh raised and the cache was
+    served instead, so a session can produce the fourth without any of the first three.
+
+    Parametrised over all four rather than asserting the one that broke, on this repo's rule
+    that a guard covers the paths it claims: a fifth event added to this panel gets a row here.
+    """
+    logger, path = sink
+    seed(logger)
+
+    assert tool_summary(events(path)).measured is True
+
+
 def test_the_tool_summary_publishes_no_cache_hit_rate(sink):
     """A deliberate absence, asserted so it cannot be added without a decision.
 
