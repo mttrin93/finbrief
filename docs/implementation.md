@@ -963,7 +963,12 @@ from `Retrieval`'s own return value against the golden set's chunk ids, so a rev
 re-derive it. The shipping default's per-bucket results, with `[min–max] n` because ADR-0005
 requires the spread beside every mean:
 
-The table is in [`docs/verification/evaluation.md`](verification/evaluation.md), for all six arms and all five columns.
+| bucket | section recall | section precision | filer precision |
+|---|---|---|---|
+| semantic | 1.000 [1.000–1.000] n=6 | 0.629 [0.200–1.000] n=7 | 0.829 [0.400–1.000] n=7 |
+| exact-identifier | 1.000 [1.000–1.000] n=7 | 0.486 [0.200–1.000] n=7 | 0.886 [0.600–1.000] n=7 |
+| tool-augmented | 0.857 [0.000–1.000] n=7 | 0.514 [0.000–0.800] n=7 | 0.857 [0.600–1.000] n=7 |
+| multi-hop | 0.929 [0.500–1.000] n=7 | 0.571 [0.200–0.800] n=7 | 0.771 [0.400–1.000] n=7 |
 
 All six arms, all five columns, and the ablations are in
 [`evaluation.md`](verification/evaluation.md). Two reading rules travel with them.
@@ -1003,9 +1008,8 @@ The audit's own table is in [`docs/verification/evaluation.md`](verification/eva
 **4 of 18** pre-registered comparisons carry a measurement. The rest are statements about the
 sample — and the reason is arithmetic, not luck. The exact two-sided p of a paired signed-rank
 test cannot fall below `2 / 2**m` for `m` differing questions, so α=0.05 is reachable only from
-**m ≥ 6**:
-
-The arithmetic is tabulated in [`docs/verification/evaluation.md`](verification/evaluation.md).
+**m ≥ 6**. The arithmetic, `m` by `m`, is tabulated in
+[`evaluation.md`](verification/evaluation.md).
 
 So at the floor of 6 differing questions the effect must be **perfectly unanimous**, and at 7
 exactly one question may disagree. **This design can only resolve near-unanimous effects, at any
@@ -1062,7 +1066,12 @@ the same date, where the reference must state each basis rather than imply compa
 
 **Per-bucket RAGAs, all four metrics, shipping default:**
 
-The sixteen bucket x arm rows are in [`docs/verification/evaluation.md`](verification/evaluation.md).
+| bucket | faithfulness | answer relevancy ⚠ | context precision | context recall |
+|---|---|---|---|---|
+| semantic | 0.892 [0.636–1.000] n=7 | 0.908 [0.749–1.000] n=7 | 0.529 [0.000–1.000] n=7 | 0.571 [0.000–1.000] n=7 |
+| exact-identifier | 0.643 [0.000–1.000] n=7 | 0.903 [0.745–0.945] n=7 | 0.874 [0.367–1.000] n=7 | 1.000 [1.000–1.000] n=7 |
+| tool-augmented | 0.914 [0.667–1.000] n=7 | not comparable — 5/7 noncommittal | 0.401 [0.000–1.000] n=7 | 0.619 [0.000–1.000] n=7 |
+| multi-hop | 0.582 [0.000–1.000] n=7 | 0.827 [0.671–0.944] n=6 (+1 noncommittal, excluded) | 0.370 [0.000–1.000] n=7 | 0.509 [0.143–1.000] n=7 |
 
 Over all 28 rows on that arm: faithfulness **0.758**, context precision **0.543**, context recall
 **0.675**, and the free deterministic section recall **0.944** (n=27, excluding the one

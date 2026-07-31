@@ -833,29 +833,92 @@ def test_every_security_figure_the_docs_quote_is_in_the_suites_artifact(figure, 
 _BUCKET_CELL = re.compile(r"\d\.\d{3} \[\d\.\d{3}[–-]\d\.\d{3}\] n=\d+")
 
 
-def test_the_per_bucket_tables_live_in_the_artifact_and_nowhere_else():
-    """No document keeps a second copy of the A/B or RAGAs per-bucket tables.
+#: The shipping-default arm, spelled as the artifact's own row label.
+_SHIPPING_DEFAULT_ARM = "hybrid + translation (shipping default)"
 
-    **This is the inverted form of the binding it replaces** (T11 follow-up). While the README
-    was one document it reproduced those tables for the shipping-default arm, and this test
-    bound all 28 cells to `evaluation.md`. The split replaced each table with a link, because a
-    table one hop away beats a second copy that can go stale — so what is worth enforcing is no
-    longer "the copy agrees" but "there is no copy".
+#: `(the artifact heading the table sits under, how many of its metric columns the docs
+#: reproduce)` — the two per-bucket tables AC-1 of #12 names by hand.
+#:
+#: The A/B table carries five metric columns and the docs reproduce the first three; the two
+#: chunk-level columns stay artifact-only, and the prose beside the table says so. The RAGAs
+#: table is reproduced whole.
+PER_BUCKET_TABLES = (
+    ("## Per-bucket A/B — the deterministic retrieval metrics", 3),
+    ("## RAGAs — all four metrics, per bucket", 4),
+)
 
-    It is not a vacuous check: re-pasting any `mean [min-max] n=` table into any of the four
-    documents fails it, and the message says what to do instead. The artifact is
-    `docs/verification/evaluation.md`, and `report.py` is what renders those cells.
+
+def _artifact_bucket_rows(heading: str, columns: int) -> dict[str, tuple[str, ...]]:
+    """`{bucket: the shipping-default arm's first `columns` cells}`, from one artifact table.
+
+    Read out of `evaluation.md` rather than listed here, so the expectation is the measurement:
+    a list of cells typed into this file would be a third copy, and the copy a test trusts.
+    """
+    artifact = EVALUATION.read_text(encoding="utf-8")
+    start = artifact.index(heading)
+    end = artifact.find("\n## ", start + len(heading))
+    section = artifact[start : end if end != -1 else len(artifact)]
+
+    rows = {}
+    for line in section.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) > columns + 1 and cells[1] == _SHIPPING_DEFAULT_ARM:
+            rows[cells[0]] = tuple(cells[2 : 2 + columns])
+
+    assert len(rows) == 4, (
+        f"expected the four stratified buckets under {heading!r} on the "
+        f"{_SHIPPING_DEFAULT_ARM!r} arm; found {sorted(rows)}. If the artifact's table shape "
+        f"changed, this reader has to change with it."
+    )
+    return rows
+
+
+@pytest.mark.parametrize(("heading", "columns"), PER_BUCKET_TABLES)
+def test_the_per_bucket_tables_the_docs_reproduce_are_the_artifacts_own(heading, columns):
+    """Every `mean [min–max] n=` cell the docs print is the cell `evaluation.md` rendered.
+
+    #12's AC-1 names these two tables — *"README includes architecture, per-bucket RAGAs/A-B
+    tables, …"* — so they are reproduced rather than linked, and the staleness that argues for
+    linking is answered here instead: each row is rebuilt from the artifact's own
+    shipping-default row and asserted whole. A re-run that moves one cell fails this.
+
+    **Bound as a whole row, not as a bag of cells** (T11 follow-up). An unordered membership
+    check passes when two columns are transposed, which is the same wrong number in a
+    right-looking table; asserting the row asserts the column order too.
+    """
+    reproduced = prose(IMPLEMENTATION)
+    missing = [
+        f"| {bucket} | {' | '.join(cells)} |"
+        for bucket, cells in _artifact_bucket_rows(heading, columns).items()
+        if flat(f"| {bucket} | {' | '.join(cells)} |") not in reproduced
+    ]
+
+    assert not missing, (
+        f"implementation.md's copy of {heading!r} disagrees with "
+        f"docs/verification/evaluation.md on {len(missing)} row(s): {missing[:1]}. Those "
+        f"tables are rendered by `scripts/evaluate.py`; requote from the file it writes."
+    )
+
+
+def test_no_other_document_keeps_a_second_copy_of_a_per_bucket_cell():
+    """The tables are reproduced **once**, in the document bound to the artifact above.
+
+    The inverse half, and the one that survives the README's split into linked documents: a cell
+    pasted into the README or `findings.md` is a copy nothing binds, and it is the copy a
+    reviewer reads first. `implementation.md` is excluded here precisely because it is the file
+    `test_the_per_bucket_tables_the_docs_reproduce_are_the_artifacts_own` covers.
     """
     found = {
         f"{path.name}: {cell}"
         for path in DOCUMENTS
+        if path != IMPLEMENTATION
         for cell in _BUCKET_CELL.findall(path.read_text(encoding="utf-8"))
     }
 
     assert not found, (
-        f"{len(found)} per-bucket cell(s) are quoted in prose: {sorted(found)[:3]}. Those "
-        f"tables are rendered by `scripts/evaluate.py` into docs/verification/evaluation.md; "
-        f"link to it rather than keeping a copy that a re-run will silently outdate."
+        f"{len(found)} per-bucket cell(s) are quoted outside implementation.md: "
+        f"{sorted(found)[:3]}. Link to docs/verification/evaluation.md rather than keeping a "
+        f"copy that a re-run will silently outdate."
     )
 
 
