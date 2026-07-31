@@ -40,8 +40,33 @@ from finbrief.prompts import (
     query_translation_prompt,
 )
 
-REPORT = Path(__file__).parents[1] / "docs" / "verification" / "ingest-report.md"
-README = Path(__file__).parents[1] / "README.md"
+ROOT = Path(__file__).parents[1]
+REPORT = ROOT / "docs" / "verification" / "ingest-report.md"
+README = ROOT / "README.md"
+
+#: The README's linked depth (T11 follow-up, #12). The README was a 1,709-line document that
+#: could not be read in one pass; it is now a ten-minute tour and three files it links to.
+#: **A binding does not weaken because its subject moved** — each assertion below targets the
+#: file the text landed in, and the docstring says which. What would weaken it is retargeting
+#: at "any of the four", which is why only the figure lists (whose figures are legitimately
+#: spread across files) use `prose()`.
+IMPLEMENTATION = ROOT / "docs" / "implementation.md"
+FINDINGS = ROOT / "docs" / "findings.md"
+LIMITATIONS = ROOT / "docs" / "limitations.md"
+DOCUMENTS = (README, IMPLEMENTATION, FINDINGS, LIMITATIONS)
+
+
+def prose(*paths: Path) -> str:
+    """The named documents, whitespace-flattened and concatenated.
+
+    Defaults to all four. Flattened because these files wrap their prose and the panel and
+    the artifacts do not, which is the same reason every README assertion here has always
+    flattened first: the alternative is a test that dictates where a sentence may break.
+    """
+    return " ".join(
+        " ".join(path.read_text(encoding="utf-8").split()) for path in (paths or DOCUMENTS)
+    )
+
 
 #: A gate-table row: `JPM    FY2025    39,177    112,774    394,858    ->Item 7`. The
 #: fiscal year is matched but not captured — it differs by filer (NVDA is FY2026), which is
@@ -284,10 +309,13 @@ def test_the_readme_states_the_same_live_data_scope_the_app_does():
     #
     # Bound to the *derivations*, not to a literal: change `QUOTE_TTL_SECONDS` and this fails
     # until the prose follows, which is the whole point.
-    readme = " ".join(README.read_text(encoding="utf-8").split())
-
-    assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in readme
-    assert f"{ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY} calls a day" in readme
+    #
+    # **Retargeted, not dropped** (T11 follow-up): the TTL sentence moved to
+    # `docs/implementation.md`'s tool-calling section and the free-tier budget to
+    # `docs/limitations.md`'s yfinance row. Each is asserted against the file it is in, so a
+    # figure cannot satisfy this test from a document that does not make the claim.
+    assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in prose(IMPLEMENTATION)
+    assert f"{ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY} calls a day" in prose(LIMITATIONS)
     # The app's own sentence agrees, so the two cannot drift apart in opposite directions.
     assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in LIVE_DATA_SCOPE
 
@@ -297,7 +325,7 @@ def test_the_readmes_worked_peer_example_is_a_real_cluster_of_the_right_size():
     # TSLA, GM" — which is `PeerComparison.basis`' sentence typed out by hand. A curation change
     # that moved Ford or renamed the cluster would leave a worked example on the front page
     # describing a comparison the tool does not make.
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+    readme = prose(IMPLEMENTATION)  # moved with the tool-calling section (T11 follow-up)
     peers = PEERS["F"]
     cluster = next(name for name, members in CLUSTERS.items() if "F" in members)
 
@@ -310,7 +338,7 @@ def test_the_readmes_coverage_sentence_is_the_one_the_tool_emits():
     # is measured: JPM and BAC report no `debtToEquity`, so a `banks` leverage comparison rests
     # on GS alone. Both halves are bound — the count comes from the cluster, and the sentence
     # from the same f-string the card renders.
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+    readme = prose(IMPLEMENTATION)  # moved with the tool-calling section (T11 follow-up)
     bank_peers = PEERS["JPM"]
 
     assert f"1 of {len(bank_peers)} peers reported this" in readme
@@ -334,7 +362,8 @@ def test_the_readmes_layer_counts_are_the_ones_the_code_has():
     from finbrief.security.corpus import BENIGN_QUESTIONS, PLANTED_PAYLOADS
     from finbrief.security.denylist import RULES
 
-    readme = README.read_text(encoding="utf-8")
+    # Moved with the prompt-injection section (T11 follow-up).
+    readme = prose(IMPLEMENTATION)
 
     # Digits, not words, precisely so this binding is a substring check and not a translation
     # table: "five" and 5 are the same claim and only one of them can be compared to `len()`.
@@ -376,7 +405,10 @@ def test_the_readme_names_both_latency_budgets():
         GATE_LATENCY_BUDGET_PREREGISTERED_MS,
     )
 
-    readme = README.read_text(encoding="utf-8")
+    # The gate's latency paragraph moved with its section (T11 follow-up). The README still
+    # names the pre-registered figure in its limitations summary; the pair is asserted where
+    # the pair is stated, since it is the *pairing* this test exists to protect.
+    readme = prose(IMPLEMENTATION)
 
     assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in readme
     assert f"{GATE_LATENCY_BUDGET_MS} ms" in readme
@@ -393,7 +425,10 @@ def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
     """
     from finbrief.config import GATE_LOGGED_INPUT_MAX_CHARS
 
-    readme = README.read_text(encoding="utf-8")
+    # Moved with the logging section (T11 follow-up), and the count-of-one is asserted over
+    # **all four** documents rather than one: the second copy this test forbids would be just
+    # as harmful in a different file, and the split is exactly the event that could create one.
+    readme = prose()
 
     # An equality on the figure, not a bound: `"500" in readme` would pass on any prose that
     # happened to contain the digits, which is the accident `test_the_readme_names_both_latency
@@ -416,39 +451,44 @@ def _figures(text: str) -> str:
     return text.replace("−", "-").replace("–", "-").replace(" of ", "/")
 
 
-@pytest.mark.parametrize(
-    "figure",
-    [
-        "-0.087",  # H1's paired delta, the bucket hybrid exists to win
-        "3212",  # the p50 translation adds
-        "1500",  # ADR-0005's pre-registered budget
-        "4/18",  # comparisons that carried a measurement
-        "8/8",  # the agent-vs-original divergence rate
-        # The determinism result, which is a headline claim in the README and therefore has to
-        # be bound like every other. `report.Determinism` emits these as table cells for this
-        # reason — a prose assertion cannot be diffed against a measurement, and the artifact
-        # not carrying them parseably was the cheaper half of the problem to fix.
-        "168",  # retrieval cells re-paid from scratch, all six arms
-        "672",  # cells replayed on context-body keys, zero misses
-        # Layer 4's residue never appears without its controls, so both are bound.
-        "6/6",  # recommendations not refused
-        "10/10",  # positive controls refused, which is what makes the 6/6 a measurement
-        # T11's README quotes the default arm's four summary figures, the planner's own p50 and
-        # the cache provenance behind the determinism claim. Added here rather than left to
-        # `test_the_readmes_per_bucket_cells_are_the_artifacts_own` below, which binds the cells
-        # of a `mean [min-max] n=` table and cannot see a figure quoted in prose.
-        "0.758",  # RAGAs faithfulness, shipping default, 28 rows
-        "0.543",  # context precision, same
-        "0.675",  # context recall, same
-        "0.944",  # section recall — free, deterministic
-        "1838",  # the planner's chat round, p50
-        "770",  # cells replayed from cache on the run the artifact describes
-        "0.900",  # leakage-free precision on the hybrid arms
-        "2/8",  # planner stability on the artifact's own run, quoted beside the 0-2 range
-        "100",  # tool-selection accuracy, and the verbatim-divergence rate
-    ],
+#: `(figure, the documents that must state it)` — the inventory of every copy.
+#:
+#: **Per document, not over the four concatenated**, and the difference is a mutation this
+#: file's own author let through once: with the four joined, a stale `20/20` in
+#: `implementation.md` was satisfied by the correct one in the README, so the detail file could
+#: rot behind a right-looking summary. A figure that legitimately appears twice is bound twice,
+#: and adding a copy means adding it here — which is the point, since an unlisted copy is
+#: exactly the second copy this file exists to prevent.
+EVALUATION_FIGURES = (
+    ("-0.087", (README, FINDINGS)),  # H1's paired delta, the bucket hybrid exists to win
+    ("3212", (README, FINDINGS, LIMITATIONS)),  # the p50 translation adds
+    ("1500", (README, FINDINGS, LIMITATIONS)),  # ADR-0005's pre-registered budget
+    ("4/18", (README, IMPLEMENTATION)),  # comparisons that carried a measurement
+    ("8/8", (README, FINDINGS)),  # the agent-vs-original divergence rate
+    # The determinism result, which is a headline claim and therefore has to be bound like every
+    # other. `report.Determinism` emits these as table cells for this reason — a prose assertion
+    # cannot be diffed against a measurement.
+    ("168", (README, FINDINGS)),  # retrieval cells re-paid from scratch, all six arms
+    ("672", (README, FINDINGS)),  # cells replayed on context-body keys, zero misses
+    # Layer 4's residue never appears without its controls, so both are bound.
+    ("6/6", (FINDINGS,)),  # recommendations not refused
+    ("10/10", (FINDINGS,)),  # positive controls refused, which makes the 6/6 a measurement
+    ("0.758", (README, IMPLEMENTATION)),  # RAGAs faithfulness, shipping default, 28 rows
+    ("0.543", (README, IMPLEMENTATION)),  # context precision, same
+    ("0.675", (README, IMPLEMENTATION)),  # context recall, same
+    ("0.944", (IMPLEMENTATION,)),  # section recall — free, deterministic
+    ("770", (README, IMPLEMENTATION)),  # cells replayed from cache on the run described
+    ("0.900", (IMPLEMENTATION,)),  # leakage-free precision on the hybrid arms
+    ("2/8", (FINDINGS,)),  # planner stability on the artifact's own run
+    ("100", (README, IMPLEMENTATION, FINDINGS)),  # tool selection, and the divergence rate
+    # `1838` (the planner's p50) is deliberately absent: it was only ever quoted inside the
+    # latency table, and that table is now single-copy in the artifact, so no prose quotes the
+    # figure and a binding for it would assert against nothing (T11 follow-up).
 )
-def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
+
+
+@pytest.mark.parametrize(("figure", "documents"), EVALUATION_FIGURES)
+def test_every_evaluation_figure_the_docs_quote_is_in_the_artifact(figure, documents):
     """A figure retyped into prose is a figure that will disagree with its source.
 
     `report.headline_section`'s own docstring says exactly that, and `test_grounding_scope.py`
@@ -457,7 +497,6 @@ def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
     review of #11). The next run moves these numbers and the README would keep asserting the old
     ones, in the section that states the project's headline conclusion.
     """
-    readme = _figures(README.read_text(encoding="utf-8"))
     artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
 
     # **Matched as a whole number, not as a substring**, which is the difference between a
@@ -467,9 +506,13 @@ def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
     def quotes(text: str) -> bool:
         return re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", text) is not None
 
-    assert quotes(readme), f"the README no longer quotes {figure}; update this list too"
+    for document in documents:
+        assert quotes(_figures(prose(document))), (
+            f"{document.name} no longer quotes {figure}. If the copy moved, move it in "
+            f"EVALUATION_FIGURES too; if it went, drop the entry and say why."
+        )
     assert quotes(artifact), (
-        f"the README quotes {figure} and the committed artifact does not. Re-run "
+        f"the docs quote {figure} and the committed artifact does not. Re-run "
         f"`scripts/evaluate.py` and requote from the file it writes."
     )
 
@@ -495,7 +538,7 @@ CITED_MARKER_COMPOSITION = "22 fully supported / 40 partly supported / 8 not sup
 
 def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
     """The README leads with the split, and the artifact is where it comes from."""
-    readme = README.read_text(encoding="utf-8")
+    readme = prose()
     artifact = EVALUATION.read_text(encoding="utf-8")
 
     assert CITED_MARKER_COMPOSITION in artifact, (
@@ -616,7 +659,7 @@ def test_every_parameter_the_readme_tabulates_is_the_one_config_holds():
     implementation*. Each already has a single source of truth, so the README is a second copy
     by construction and this is where the two are allowed to disagree.
     """
-    readme = readme_flat()
+    readme = prose(IMPLEMENTATION)  # the two tables moved (T11 follow-up)
     missing = [
         f"{label} | {value}"
         for label, value in _derived_parameter_rows()
@@ -684,7 +727,7 @@ def test_the_readmes_universe_table_is_the_ingest_runs_own_numbers():
     eye — an accession is nineteen digits and a chunk count is a measurement. This is the
     largest block of retyped figures T11 adds, so it is bound cell by cell, not by a total.
     """
-    readme = README.read_text(encoding="utf-8")
+    readme = IMPLEMENTATION.read_text(encoding="utf-8")  # moved (T11 follow-up)
     evidence = _universe_table_rows(report_text())
 
     gate = report_text()
@@ -722,18 +765,19 @@ def test_the_readmes_chunk_total_is_the_sum_the_artifact_reports():
 SECURITY = Path(__file__).parents[1] / "docs" / "verification" / "security-gate.md"
 
 
-@pytest.mark.parametrize(
-    "figure",
-    [
-        "20/20",  # attacks stopped by the *expected* layer
-        "28/28",  # benign analyst questions allowed
-        "22/22",  # answer verdicts correct, both directions
-        "5/5",  # planted payloads retrieved *and* resisted
-        "564 ms",  # p50 over every screening
-        "670 ms",  # p50 over the escalated screenings — the one to read
-    ],
+#: `(figure, the documents that must state it)`, on the rule `EVALUATION_FIGURES` explains.
+SECURITY_FIGURES = (
+    ("20/20", (README, IMPLEMENTATION)),  # attacks stopped by the *expected* layer
+    ("28/28", (README, IMPLEMENTATION)),  # benign analyst questions allowed
+    ("22/22", (README, IMPLEMENTATION)),  # answer verdicts correct, both directions
+    ("5/5", (README, IMPLEMENTATION)),  # planted payloads retrieved *and* resisted
+    ("564 ms", (IMPLEMENTATION,)),  # p50 over every screening
+    ("670 ms", (README, IMPLEMENTATION)),  # p50 over the escalated screenings
 )
-def test_every_security_figure_the_readme_quotes_is_in_the_suites_artifact(figure):
+
+
+@pytest.mark.parametrize(("figure", "documents"), SECURITY_FIGURES)
+def test_every_security_figure_the_docs_quote_is_in_the_suites_artifact(figure, documents):
     """The gate's counts are a live run's, so the README quotes them and does not compute them.
 
     `security-gate.md` is regenerated by every suite run and the counts move with the corpus —
@@ -741,15 +785,17 @@ def test_every_security_figure_the_readme_quotes_is_in_the_suites_artifact(figur
     amendment §2). A README carrying last month's counts would be describing a gate that is no
     longer the one in the repo.
     """
-    readme = _figures(README.read_text(encoding="utf-8"))
     artifact = _figures(SECURITY.read_text(encoding="utf-8"))
 
     def quotes(text: str) -> bool:
         return re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", text) is not None
 
-    assert quotes(readme), f"the README no longer quotes {figure}; update this list too"
+    for document in documents:
+        assert quotes(_figures(prose(document))), (
+            f"{document.name} no longer quotes {figure}; update SECURITY_FIGURES too"
+        )
     assert quotes(artifact), (
-        f"the README quotes {figure} and docs/verification/security-gate.md does not. Re-run "
+        f"the docs quote {figure} and docs/verification/security-gate.md does not. Re-run "
         f"`scripts/security_suite.py` and requote from the file it writes."
     )
 
@@ -764,28 +810,29 @@ def test_every_security_figure_the_readme_quotes_is_in_the_suites_artifact(figur
 _BUCKET_CELL = re.compile(r"\d\.\d{3} \[\d\.\d{3}[–-]\d\.\d{3}\] n=\d+")
 
 
-def test_the_readmes_per_bucket_cells_are_the_artifacts_own():
-    """Every `mean [min–max] n=` cell in the README, wherever it sits, is in `evaluation.md`.
+def test_the_per_bucket_tables_live_in_the_artifact_and_nowhere_else():
+    """No document keeps a second copy of the A/B or RAGAs per-bucket tables.
 
-    The README reproduces two per-bucket tables — the deterministic retrieval metrics and the
-    four RAGAs metrics — for the shipping default arm. Those are the numbers a reviewer reads
-    instead of the artifact, so they are the numbers most worth binding, and binding them as
-    cells needs no list to be kept in step with the prose.
+    **This is the inverted form of the binding it replaces** (T11 follow-up). While the README
+    was one document it reproduced those tables for the shipping-default arm, and this test
+    bound all 28 cells to `evaluation.md`. The split replaced each table with a link, because a
+    table one hop away beats a second copy that can go stale — so what is worth enforcing is no
+    longer "the copy agrees" but "there is no copy".
+
+    It is not a vacuous check: re-pasting any `mean [min-max] n=` table into any of the four
+    documents fails it, and the message says what to do instead. The artifact is
+    `docs/verification/evaluation.md`, and `report.py` is what renders those cells.
     """
-    readme = README.read_text(encoding="utf-8")
-    artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
+    found = {
+        f"{path.name}: {cell}"
+        for path in DOCUMENTS
+        for cell in _BUCKET_CELL.findall(path.read_text(encoding="utf-8"))
+    }
 
-    cells = _BUCKET_CELL.findall(readme)
-    assert len(cells) >= 24, (
-        f"expected the README's two per-bucket tables (4 buckets x 3 and x 4 columns); "
-        f"found {len(cells)} cells. If the tables moved, this test needs to know."
-    )
-
-    missing = sorted({cell for cell in cells if _figures(cell) not in artifact})
-    assert not missing, (
-        f"{len(missing)} per-bucket cell(s) in the README are not in "
-        f"docs/verification/evaluation.md: {missing[:3]}. Re-run `scripts/evaluate.py` and "
-        f"requote from the file it writes."
+    assert not found, (
+        f"{len(found)} per-bucket cell(s) are quoted in prose: {sorted(found)[:3]}. Those "
+        f"tables are rendered by `scripts/evaluate.py` into docs/verification/evaluation.md; "
+        f"link to it rather than keeping a copy that a re-run will silently outdate."
     )
 
 
@@ -816,7 +863,7 @@ def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control
     """
     from finbrief.config import MAX_QUESTIONS_PER_SESSION
 
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+    readme = prose(IMPLEMENTATION)  # moved with the rate-limiting section (T11 follow-up)
 
     # A whole number, not a substring: `40` inside `140` is the vacuous match this file's own
     # amendment-four finding is about.
@@ -841,7 +888,10 @@ def test_the_readme_does_not_quote_a_price_as_though_it_were_measured():
     assert settings.input_cost_per_mtok is None, "unpriced is the default"
     assert settings.output_cost_per_mtok is None
 
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+    # The knobs and the no-rate-card argument moved with the spend section; the README's cost
+    # section states the same absence in its own words and is bound by
+    # `test_the_readme_labels_the_dollar_figure_as_an_estimate` (T11 follow-up).
+    readme = prose(IMPLEMENTATION)
     assert "FINBRIEF_INPUT_COST_PER_MTOK" in readme, "the knob is documented"
     assert "no rate card" in readme.lower(), "and so is the reason there is no default"
 
