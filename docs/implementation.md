@@ -794,6 +794,11 @@ back as `None`, `None` averages as nothing, and the number narrows its own denom
 `tests/test_event_log.py` round-trips through both halves, including one event whose field is
 absent, and that test is what forbids the drift.
 
+**27** event types are emitted. Ten of them are below — the ones a reviewer reads a run through,
+not the whole set; the rest are ingest-time and cache-time records. The count is bound to a scan
+of the source (`test_the_readme_states_the_number_of_event_types_the_code_emits`), because a
+table that grows a row is a table whose prose is a stale number.
+
 | event | carries |
 |---|---|
 | `retrieval` | strategy, translation, variant count, per-chunk provenance **by variant index**, latency |

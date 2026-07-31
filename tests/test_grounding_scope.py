@@ -462,6 +462,53 @@ def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
     assert readme.count(f"{GATE_LOGGED_INPUT_MAX_CHARS} characters") == 1
 
 
+#: The first two arguments of a `log_event` call — a logger, then the event name.
+#:
+#: A scan of the source rather than an import, because the names are literals at their call
+#: sites and there is no registry to import: `log_event(logger, "retrieval", …)`. Which is the
+#: point — the alternative to this test is a prose count nobody recomputes.
+_LOG_EVENT_CALL = re.compile(r'log_event\(\s*[\w.()]+,\s*"([a-z_0-9]+)"')
+
+
+def _event_names() -> set[str]:
+    """Every event name the code emits, from the modules that emit one.
+
+    `observability/logging_setup.py` is excluded and that is not a convenience: it *defines*
+    `log_event` and its only match is the `chat_turn` example in the module docstring, which is
+    documentation of the shape rather than a line any run writes.
+    """
+    root = Path(__file__).parents[1]
+    sources = [
+        path
+        for path in [*(root / "src" / "finbrief").rglob("*.py"), *(root / "app").rglob("*.py")]
+        if path.name != "logging_setup.py"
+    ]
+    return {
+        name for path in sources for name in _LOG_EVENT_CALL.findall(path.read_text("utf-8"))
+    }
+
+
+def test_the_readme_states_the_number_of_event_types_the_code_emits():
+    """The README counted **eleven**; the code emits 27 (code review of #12).
+
+    A count in prose is the figure that rots first — every ticket that adds an instrument adds
+    an event and none of them re-counts the sentence. So it is bound like every other derived
+    figure here, and `implementation.md`'s selective table says it is selective rather than
+    letting ten rows read as the whole set.
+    """
+    names = _event_names()
+
+    # A sanity floor on the scan itself, so a regex that stopped matching reports as a broken
+    # scan rather than as prose agreeing with zero.
+    assert "retrieval" in names and "input_gate" in names, sorted(names)
+
+    for document in (README, IMPLEMENTATION):
+        assert f"**{len(names)}** event types" in prose(document), (
+            f"{document.name} no longer states the {len(names)} event types `log_event` "
+            f"emits. Recount from the source rather than editing this test: {sorted(names)}"
+        )
+
+
 EVALUATION = Path(__file__).parents[1] / "docs" / "verification" / "evaluation.md"
 
 

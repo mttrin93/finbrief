@@ -307,7 +307,7 @@ Two to four lines each; the full section for every one is in
   limiting and **not a security control**, since refreshing the page resets it; keys from `.env` or
   `st.secrets`, read once, never logged.
   → [3.13](./docs/implementation.md#313-rate-limiting--api-key-management)
-- **Logging + monitoring** — JSON lines through one emitter and one reader, eleven event types, a
+- **Logging + monitoring** — JSON lines through one emitter and one reader, **27** event types, a
   `turn_id` measured to survive LangGraph's tool executor, an opt-in file sink, and exactly one
   bounded user-derived field. → [3.14](./docs/implementation.md#314-logging--monitoring)
 
