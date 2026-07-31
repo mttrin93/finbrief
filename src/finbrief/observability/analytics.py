@@ -298,6 +298,7 @@ class Distribution:
 
         Interpolating rather than nearest-rank, and bound to `evaluation/latency.p50` by test:
         an even-length sample is precisely where the two could disagree while both look right.
+        Which is why `percentile` **refuses** `0.5` rather than quietly answering differently.
         """
         return float(statistics.median(self.values)) if self.values else None
 
@@ -323,21 +324,39 @@ class Distribution:
 
 
 def percentile(values: Sequence[float], quantile: float) -> float | None:
-    """The nearest-rank percentile of `values`, or `None` over nothing.
+    """The nearest-rank percentile of `values`, or `None` over nothing. **Not the median.**
 
     **An observed value, deliberately, and it is why this is not `statistics.quantiles`.**
-    `p50` interpolates because it must agree with the harness's median; there is no second
-    definition of a p90 in this repo to agree with, so this returns one of the samples — an
-    interpolated p90 over seven observations is a number between two measurements, and what
+    `Distribution.p50` interpolates because it must agree with the harness's median; there is no
+    second definition of a p90 in this repo to agree with, so this returns one of the samples —
+    an interpolated p90 over seven observations is a number between two measurements, and what
     this page reports is what was measured. `statistics.quantiles` also raises below two data
     points, which would make a one-sample panel an exception rather than a figure.
+
+    **So it refuses `0.5`, rather than documenting that it disagrees with `p50` there.** The two
+    rules give different answers on an even-length sample — `[1.0, 2.0]` is `1.5` interpolated
+    and `1.0` nearest-rank — and the first version noted that in prose, which is a trap left
+    armed for whoever adds the next panel. A prose note cannot fail; a `ValueError` can (code
+    review of #14).
     """
+    if quantile == 0.5:
+        raise ValueError(
+            "use Distribution.p50 for a median: it interpolates, to agree with "
+            "evaluation/latency.p50, and this is nearest-rank. On [1.0, 2.0] they are 1.5 and "
+            "1.0, and both look right."
+        )
     if not values:
         return None
     ordered = sorted(values)
-    # `round` before `ceil`, and it is not decoration: `0.9 * 10` is `9.000000000000002` in
-    # binary floating point, so a bare `ceil` returns 10 for ten samples and the p90 of a
-    # ten-sample set becomes its maximum. Measured, which is why the test pins `9.0`.
+    # `round` before `ceil`, and it is not decoration — but not for the reason this comment gave
+    # first, which was wrong and whose test could not have caught it. `0.9 * 10` is exactly
+    # `9.0`, so a bare `ceil` returns 9 and the pinned p90 of a ten-sample set was the same
+    # number either way: the guard was unreachable at the only quantile in use, justified by a
+    # measurement that does not reproduce (code review of #14).
+    #
+    # It *is* reachable, at other quantiles. `0.07 * 100` is `7.000000000000001`, so a bare
+    # `ceil` returns 8 and the 7th percentile of a hundred samples becomes the 8th. That is the
+    # case the test pins, because it is the one that distinguishes this line from its absence.
     rank = math.ceil(round(quantile * len(ordered), 6)) - 1
     return float(ordered[max(0, min(len(ordered) - 1, rank))])
 

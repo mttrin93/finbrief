@@ -15,6 +15,7 @@ the two panels where a renamed field would silently report a measurement about n
 
 import io
 import logging
+import math
 
 import pytest
 
@@ -164,6 +165,43 @@ def test_the_ninetieth_percentile_is_an_observed_value():
     assert percentile(values, 1.0) == 10.0
     assert percentile((5.0,), 0.9) == 5.0
     assert percentile((), 0.9) is None
+
+
+def test_the_rank_is_rounded_before_it_is_ceilinged():
+    """The float guard, pinned at a quantile where it is *reachable*.
+
+    The first version of this test pinned `percentile(1..10, 0.9) == 9.0` and cited it as
+    holding the `round(..., 6)` in place — but `0.9 * 10` is exactly `9.0`, so a bare `ceil`
+    gives 9 too and the assertion passed with the guard deleted. Verified by mutation during the
+    #14 review: all 48 tests in this file stayed green. A guard whose test cannot distinguish it
+    from its own absence is the class CLAUDE.md enumerates, and this one was *inside* code
+    written against a float trap.
+
+    `0.07 * 100` is `7.000000000000001`, which is the case that does distinguish them: a bare
+    `ceil` returns 8, so the 7th percentile of a hundred samples would be the 8th.
+    """
+    hundred = tuple(float(n) for n in range(1, 101))
+    assert percentile(hundred, 0.07) == 7.0
+    assert math.ceil(0.07 * 100) == 8, "without the round, this is the rank it would take"
+    # And the quantile the old comment was about, kept as the ordinary case rather than as the
+    # guard's justification — because that is all it ever was.
+    assert 0.9 * 10 == 9.0, "the comment claimed 9.000000000000002; it is not"
+
+
+def test_a_median_may_not_be_taken_from_the_nearest_rank_rule():
+    """The divergence, enforced rather than documented.
+
+    `Distribution.p50` interpolates so that it agrees with `evaluation/latency.p50`, and this
+    function does not — on `[1.0, 2.0]` they are `1.5` and `1.0`, and both look right. The first
+    version stated that in a docstring, which leaves the trap armed for whoever adds the next
+    panel: a note in prose cannot fail. Refusing the argument can.
+    """
+    with pytest.raises(ValueError, match="Distribution.p50"):
+        percentile((1.0, 2.0), 0.5)
+    # The disagreement the refusal exists for, asserted so the reason is not just claimed.
+    assert Distribution(label="x", values=(1.0, 2.0), absent=0).p50 == 1.5
+    # And nothing in the module asks for it: `p90` is the only caller.
+    assert Distribution(label="x", values=(1.0, 2.0), absent=0).p90 == 2.0
 
 
 # --- Tally: counts by value, with both kinds of nothing reported -------------------------
