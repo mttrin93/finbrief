@@ -45,10 +45,10 @@ REPORT = ROOT / "docs" / "verification" / "ingest-report.md"
 README = ROOT / "README.md"
 
 #: The README's linked depth (T11 follow-up, #12). The README was a 1,709-line document that
-#: could not be read in one pass; it is now a ten-minute tour and three files it links to.
+#: could not be read in one pass; it is now a ten-minute tour and four files it links to.
 #: **A binding does not weaken because its subject moved** — each assertion below targets the
 #: file the text landed in, and the docstring says which. What would weaken it is retargeting
-#: at "any of the four", which is why only the figure lists (whose figures are legitimately
+#: at "any of the five", which is why only the figure lists (whose figures are legitimately
 #: spread across files) use `prose()`.
 IMPLEMENTATION = ROOT / "docs" / "implementation.md"
 FINDINGS = ROOT / "docs" / "findings.md"
@@ -61,7 +61,7 @@ def flat(text: str) -> str:
     """Whitespace-flattened, so a markdown table may wrap and a row still matches.
 
     Table rows are matched as `label | value` fragments rather than whole lines for the same
-    reason `test_the_readme_states_the_same_scope_the_app_does` flattens: the alternative is a
+    reason `test_the_docs_state_the_same_scope_the_app_does` flattens: the alternative is a
     test that dictates the README's column widths.
 
     Blockquote markers are dropped for the same reason whitespace is. A quoted sentence that
@@ -295,7 +295,7 @@ def test_the_tool_description_states_the_scope_the_app_does():
     assert f"{len(UNIVERSE)} companies in FinBrief's Universe" in SEARCH_FILINGS_DESCRIPTION
 
 
-def test_the_readme_states_the_same_scope_the_app_does():
+def test_the_docs_state_the_same_scope_the_app_does():
     # `prompts.py` names the README as a consumer of the scope details, which makes the
     # README a second copy of a sentence the module exists to keep singular. It cannot import
     # from `prompts`, being prose, so the binding is here: the load-bearing facts are
@@ -310,20 +310,20 @@ def test_the_readme_states_the_same_scope_the_app_does():
     # claims it makes — the sentence itself and the pair count — are bound by
     # `test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders` below. Everything
     # this test asserts is a *derived* fact that only the full disclosure states.
-    readme = " ".join(IMPLEMENTATION.read_text(encoding="utf-8").split())
+    implementation = " ".join(IMPLEMENTATION.read_text(encoding="utf-8").split())
     rows = gate_rows(report_text())
     slots = len(UNIVERSE) * len(Section)
     pointers = {ticker for ticker, row in rows.items() if _POINTER_MARKER in row}
 
-    assert f"**{slots - len(pointers)} of {slots}**" in readme
-    assert f"{len(UNIVERSE)} companies in FinBrief's Universe" in readme
-    assert f"Items {', '.join(s.item for s in tuple(Section)[:-1])}" in readme
-    assert ", ".join(sorted(pointers)) in readme
-    assert f"All {len(UNIVERSE)} companies have market-risk grounding" in readme
-    assert f"{len(UNIVERSE) - len(pointers)} have an `Item 7A` Section" in readme
+    assert f"**{slots - len(pointers)} of {slots}**" in implementation
+    assert f"{len(UNIVERSE)} companies in FinBrief's Universe" in implementation
+    assert f"Items {', '.join(s.item for s in tuple(Section)[:-1])}" in implementation
+    assert ", ".join(sorted(pointers)) in implementation
+    assert f"All {len(UNIVERSE)} companies have market-risk grounding" in implementation
+    assert f"{len(UNIVERSE) - len(pointers)} have an `Item 7A` Section" in implementation
 
 
-def test_the_readme_states_the_same_live_data_scope_the_app_does():
+def test_the_docs_state_the_same_live_data_scope_the_app_does():
     # The *other* half of the scope, and it was unbound. T5 added a "What the live figures are,
     # and are not" section to the README that types every number `prompts.LIVE_DATA_SCOPE` and
     # `finance/ratios.py` derive — the 15-minute TTL, a peer set with its `n`, the coverage
@@ -344,29 +344,31 @@ def test_the_readme_states_the_same_live_data_scope_the_app_does():
     assert f"cached for {QUOTE_TTL_SECONDS // 60} minutes" in LIVE_DATA_SCOPE
 
 
-def test_the_readmes_worked_peer_example_is_a_real_cluster_of_the_right_size():
+def test_the_worked_peer_example_is_a_real_cluster_of_the_right_size():
     # The README works Ford's comparison through as an example — "vs. mean of 2 `autos` peers:
     # TSLA, GM" — which is `PeerComparison.basis`' sentence typed out by hand. A curation change
     # that moved Ford or renamed the cluster would leave a worked example on the front page
     # describing a comparison the tool does not make.
-    readme = prose(IMPLEMENTATION)  # moved with the tool-calling section (T11 follow-up)
+    # Moved with the tool-calling section (T11 follow-up).
+    implementation = prose(IMPLEMENTATION)
     peers = PEERS["F"]
     cluster = next(name for name, members in CLUSTERS.items() if "F" in members)
 
-    assert f"mean of {len(peers)} `{cluster}` peers: {', '.join(peers)}" in readme
+    assert f"mean of {len(peers)} `{cluster}` peers: {', '.join(peers)}" in implementation
     assert len(peers) == 2, "the worked example is a three-member cluster, hence n = 2"
 
 
-def test_the_readmes_coverage_sentence_is_the_one_the_tool_emits():
+def test_the_documented_coverage_sentence_is_the_one_the_tool_emits():
     # "1 of 2 peers reported this" is `Metric.coverage_note`'s wording, and the claim around it
     # is measured: JPM and BAC report no `debtToEquity`, so a `banks` leverage comparison rests
     # on GS alone. Both halves are bound — the count comes from the cluster, and the sentence
     # from the same f-string the card renders.
-    readme = prose(IMPLEMENTATION)  # moved with the tool-calling section (T11 follow-up)
+    # Moved with the tool-calling section (T11 follow-up).
+    implementation = prose(IMPLEMENTATION)
     bank_peers = PEERS["JPM"]
 
-    assert f"1 of {len(bank_peers)} peers reported this" in readme
-    assert "rests on GS alone" in readme, "the measured instance, named"
+    assert f"1 of {len(bank_peers)} peers reported this" in implementation
+    assert "rests on GS alone" in implementation, "the measured instance, named"
 
 
 # --------------------------------------------------------------------------------------
@@ -374,7 +376,7 @@ def test_the_readmes_coverage_sentence_is_the_one_the_tool_emits():
 # --------------------------------------------------------------------------------------
 
 
-def test_the_readmes_layer_counts_are_the_ones_the_code_has():
+def test_the_documented_layer_counts_are_the_ones_the_code_has():
     """Every number in the marginal-contribution table is a count of something, so it is bound.
 
     The table is prose in a file that cannot import anything, which is the same problem
@@ -387,27 +389,28 @@ def test_the_readmes_layer_counts_are_the_ones_the_code_has():
     from finbrief.security.denylist import RULES
 
     # Moved with the prompt-injection section (T11 follow-up).
-    readme = prose(IMPLEMENTATION)
+    implementation = prose(IMPLEMENTATION)
 
     # Digits, not words, precisely so this binding is a substring check and not a translation
     # table: "five" and 5 are the same claim and only one of them can be compared to `len()`.
-    assert f"{len(RULES)} rules" in readme
-    assert f"{len(BENIGN_QUESTIONS)} real analyst questions" in readme
+    assert f"{len(RULES)} rules" in implementation
+    assert f"{len(BENIGN_QUESTIONS)} real analyst questions" in implementation
     # Wrapped prose, so the count and its noun can be a line apart.
-    assert f"{len(PLANTED_PAYLOADS)} poisoned" in readme
+    assert f"{len(PLANTED_PAYLOADS)} poisoned" in implementation
     # Layer 4's rule count is in the generated artifact rather than the README; the binding here
     # is only that the README does not name a *different* number of rules for it.
     #
     # **Guarded so the assertion cannot disable itself.** Written as
-    # `len(ADVICE_RULES) == len(RULES) or "…" not in readme`, the whole check evaporated on any
+    # `len(ADVICE_RULES) == len(RULES) or "…" not in implementation`, the whole check
+    # evaporated on any
     # day the two counts happened to coincide (issue #8 review). Skipping it explicitly says so.
     if len(ADVICE_RULES) != len(RULES):
-        assert f"{len(ADVICE_RULES)} rules" not in readme
+        assert f"{len(ADVICE_RULES)} rules" not in implementation
     else:
         pytest.skip("the two rule counts coincide, so the substring cannot distinguish them")
 
 
-def test_the_readme_names_both_latency_budgets():
+def test_the_docs_name_both_latency_budgets():
     """Both, and from `config` — the revised one and the pre-registered one it did not meet.
 
     A README quoting only the budget now being met would turn a revised pre-registration into a
@@ -432,10 +435,10 @@ def test_the_readme_names_both_latency_budgets():
     # The gate's latency paragraph moved with its section (T11 follow-up). The README still
     # names the pre-registered figure in its limitations summary; the pair is asserted where
     # the pair is stated, since it is the *pairing* this test exists to protect.
-    readme = prose(IMPLEMENTATION)
+    implementation = prose(IMPLEMENTATION)
 
-    assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in readme
-    assert f"{GATE_LATENCY_BUDGET_MS} ms" in readme
+    assert f"{GATE_LATENCY_BUDGET_PREREGISTERED_MS} ms" in implementation
+    assert f"{GATE_LATENCY_BUDGET_MS} ms" in implementation
 
 
 def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
@@ -450,7 +453,7 @@ def test_the_readme_names_the_gate_logging_cap_once_and_from_config():
     from finbrief.config import GATE_LOGGED_INPUT_MAX_CHARS
 
     # Moved with the logging section (T11 follow-up), and the count-of-one is asserted over
-    # **all four** documents rather than one: the second copy this test forbids would be just
+    # **all five** documents rather than one: the second copy this test forbids would be just
     # as harmful in a different file, and the split is exactly the event that could create one.
     readme = prose()
 
@@ -524,8 +527,8 @@ def _figures(text: str) -> str:
 
 #: `(figure, the documents that must state it)` — the inventory of every copy.
 #:
-#: **Per document, not over the four concatenated**, and the difference is a mutation this
-#: file's own author let through once: with the four joined, a stale `20/20` in
+#: **Per document, not over the five concatenated**, and the difference is a mutation this
+#: file's own author let through once: with them joined, a stale `20/20` in
 #: `implementation.md` was satisfied by the correct one in the README, so the detail file could
 #: rot behind a right-looking summary. A figure that legitimately appears twice is bound twice,
 #: and adding a copy means adding it here — which is the point, since an unlisted copy is
@@ -734,10 +737,6 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_everywhere(spelling
 # numbers individually is how a binding becomes a decoration.
 
 
-def readme_flat() -> str:
-    return flat(README.read_text(encoding="utf-8"))
-
-
 #: `(row label, the value the README must state)` for every parameter it quotes from `config`.
 #:
 #: Bound as `label | value` and not as the bare value, which would be vacuous for `5` and `10`
@@ -807,7 +806,7 @@ def _derived_parameter_rows() -> tuple[tuple[str, str], ...]:
     )
 
 
-def test_every_parameter_the_readme_tabulates_is_the_one_config_holds():
+def test_every_parameter_the_docs_tabulate_is_the_one_config_holds():
     """The retrieval parameters and every bound, as `label | value` rows bound to `config`.
 
     T11's README tabulates the knobs a reviewer would otherwise have to read the source for —
@@ -815,11 +814,11 @@ def test_every_parameter_the_readme_tabulates_is_the_one_config_holds():
     implementation*. Each already has a single source of truth, so the README is a second copy
     by construction and this is where the two are allowed to disagree.
     """
-    readme = prose(IMPLEMENTATION)  # the two tables moved (T11 follow-up)
+    implementation = prose(IMPLEMENTATION)  # the two tables moved (T11 follow-up)
     missing = [
         f"{label} | {value}"
         for label, value in _derived_parameter_rows()
-        if f"{label} | {value}" not in readme
+        if f"{label} | {value}" not in implementation
     ]
 
     assert not missing, (
@@ -854,7 +853,7 @@ def test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders():
     Verbatim, not paraphrased: `GROUNDING_SCOPE` is the sentence under the app's title *and* the
     opening of four prompts, and a README paraphrase of it is exactly the second copy
     `prompts.py` exists to prevent. The counts inside it are already bound by
-    `test_the_readme_states_the_same_scope_the_app_does`; this binds the wording.
+    `test_the_docs_state_the_same_scope_the_app_does`; this binds the wording.
     """
     # **Both documents**, and that is deliberate: the README's summary and
     # `implementation.md`'s full section each quote the app's sentence, so each is bound to it.
@@ -889,14 +888,14 @@ def _universe_table_rows(text: str) -> dict[str, tuple[str, str]]:
     return {ticker: (accession, chunks) for ticker, accession, chunks in rows}
 
 
-def test_the_readmes_universe_table_is_the_ingest_runs_own_numbers():
+def test_the_documented_universe_table_is_the_ingest_runs_own_numbers():
     """Fifteen rows of ticker, company, cluster, fiscal year, accession and chunk count.
 
     Every cell of it is either `config`'s or the ingest run's, and none of it is derivable by
     eye — an accession is nineteen digits and a chunk count is a measurement. This is the
     largest block of retyped figures T11 adds, so it is bound cell by cell, not by a total.
     """
-    readme = IMPLEMENTATION.read_text(encoding="utf-8")  # moved (T11 follow-up)
+    implementation = IMPLEMENTATION.read_text(encoding="utf-8")  # moved (T11 follow-up)
     evidence = _universe_table_rows(report_text())
 
     gate = report_text()
@@ -909,7 +908,7 @@ def test_the_readmes_universe_table_is_the_ingest_runs_own_numbers():
         f"`{evidence[c.ticker][0]}` | {evidence[c.ticker][1]} |"
         for c in UNIVERSE
     ]
-    missing = [row for row in expected if flat(row) not in flat(readme)]
+    missing = [row for row in expected if flat(row) not in flat(implementation)]
 
     assert not missing, (
         f"the README's Universe table disagrees with docs/verification/ingest-report.md on "
@@ -966,6 +965,47 @@ def test_every_security_figure_the_docs_quote_is_in_the_suites_artifact(figure, 
     assert quotes(artifact), (
         f"the docs quote {figure} and docs/verification/security-gate.md does not. Re-run "
         f"`scripts/security_suite.py` and requote from the file it writes."
+    )
+
+
+#: `{figure: the documents where those digits are a **different** measurement}`.
+#:
+#: An escape hatch with exactly one entry, and it is here rather than absent because the
+#: alternative is an inventory that silently tolerates every collision. `5/5` in the security
+#: artifact is *planted payloads retrieved and resisted*; `5/5` in `demo.md` is ADR-0004 §6's
+#: *correct filer in the top five*. Same digits, unrelated runs — so the copy is declared as
+#: unrelated rather than declared as a copy, which would bind the demo's prose to a suite it
+#: has nothing to do with.
+FIGURE_COINCIDENCES = {"5/5": (DEMO,)}
+
+
+@pytest.mark.parametrize(
+    ("figure", "documents"), (*EVALUATION_FIGURES, *SECURITY_FIGURES), ids=repr
+)
+def test_the_figure_inventories_list_every_copy_of_every_figure(figure, documents):
+    """The half the two tables above promise and neither performed (code review of #12).
+
+    Their docstring says *"an unlisted copy is exactly the second copy this file exists to
+    prevent"* — but each test only walked its **declared** documents, so a figure pasted into a
+    fifth one was invisible to the mechanism whose whole purpose is finding the second copy. A
+    claim in a comment cannot fail (CLAUDE.md); this is the claim, executed.
+
+    An equality over the document set, not a membership test in either direction: a copy that
+    appears where it was not declared and a declaration for a document that dropped it are the
+    same defect seen from two ends, and both are the inventory going stale.
+    """
+    quoted = {
+        document
+        for document in DOCUMENTS
+        if re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", _figures(prose(document)))
+    }
+    expected = set(documents) | set(FIGURE_COINCIDENCES.get(figure, ()))
+
+    assert quoted == expected, (
+        f"{figure} is quoted in {sorted(d.name for d in quoted)} and declared for "
+        f"{sorted(d.name for d in expected)}. Add the new copy to the inventory — or, if "
+        f"those digits are a different measurement there, to FIGURE_COINCIDENCES with the "
+        f"reason."
     )
 
 
@@ -1075,17 +1115,17 @@ def test_the_readme_labels_the_dollar_figure_as_an_estimate():
     `config.py` and `evaluation/cache.py` size a full judged run at ~$1.28 from #11's plan. No
     run wrote it, no artifact carries it, and nothing binds it — so the README states it beside
     the words that say so. This is the mirror of
-    `test_the_readme_does_not_quote_a_price_as_though_it_were_measured`: that one forbids a rate
+    `test_the_docs_do_not_quote_a_price_as_though_it_were_measured`: that one forbids a rate
     card, this one forbids an unlabelled bill.
     """
-    readme = readme_flat()
+    readme = prose(README)
 
     assert "$1.28" in readme, "the estimate is informative and is kept"
     assert "**not a measurement**" in readme, "and labelled, in the same breath"
     assert "No dollar figure in this project comes from a committed artifact" in readme
 
 
-def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control():
+def test_the_docs_state_the_session_cap_and_that_it_is_not_a_security_control():
     """T12 item 6. The number is bound; the disclaimer is bound; both for the same reason.
 
     ADR-0001's amendment records this reversal and puts the danger plainly: a reviewer who
@@ -1095,18 +1135,19 @@ def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control
     """
     from finbrief.config import MAX_QUESTIONS_PER_SESSION
 
-    readme = prose(IMPLEMENTATION)  # moved with the rate-limiting section (T11 follow-up)
+    # Moved with the rate-limiting section (T11 follow-up).
+    implementation = prose(IMPLEMENTATION)
 
     # A whole number, not a substring: `40` inside `140` is the vacuous match this file's own
     # amendment-four finding is about.
-    assert re.search(rf"(?<![\d.\-]){MAX_QUESTIONS_PER_SESSION}(?![\d])", readme), (
+    assert re.search(rf"(?<![\d.\-]){MAX_QUESTIONS_PER_SESSION}(?![\d])", implementation), (
         f"the README no longer states the {MAX_QUESTIONS_PER_SESSION}-question session cap"
     )
-    assert "Refreshing the page resets it" in readme
-    assert "not a security control" in readme
+    assert "Refreshing the page resets it" in implementation
+    assert "not a security control" in implementation
 
 
-def test_the_readme_does_not_quote_a_price_as_though_it_were_measured():
+def test_the_docs_do_not_quote_a_price_as_though_it_were_measured():
     """The absence that has to stay an absence, asserted from the other direction.
 
     Both cost knobs default to unset and the README's argument is that no rate card belongs in
@@ -1123,9 +1164,9 @@ def test_the_readme_does_not_quote_a_price_as_though_it_were_measured():
     # The knobs and the no-rate-card argument moved with the spend section; the README's cost
     # section states the same absence in its own words and is bound by
     # `test_the_readme_labels_the_dollar_figure_as_an_estimate` (T11 follow-up).
-    readme = prose(IMPLEMENTATION)
-    assert "FINBRIEF_INPUT_COST_PER_MTOK" in readme, "the knob is documented"
-    assert "no rate card" in readme.lower(), "and so is the reason there is no default"
+    implementation = prose(IMPLEMENTATION)
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" in implementation, "the knob is documented"
+    assert "no rate card" in implementation.lower(), "and so is the reason there is no default"
 
 
 def test_no_test_imports_through_the_tests_package():
