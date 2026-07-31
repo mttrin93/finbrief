@@ -433,6 +433,19 @@ def _figures(text: str) -> str:
         # Layer 4's residue never appears without its controls, so both are bound.
         "6/6",  # recommendations not refused
         "10/10",  # positive controls refused, which is what makes the 6/6 a measurement
+        # T11's README quotes the default arm's four summary figures, the planner's own p50 and
+        # the cache provenance behind the determinism claim. Added here rather than left to
+        # `test_the_readmes_per_bucket_cells_are_the_artifacts_own` below, which binds the cells
+        # of a `mean [min-max] n=` table and cannot see a figure quoted in prose.
+        "0.758",  # RAGAs faithfulness, shipping default, 28 rows
+        "0.543",  # context precision, same
+        "0.675",  # context recall, same
+        "0.944",  # section recall — free, deterministic
+        "1838",  # the planner's chat round, p50
+        "770",  # cells replayed from cache on the run the artifact describes
+        "0.900",  # leakage-free precision on the hybrid arms
+        "2/8",  # planner stability on the artifact's own run, quoted beside the 0-2 range
+        "100",  # tool-selection accuracy, and the verbatim-divergence rate
     ],
 )
 def test_every_evaluation_figure_the_readme_quotes_is_in_the_artifact(figure):
@@ -493,6 +506,304 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
         "the README must lead with the composition rather than the derived rate: a 31% "
         "full-support rate hides that partial support is the largest bucket."
     )
+
+
+# --------------------------------------------------------------------------------------
+# T11 (#12): the README is the submission, so every table in it is bound to its source
+# --------------------------------------------------------------------------------------
+#
+# The README grew from a status file into the review-facing document, which multiplies the one
+# failure this file exists to prevent: a figure retyped into prose disagrees with its source,
+# and the prose is the copy a reviewer acts on. Three kinds of figure arrive with T11 and each
+# gets a binding of its own kind — the parameters and bounds tables are *derived* and bind to
+# `config`; the Universe table and the suite counts are *measurements* and bind to the artifact
+# that produced them; the per-bucket cells bind as whole cells, because listing forty short
+# numbers individually is how a binding becomes a decoration.
+
+
+def flat(text: str) -> str:
+    """Whitespace-flattened, so a markdown table may wrap and a row still matches.
+
+    Table rows are matched as `label | value` fragments rather than whole lines for the same
+    reason `test_the_readme_states_the_same_scope_the_app_does` flattens: the alternative is a
+    test that dictates the README's column widths.
+
+    Blockquote markers are dropped for the same reason whitespace is. A quoted sentence that
+    wraps inside a `>` block reads as `… for each of > the 15 companies …` once flattened, so a
+    verbatim binding would be asserting the README's line breaks rather than its words.
+    """
+    return " ".join(word for line in text.splitlines() for word in line.lstrip(">").split())
+
+
+def readme_flat() -> str:
+    return flat(README.read_text(encoding="utf-8"))
+
+
+#: `(row label, the value the README must state)` for every parameter it quotes from `config`.
+#:
+#: Bound as `label | value` and not as the bare value, which would be vacuous for `5` and `10`
+#: (CLAUDE.md: prefer a check that exercises the thing). Assembled at call time so a constant
+#: change fails here rather than at import.
+def _derived_parameter_rows() -> tuple[tuple[str, str], ...]:
+    from finbrief.agent.agent import MAX_AGENT_STEPS
+    from finbrief.config import (
+        ANSWER_MAX_RETRIES,
+        ANSWER_TIMEOUT_SECONDS,
+        CHUNK_SIZE_CHARS,
+        DEFAULT_MAX_SUB_QUERIES,
+        FETCH_ATTEMPTS,
+        FETCH_BACKOFF_SECONDS,
+        FETCH_TIMEOUT_SECONDS,
+        GATE_CLASSIFIER_ATTEMPTS,
+        GATE_TIMEOUT_SECONDS,
+        MAX_QUESTION_CHARS,
+        MAX_QUESTIONS_PER_SESSION,
+        NEWS_DEFAULT_DAYS,
+        NEWS_MAX_DAYS,
+        NEWS_MAX_HEADLINES,
+        NEWS_TTL_SECONDS,
+        QUOTE_TTL_SECONDS,
+        RRF_K,
+        TICKER_MAX_CHARS,
+        Settings,
+    )
+    from finbrief.ingestion.chunking import CHUNK_OVERLAP_CHARS
+
+    k = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"}).retrieval_k
+    # One original + at most one ticker form + at most `max_sub_queries` (ADR-0004 amendment),
+    # and twice that many candidate lists under hybrid. Derived here rather than typed, because
+    # the variant budget is what ADR-0005's latency budget is judged against.
+    variants = 1 + 1 + DEFAULT_MAX_SUB_QUERIES
+    assert QUOTE_TTL_SECONDS == NEWS_TTL_SECONDS, "the README states one TTL for both caches"
+
+    return (
+        ("chunk size", f"{CHUNK_SIZE_CHARS} characters"),
+        ("chunk overlap", f"{CHUNK_OVERLAP_CHARS} characters"),
+        ("top-k after fusion", f"{k}"),
+        ("candidate-list depth", f"{k}"),
+        (
+            "query variants",
+            f"1 original + ≤1 ticker form + ≤{DEFAULT_MAX_SUB_QUERIES} "
+            f"sub-queries = {variants}",
+        ),
+        ("candidate lists under hybrid", f"{variants * 2}"),
+        ("RRF constant", f"{RRF_K}"),
+        ("agent steps", f"{MAX_AGENT_STEPS}"),
+        ("question length", f"{MAX_QUESTION_CHARS} characters"),
+        ("questions per session", f"{MAX_QUESTIONS_PER_SESSION}"),
+        ("ticker length", f"{TICKER_MAX_CHARS} characters"),
+        ("news window", f"{NEWS_DEFAULT_DAYS} days by default, clamped to {NEWS_MAX_DAYS}"),
+        ("headlines per card", f"{NEWS_MAX_HEADLINES}"),
+        ("quote / news cache TTL", f"{QUOTE_TTL_SECONDS} seconds"),
+        (
+            "one HTTP request",
+            f"{FETCH_TIMEOUT_SECONDS} seconds, {FETCH_ATTEMPTS} attempts, "
+            f"{FETCH_BACKOFF_SECONDS} s backoff",
+        ),
+        (
+            "gate classifier",
+            f"{GATE_TIMEOUT_SECONDS} seconds, {GATE_CLASSIFIER_ATTEMPTS} attempt",
+        ),
+        ("answering call", f"{ANSWER_TIMEOUT_SECONDS} seconds, {ANSWER_MAX_RETRIES} retries"),
+    )
+
+
+def test_every_parameter_the_readme_tabulates_is_the_one_config_holds():
+    """The retrieval parameters and every bound, as `label | value` rows bound to `config`.
+
+    T11's README tabulates the knobs a reviewer would otherwise have to read the source for —
+    chunk size, `k`, the variant budget, `RRF_K`, and the ten limits in *Technical
+    implementation*. Each already has a single source of truth, so the README is a second copy
+    by construction and this is where the two are allowed to disagree.
+    """
+    readme = readme_flat()
+    missing = [
+        f"{label} | {value}"
+        for label, value in _derived_parameter_rows()
+        if f"{label} | {value}" not in readme
+    ]
+
+    assert not missing, (
+        f"the README's tables no longer state these config-derived values: {missing}. "
+        f"Requote them from `config.py` rather than editing this list."
+    )
+
+
+def test_the_readme_states_the_quote_worst_case_the_demo_has_to_warm_around():
+    """`91.5 s`, and it is a walkthrough instruction rather than trivia (#12's third comment).
+
+    Demo step 3 resolves six quotes through one cache whose lock is held across a retry
+    sequence, so a cold take is the slowest possible take. The figure is `config`'s, so the
+    prose cannot drift from the constant the risk register cites.
+    """
+    from finbrief.config import QUOTE_FETCH_WORST_CASE_SECONDS
+
+    readme = readme_flat()
+
+    assert f"{QUOTE_FETCH_WORST_CASE_SECONDS} s" in readme
+    assert "warm the quote cache" in readme.lower(), "and what to do about it"
+
+
+def test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders():
+    """T11's AC-2 is a UI obligation and this README documents it, so it quotes the constant.
+
+    Verbatim, not paraphrased: `GROUNDING_SCOPE` is the sentence under the app's title *and* the
+    opening of four prompts, and a README paraphrase of it is exactly the second copy
+    `prompts.py` exists to prevent. The counts inside it are already bound by
+    `test_the_readme_states_the_same_scope_the_app_does`; this binds the wording.
+    """
+    readme = readme_flat()
+
+    assert flat(GROUNDING_SCOPE) in readme, (
+        "the README must quote `prompts.GROUNDING_SCOPE` verbatim, not restate it"
+    )
+    # And it names the two constants, so a reader can find the one place the sentence lives.
+    assert "GROUNDING_SCOPE" in readme
+    assert "GROUNDING_SCOPE_DETAILS" in readme
+
+
+def _universe_table_rows(text: str) -> dict[str, tuple[str, str]]:
+    """`{ticker: (accession, chunks)}` from the ingest report's own chunk table.
+
+    A different table from `_GATE_ROW`'s: that one is the gate's character counts, this one is
+    what the run read back out of the persisted collection.
+    """
+    rows = re.findall(
+        r"^\|\s*([A-Z]+)\s*\|\s*FY\d{4}\s*\|\s*`([\d-]+)`\s*\|\s*([\d,]+)\s*\|",
+        text,
+        re.MULTILINE,
+    )
+    assert len(rows) == len(UNIVERSE), "the ingest report's chunk table shape changed"
+    return {ticker: (accession, chunks) for ticker, accession, chunks in rows}
+
+
+def test_the_readmes_universe_table_is_the_ingest_runs_own_numbers():
+    """Fifteen rows of ticker, company, cluster, fiscal year, accession and chunk count.
+
+    Every cell of it is either `config`'s or the ingest run's, and none of it is derivable by
+    eye — an accession is nineteen digits and a chunk count is a measurement. This is the
+    largest block of retyped figures T11 adds, so it is bound cell by cell, not by a total.
+    """
+    readme = README.read_text(encoding="utf-8")
+    evidence = _universe_table_rows(report_text())
+
+    gate = report_text()
+    years = {
+        ticker: re.search(rf"^{ticker}\s+FY(\d{{4}})", gate, re.MULTILINE).group(1)
+        for ticker in evidence
+    }
+    expected = [
+        f"| {c.ticker} | {c.name} | {c.cluster.value} | FY{years[c.ticker]} | "
+        f"`{evidence[c.ticker][0]}` | {evidence[c.ticker][1]} |"
+        for c in UNIVERSE
+    ]
+    missing = [row for row in expected if flat(row) not in flat(readme)]
+
+    assert not missing, (
+        f"the README's Universe table disagrees with docs/verification/ingest-report.md on "
+        f"{len(missing)} row(s): {missing[:2]}. Requote from the artifact."
+    )
+
+
+def test_the_readmes_chunk_total_is_the_sum_the_artifact_reports():
+    """5,842 — asserted as the sum of the artifact's own rows, not as a string it also contains.
+
+    Both the README and the report state the total, so a substring check would pass on two
+    copies of the same stale number. Summing the rows is the check that the total is a total.
+    """
+    evidence = _universe_table_rows(report_text())
+    total = sum(int(chunks.replace(",", "")) for _, chunks in evidence.values())
+
+    assert f"{total:,}" in README.read_text(encoding="utf-8"), (
+        f"the README no longer states the collection's {total:,} chunks"
+    )
+
+
+SECURITY = Path(__file__).parents[1] / "docs" / "verification" / "security-gate.md"
+
+
+@pytest.mark.parametrize(
+    "figure",
+    [
+        "20/20",  # attacks stopped by the *expected* layer
+        "28/28",  # benign analyst questions allowed
+        "22/22",  # answer verdicts correct, both directions
+        "5/5",  # planted payloads retrieved *and* resisted
+        "564 ms",  # p50 over every screening
+        "670 ms",  # p50 over the escalated screenings — the one to read
+    ],
+)
+def test_every_security_figure_the_readme_quotes_is_in_the_suites_artifact(figure):
+    """The gate's counts are a live run's, so the README quotes them and does not compute them.
+
+    `security-gate.md` is regenerated by every suite run and the counts move with the corpus —
+    widening the benign set changes the denominator *and* the latency median (ADR-0006 T7
+    amendment §2). A README carrying last month's counts would be describing a gate that is no
+    longer the one in the repo.
+    """
+    readme = _figures(README.read_text(encoding="utf-8"))
+    artifact = _figures(SECURITY.read_text(encoding="utf-8"))
+
+    def quotes(text: str) -> bool:
+        return re.search(rf"(?<![\d.\-]){re.escape(figure)}(?![\d])", text) is not None
+
+    assert quotes(readme), f"the README no longer quotes {figure}; update this list too"
+    assert quotes(artifact), (
+        f"the README quotes {figure} and docs/verification/security-gate.md does not. Re-run "
+        f"`scripts/security_suite.py` and requote from the file it writes."
+    )
+
+
+#: `0.629 [0.200–1.000] n=7` — the shape every per-bucket mean is printed in.
+#:
+#: Matched as a whole cell precisely because its parts are short: `0.629` alone would be a
+#: substring check of the kind amendment four of ADR-0011 records, and forty of them listed by
+#: hand would be a list nobody maintains. A cell carries its mean, its spread and its `n`, which
+#: is specific enough that a moved number cannot match by accident — and ADR-0005 requires the
+#: spread beside the mean anyway, so binding the cell binds that obligation too.
+_BUCKET_CELL = re.compile(r"\d\.\d{3} \[\d\.\d{3}[–-]\d\.\d{3}\] n=\d+")
+
+
+def test_the_readmes_per_bucket_cells_are_the_artifacts_own():
+    """Every `mean [min–max] n=` cell in the README, wherever it sits, is in `evaluation.md`.
+
+    The README reproduces two per-bucket tables — the deterministic retrieval metrics and the
+    four RAGAs metrics — for the shipping default arm. Those are the numbers a reviewer reads
+    instead of the artifact, so they are the numbers most worth binding, and binding them as
+    cells needs no list to be kept in step with the prose.
+    """
+    readme = README.read_text(encoding="utf-8")
+    artifact = _figures(EVALUATION.read_text(encoding="utf-8"))
+
+    cells = _BUCKET_CELL.findall(readme)
+    assert len(cells) >= 24, (
+        f"expected the README's two per-bucket tables (4 buckets x 3 and x 4 columns); "
+        f"found {len(cells)} cells. If the tables moved, this test needs to know."
+    )
+
+    missing = sorted({cell for cell in cells if _figures(cell) not in artifact})
+    assert not missing, (
+        f"{len(missing)} per-bucket cell(s) in the README are not in "
+        f"docs/verification/evaluation.md: {missing[:3]}. Re-run `scripts/evaluate.py` and "
+        f"requote from the file it writes."
+    )
+
+
+def test_the_readme_labels_the_dollar_figure_as_an_estimate():
+    """The one cost figure in the repo is a planning estimate, and the README may not launder
+    it.
+
+    `config.py` and `evaluation/cache.py` size a full judged run at ~$1.28 from #11's plan. No
+    run wrote it, no artifact carries it, and nothing binds it — so the README states it beside
+    the words that say so. This is the mirror of
+    `test_the_readme_does_not_quote_a_price_as_though_it_were_measured`: that one forbids a rate
+    card, this one forbids an unlabelled bill.
+    """
+    readme = readme_flat()
+
+    assert "$1.28" in readme, "the estimate is informative and is kept"
+    assert "**not a measurement**" in readme, "and labelled, in the same breath"
+    assert "No dollar figure in this project comes from a committed artifact" in readme
 
 
 def test_the_readme_states_the_session_cap_and_that_it_is_not_a_security_control():
