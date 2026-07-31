@@ -308,7 +308,29 @@ def fill_spend_meter(slot, *, answering: bool) -> None:
 
     The label lives here rather than at the two call sites — the same panel written twice is two
     panels the day one of them is edited.
+
+    **The slot is cleared before it is written, and that is not belt-and-braces.** Writing a
+    container into a placeholder twice in one run does *not* replace the subtree: the frontend
+    keeps the node and addresses its children by index, so a child the second fill does not
+    reach survives. The two fills are different lengths — the eager one opens with the
+    "measuring this turn" caption and the settled one does not, shifting every index by one —
+    so the eager fill's **last** element was orphaned and stayed on screen beside its
+    replacement. Observed as two `Partial:` banners one call apart (`11 of 12` above
+    `10 of 11`), figures that matched only the first, and it did **not** clear when the run
+    settled.
+
+    `slot.empty()` sends an `Empty` delta for the node itself, which drops its children, and the
+    container that follows rebuilds them — so the panel is replaced rather than merged, whatever
+    the two fills' lengths are. Equalising the lengths would fix today's instance and leave the
+    next conditional branch to reintroduce it; this makes the orphan unrepresentable.
+
+    **`AppTest` cannot see the defect this fixes**, and that is why it went out: the tree it
+    exposes is the settled one, in which the orphan does not appear — a scratch run reported one
+    panel and one warning while the browser showed two. The browser is the only instrument for
+    it, so this was verified by hand there, and
+    `test_the_spend_panel_is_a_single_panel` below guards the half a test *can* reach.
     """
+    slot.empty()
     with slot.container(), st.expander(":material/toll: Token spend"):
         render_spend_meter(answering=answering)
 
@@ -1639,6 +1661,11 @@ if prompt:
 # Nothing at all when there is no conversation: a download button offering a file with no turns
 # in it reads as a broken feature rather than as an empty one.
 if st.session_state.messages:
+    # Cleared first, like the spend slot and for the reason `fill_spend_meter` records: a second
+    # container written to a placeholder merges with the first by child index. This slot happens
+    # to be safe — its eager fill is one caption against the three elements below — but "safe
+    # because the settled fill is longer" is an invariant nobody would notice breaking.
+    export_slot.empty()
     with export_slot.container():
         render_export_buttons(st.session_state.messages)
 

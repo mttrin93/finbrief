@@ -1956,8 +1956,25 @@ def metered(app, monkeypatch, **usage):
 
 
 def spend_panel(app):
-    """The sidebar's `Token spend` panel."""
+    """The sidebar's `Token spend` panel — and there is exactly one of it.
+
+    **`panels[0] if panels else None` is what this used to be, and it hid a defect for every
+    test below.** The panel is filled twice per run into one `st.empty()` (`fill_spend_meter`),
+    so a duplicated panel is a live possibility rather than a hypothetical — and a helper that
+    silently takes the first of two makes all thirteen spend assertions blind to it. The one
+    time a duplicate did reach the browser it was found by a person looking at the sidebar, not
+    by this file.
+
+    So the count is asserted here, once, rather than in thirteen callers. `None` is still
+    returned when there is no panel at all, because `test_the_meter_says_the_log_is_off...`
+    distinguishes absent from empty and that is a different claim from duplicated.
+    """
     panels = [panel for panel in app.sidebar.expander if "Token spend" in panel.label]
+    assert len(panels) <= 1, (
+        f"{len(panels)} `Token spend` panels on one page. The slot is filled twice per run and "
+        f"a second container written to a placeholder merges by child index, so this is the "
+        f"shape that failure takes — see `fill_spend_meter`."
+    )
     return panels[0] if panels else None
 
 
@@ -2063,10 +2080,17 @@ def test_a_partial_total_says_so_beside_the_figure(app, monkeypatch, tmp_path):
 
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
-    text = panel_text(spend_panel(app))
+    panel = spend_panel(app)
+    text = panel_text(panel)
     assert "Partial" in text
     assert "1 of 2 call(s) reported input tokens" in text
     assert "floor" in text
+    # **One banner, and this is the element that was orphaned.** The panel is filled twice per
+    # run and the eager fill is one child longer, so before `fill_spend_meter` learned to clear
+    # the slot the browser showed two `Partial:` banners a call apart — the settled figure above
+    # a stale one. An equality rather than a presence check, for the reason CLAUDE.md gives: the
+    # bound version of this passed on both one banner and two.
+    assert len(panel.warning) == 1, [w.value for w in panel.warning]
 
 
 def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
