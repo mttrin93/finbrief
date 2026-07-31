@@ -494,6 +494,43 @@ def test_a_partial_total_says_so_beside_the_figure(page, seeded):
     assert "floor" in body
 
 
+def test_an_unmetered_log_reports_its_call_count_as_the_floor_it_is(page, seeded):
+    """The branch where the floor is *guaranteed*, and the one that rendered it bare.
+
+    `agent_turn` writes `calls` only once something reported usage, so a log with nothing
+    metered is exactly a log whose every line arrived as `calls_behind`'s honest floor of one.
+    The measured branch applied the `≥` and this one did not — a floor shown as a count, the
+    rendering `Spend.floored` was added in #13's review to prevent (code review of #14).
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(logger, "agent_turn", searches=1, verbatim_searches=1)
+    with turn("t:2"):
+        log_event(logger, "agent_turn", searches=2, verbatim_searches=2)
+
+    page.run()
+
+    body = text(page)
+    assert "No usage reported in this log" in body
+    assert "`≥2` model call(s)" in body, "two lines, each a floor of one — not a count of two"
+    assert "2 model call(s) counted" not in body
+
+
+def test_a_log_with_no_model_call_at_all_says_that_rather_than_no_usage(page, seeded):
+    # The other half of the same branch: "no line carried a token count" and "there were no
+    # token-bearing lines" are different states, and one sentence carrying one number let a
+    # reader take either for the other.
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(logger, "input_gate", blocked=False, latency_ms=12)
+
+    page.run()
+
+    body = text(page)
+    assert "No model call is recorded in this log at all" in body
+    assert "No usage reported in this log" not in body, "there is no total to be missing usage"
+
+
 def test_an_unpriced_spend_reports_tokens_and_says_it_cannot_price_them(page, seeded):
     # Unpriced is the default and it is an absence: there is no rate card in this repo, because
     # every model is reached through OpenRouter's routing (ADR-0011 §3).

@@ -457,11 +457,27 @@ def render_spend(log) -> None:
     """Metered tokens by day, with each field's own denominator and the call nobody meters."""
     over_time = spend_over_time(log)
     totals = over_time.totals
+    # **The floor rendering is above the branch, because the branch below is where the floor is
+    # guaranteed.** `agent_turn` writes `calls` only once something reported usage, so a log
+    # with nothing metered is exactly a log whose every call arrived as `calls_behind`'s honest
+    # floor of one — and the unmeasured sentence printed it bare while the measured one applied
+    # the `≥`. `Spend.floored` exists so a floor is never displayed as a count (#13's review);
+    # hoisting it is what makes that true on both paths (code review of #14).
+    calls = f"≥{totals.calls}" if totals.calls_are_a_floor else f"{totals.calls}"
     if not over_time.measured:
-        st.caption(
-            f"No usage reported in this log ({totals.calls} model call(s) counted). Not zero "
-            f"tokens — a provider that reports no usage block did not make a free call."
-        )
+        # Two states, two sentences. "No line carried a token count" and "there were no
+        # token-bearing lines at all" are different things, and one number rendered inside one
+        # sentence let a reader take either for the other.
+        if totals.calls:
+            st.caption(
+                f"No usage reported in this log, across `{calls}` model call(s). Not zero "
+                f"tokens — a provider that reports no usage block did not make a free call."
+            )
+        else:
+            st.caption(
+                "No model call is recorded in this log at all, so there is nothing to total. "
+                "That is an absence of lines rather than a spend of zero."
+            )
     else:
         st.bar_chart(
             pd.DataFrame(
@@ -473,7 +489,6 @@ def render_spend(log) -> None:
             ),
             height=260,
         )
-        calls = f"≥{totals.calls}" if totals.calls_are_a_floor else f"{totals.calls}"
         st.markdown(
             f"**Input** `{_tokens(totals.input.total)}`  \n"
             f"**Output** `{_tokens(totals.output.total)}`  \n"
