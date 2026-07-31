@@ -109,9 +109,70 @@ The retrieval *strategy* — hybrid search, query translation, and how they comp
 
 ## 2.2 The grounding-scope disclosure
 
-It is a UI obligation rather than an implementation detail, so it stays where a reviewer
-meets it: [the README's §2.3](../README.md#23-the-grounding-scope-disclosure), with the
-sentence the app renders quoted verbatim and its arithmetic bound to the ingest evidence.
+A knowledge base scoped to four Items is only honest if the app says so, which is user story 18
+and an ADR-0007 obligation. The app states it in two places, and the model is given the same
+words:
+
+> Filing answers are grounded only in Items 1, 1A, 7 and 7A of the latest annual 10-K for each of
+> the 15 companies in FinBrief's Universe.
+
+That sentence is `prompts.GROUNDING_SCOPE`. It is rendered as the caption under the app's title
+(with EDGAR named as the source), and it opens `SYSTEM_PROMPT`, `AGENT_SYSTEM_PROMPT`,
+`search_filings`' own tool description and the query planner's prompt — so the page, the persona
+and the tool cannot disagree about what is grounded. The sidebar's **Grounding scope** panel
+(`prompts.GROUNDING_SCOPE_DETAILS`, five lines, one sentence each) carries what the headline
+sentence leaves out: the pair count, which six filers answer Item 7A by reference, what is out
+of scope, that there is one filing per company, and that live figures never come from the
+filings.
+
+**Every number in it is derived, never typed.** `54 = 15 × 4 − 6` is computed from
+`config.UNIVERSE`, the `Section` enum and `config.ITEM_7A_POINTER_FILERS`; the Item labels are
+read out of the enum, so a fifth Section cannot leave a sentence on screen listing four. Three
+things follow, and each is a test:
+
+- **The derivation is checked against reality, not just against itself.** Self-consistent
+  arithmetic is not truth — the subtraction assumes each pointer filer really does answer Item
+  7A by reference. `tests/test_grounding_scope.py` cross-checks the six filers and both counts
+  against the ingest run's own gate table.
+- **The app renders it from `config` alone**, with no generated artifact on disk: a missing or
+  half-written report must never take the UI down.
+- **This file is bound to the same source.** Prose cannot import `prompts.py`, so the test
+  suite is where the two are allowed to disagree — loudly, in CI. Change the Universe and this
+  section fails until the prose follows.
+
+A tool description is a prompt, so it lives in `prompts.py` too and its scope claim is derived
+like every other. That surface was found unbound during review: it had "Items 1, 1A, 7, 7A" and
+"the fifteen Universe companies" typed by hand, in a prompt the *model* reads and plans its
+searches against.
+
+### What is in scope, in numbers
+
+Curated Sections, not full filings (ADR-0007). Full-filing ingestion was rejected because
+table-of-contents and boilerplate pollute the exact-identifier bucket and Section labels become
+unreliable.
+
+| property | value |
+|---|---|
+| companies | 15, in four curated peer clusters |
+| Sections per company | Items 1 (Business), 1A (Risk Factors), 7 (MD&A), 7A (Market Risk) |
+| company × Section pairs in the knowledge base | **54 of 60** |
+| answered by incorporation into Item 7 | 6 filers — BAC, GS, JNJ, JPM, LLY, PFE |
+| chunks in the collection | 5,842 |
+| filings per company | one — the latest 10-K only |
+
+All 15 companies have market-risk grounding; 9 have an `Item 7A` Section. The six that do not
+answer Item 7A with a sentence directing the reader to Item 7, which is a lawful filing rather
+than a defect: their market-risk disclosure *is* in the knowledge base, labelled `Item 7`. A
+reader who does not know this reads "no Item 7A" as "no market-risk grounding", which is why the
+app says it on screen.
+
+The fiscal year differs by filer — NVDA is FY2026, the other fourteen FY2025 — and each citation
+states its own. **Where these counts come from:** the ingest run's own evidence,
+[`docs/verification/ingest-report.md`](verification/ingest-report.md), whose chunk counts
+are read back from the persisted collection after the run rather than taken from the run's own
+writes. The numbers above describe the knowledge base as ADR-0007 defines it and are **not a
+live count of the index** behind any particular deployment: a partial or stale ingest would
+leave them overstating coverage, and the evidence file is what a reviewer checks them against.
 
 ## 2.3 Tool calling
 

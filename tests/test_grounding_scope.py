@@ -53,19 +53,32 @@ README = ROOT / "README.md"
 IMPLEMENTATION = ROOT / "docs" / "implementation.md"
 FINDINGS = ROOT / "docs" / "findings.md"
 LIMITATIONS = ROOT / "docs" / "limitations.md"
-DOCUMENTS = (README, IMPLEMENTATION, FINDINGS, LIMITATIONS)
+DEMO = ROOT / "docs" / "demo.md"
+DOCUMENTS = (README, IMPLEMENTATION, FINDINGS, LIMITATIONS, DEMO)
+
+
+def flat(text: str) -> str:
+    """Whitespace-flattened, so a markdown table may wrap and a row still matches.
+
+    Table rows are matched as `label | value` fragments rather than whole lines for the same
+    reason `test_the_readme_states_the_same_scope_the_app_does` flattens: the alternative is a
+    test that dictates the README's column widths.
+
+    Blockquote markers are dropped for the same reason whitespace is. A quoted sentence that
+    wraps inside a `>` block reads as `… for each of > the 15 companies …` once flattened, so a
+    verbatim binding would be asserting the README's line breaks rather than its words.
+    """
+    return " ".join(word for line in text.splitlines() for word in line.lstrip(">").split())
 
 
 def prose(*paths: Path) -> str:
     """The named documents, whitespace-flattened and concatenated.
 
-    Defaults to all four. Flattened because these files wrap their prose and the panel and
+    Defaults to all five. Flattened because these files wrap their prose and the panel and
     the artifacts do not, which is the same reason every README assertion here has always
     flattened first: the alternative is a test that dictates where a sentence may break.
     """
-    return " ".join(
-        " ".join(path.read_text(encoding="utf-8").split()) for path in (paths or DOCUMENTS)
-    )
+    return " ".join(flat(path.read_text(encoding="utf-8")) for path in (paths or DOCUMENTS))
 
 
 #: A gate-table row: `JPM    FY2025    39,177    112,774    394,858    ->Item 7`. The
@@ -226,16 +239,21 @@ def test_the_scope_panel_is_five_short_lines_of_plain_language():
         assert not re.search(r"\.\s+\S", detail), f"one sentence per line; got {detail!r}"
 
 
-def test_the_ingest_report_provenance_moved_to_the_readme():
-    """Where the counts come from is a reviewer's question, and the README is where a reviewer
-    reads. It left the panel when that panel was compressed (#13) and had to land somewhere —
-    a claim dropped from one surface and added to none is the deletion a compression must
-    not be."""
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+def test_the_ingest_report_provenance_is_stated_beside_the_counts():
+    """Where the counts come from is a reviewer's question, so it is answered in prose and not
+    in the app's panel. It left the panel when that panel was compressed (#13) and had to land
+    somewhere — a claim dropped from one surface and added to none is the deletion a compression
+    must not be.
+
+    **It has since moved once more**, from the README to `docs/implementation.md`, with the
+    disclosure whose counts it is the provenance *for* (T11 follow-up). That is the invariant
+    worth binding: the provenance sentence sits beside the counts, wherever they are, and never
+    in the panel."""
+    disclosure = " ".join(IMPLEMENTATION.read_text(encoding="utf-8").split())
     panel = " ".join(GROUNDING_SCOPE_DETAILS)
 
-    assert "docs/verification/ingest-report.md" in readme
-    assert "not a live count of the index" in readme, "and what the counts are *not*"
+    assert "docs/verification/ingest-report.md" in disclosure
+    assert "not a live count of the index" in disclosure, "and what the counts are *not*"
     assert "ingest-report" not in panel, "the panel no longer carries it"
 
 
@@ -286,7 +304,13 @@ def test_the_readme_states_the_same_scope_the_app_does():
     #
     # Whitespace is flattened first, so a sentence may wrap wherever it reads best — the
     # alternative is a test that dictates the README's line breaks.
-    readme = " ".join(README.read_text(encoding="utf-8").split())
+    #
+    # **Retargeted at `docs/implementation.md`** (T11 follow-up): the disclosure section moved
+    # there when the README became a ten-minute tour. The README keeps a summary, and the two
+    # claims it makes — the sentence itself and the pair count — are bound by
+    # `test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders` below. Everything
+    # this test asserts is a *derived* fact that only the full disclosure states.
+    readme = " ".join(IMPLEMENTATION.read_text(encoding="utf-8").split())
     rows = gate_rows(report_text())
     slots = len(UNIVERSE) * len(Section)
     pointers = {ticker for ticker, row in rows.items() if _POINTER_MARKER in row}
@@ -564,20 +588,6 @@ def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
 # numbers individually is how a binding becomes a decoration.
 
 
-def flat(text: str) -> str:
-    """Whitespace-flattened, so a markdown table may wrap and a row still matches.
-
-    Table rows are matched as `label | value` fragments rather than whole lines for the same
-    reason `test_the_readme_states_the_same_scope_the_app_does` flattens: the alternative is a
-    test that dictates the README's column widths.
-
-    Blockquote markers are dropped for the same reason whitespace is. A quoted sentence that
-    wraps inside a `>` block reads as `… for each of > the 15 companies …` once flattened, so a
-    verbatim binding would be asserting the README's line breaks rather than its words.
-    """
-    return " ".join(word for line in text.splitlines() for word in line.lstrip(">").split())
-
-
 def readme_flat() -> str:
     return flat(README.read_text(encoding="utf-8"))
 
@@ -681,10 +691,15 @@ def test_the_readme_states_the_quote_worst_case_the_demo_has_to_warm_around():
     """
     from finbrief.config import QUOTE_FETCH_WORST_CASE_SECONDS
 
-    readme = readme_flat()
+    # The walkthrough moved to `docs/demo.md` (T11 follow-up); the figure is asserted where the
+    # instruction is, and the README's summary of the walkthrough names it too.
+    walkthrough = prose(DEMO)
 
-    assert f"{QUOTE_FETCH_WORST_CASE_SECONDS} s" in readme
-    assert "warm the quote cache" in readme.lower(), "and what to do about it"
+    assert f"{QUOTE_FETCH_WORST_CASE_SECONDS} s" in walkthrough
+    assert "warm the quote cache" in walkthrough.lower(), "and what to do about it"
+    assert f"{QUOTE_FETCH_WORST_CASE_SECONDS} s" in prose(README), (
+        "the README's walkthrough summary carries the number, since it is why the step exists"
+    )
 
 
 def test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders():
@@ -695,14 +710,22 @@ def test_the_readme_quotes_the_grounding_scope_sentence_the_app_renders():
     `prompts.py` exists to prevent. The counts inside it are already bound by
     `test_the_readme_states_the_same_scope_the_app_does`; this binds the wording.
     """
-    readme = readme_flat()
-
-    assert flat(GROUNDING_SCOPE) in readme, (
-        "the README must quote `prompts.GROUNDING_SCOPE` verbatim, not restate it"
-    )
-    # And it names the two constants, so a reader can find the one place the sentence lives.
-    assert "GROUNDING_SCOPE" in readme
-    assert "GROUNDING_SCOPE_DETAILS" in readme
+    # **Both documents**, and that is deliberate: the README's summary and
+    # `implementation.md`'s full section each quote the app's sentence, so each is bound to it.
+    # A summary that paraphrased the disclosure would be the second wording this constant
+    # exists to prevent — the failure is the same whether the copy is long or short.
+    for document in (README, IMPLEMENTATION):
+        assert flat(GROUNDING_SCOPE) in prose(document), (
+            f"{document.name} must quote `prompts.GROUNDING_SCOPE` verbatim, not restate it"
+        )
+    # The README's summary also carries the arithmetic, which is the number a reviewer checks.
+    slots = len(UNIVERSE) * len(Section)
+    rows = gate_rows(report_text())
+    pointers = sum(1 for row in rows.values() if _POINTER_MARKER in row)
+    assert f"**{slots - pointers} of {slots}**" in prose(README)
+    # And the constants are named, so a reader can find the one place the sentence lives.
+    assert "GROUNDING_SCOPE" in prose(IMPLEMENTATION)
+    assert "GROUNDING_SCOPE_DETAILS" in prose(IMPLEMENTATION)
 
 
 def _universe_table_rows(text: str) -> dict[str, tuple[str, str]]:

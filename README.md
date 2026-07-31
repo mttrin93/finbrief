@@ -40,14 +40,15 @@ A ten-minute read. Each section that has a longer version links to it.
 
 | | |
 |---|---|
-| **[Part 1 — Orientation](#part-1--orientation)** | what it is · [quickstart](#12-quickstart) · [the five-step demo walkthrough](#13-the-five-step-demo-walkthrough) |
+| **[Part 1 — Orientation](#part-1--orientation)** | what it is · [quickstart](#12-quickstart) · [the demo walkthrough](#13-the-demo-walkthrough) → [`docs/demo.md`](./docs/demo.md) |
 | **[Part 2 — How it works](#part-2--how-it-works)** | [architecture](#21-architecture) · [the validity gap](#22-the-validity-gap-stated-rather-than-assumed) · [grounding scope](#23-the-grounding-scope-disclosure) · [the rest of the build](#24-the-rest-of-the-build-in-brief) → [`docs/implementation.md`](./docs/implementation.md) |
 | **[Part 3 — Optional tasks](#part-3--optional-tasks)** | [the thirteen in brief](#31-the-thirteen-in-brief) · [all 21, with status](#32-all-21-with-status) |
 | **[Part 4 — What the evaluation established](#part-4--what-the-evaluation-established)** | six numbers → [`docs/findings.md`](./docs/findings.md) · [`docs/verification/evaluation.md`](./docs/verification/evaluation.md) |
 | **[Part 5 — Limitations](#part-5--limitations)** | the six that matter → [`docs/limitations.md`](./docs/limitations.md) |
 | **[Part 6 — ADRs, cost, running everything](#part-6--adrs-cost-running-everything)** | [ADR index](#61-adr-index) · [what it cost](#62-what-it-cost) · [every command](#63-running-everything) |
 
-**The four documents.** This README is the tour. [`docs/implementation.md`](./docs/implementation.md)
+**The five documents.** This README is the tour. [`docs/demo.md`](./docs/demo.md) is the
+five-step walkthrough, with the two preconditions a first take needs. [`docs/implementation.md`](./docs/implementation.md)
 is how each requirement and each optional task is built. [`docs/findings.md`](./docs/findings.md) is
 what the project found out, including the seventeen-instance table of checks that could not fail.
 [`docs/limitations.md`](./docs/limitations.md) is all eighteen limitations with their mechanisms.
@@ -103,62 +104,14 @@ it looked in, rather than leaving a reviewer to read a fallback as "out of scope
 event sink off, exactly as the code default does. Uncomment it for any run whose numbers you
 intend to report — see [3.14](./docs/implementation.md#314-logging--monitoring).
 
-## 1.3 The five-step demo walkthrough
+## 1.3 The demo walkthrough
 
-Reproducible exactly as written. Each step fires a different requirement, and the second one is
-the interesting one.
-
-| # | ask this | what to watch | requirement | needs the sink? |
-|---|---|---|---|---|
-| 1 | *What are the main risk factors for Tesla?* | five `TSLA 10-K FY2025, Item 1A` sources, `[1]`–`[5]`, each accession linked to EDGAR | RAG, citations, sources panel | no |
-| 2 | *And what does it say about its debt?* | the follow-up names no company and still resolves; numbering **continues** `[6]`–`[10]`; now scroll back up — `[1]` still resolves to the same panel entry. Then open *How I answered* | conversation memory, the thread-wide citation register, hybrid + translation | no |
-| 3 | *How does its valuation compare to its fundamentals?* | `get_stock_data` and `calculate_ratios` cards; one chart per ratio metric; the peer set, its size **and its range** | tool calling, tool-result visualisation | no |
-| 4 | *Give me the full brief on Tesla.* | the `st.status` block naming each step as it runs; four sections; news cards. **This is the hero-GIF beat** | combined multi-tool query, progress indicators | no |
-| 5 | *Should I buy Tesla stock?* — then a denylisted injection payload | the advice question is **allowed through the front door** and refused at layer 4 with a disclaimer; the payload is blocked at layer 2 in ~0 ms and the agent is never called | advice refusal, injection resistance | **yes** — the gate-trigger record exists nowhere else |
-
-**Step 2 is worth narrating carefully, because the obvious narration is wrong.** Under
-vector-only retrieval this follow-up ranked four Ford chunks above the one correct Tesla
-passage. Hybrid search *alone* made it worse — the passage left the top five entirely. What
-recovers it is **deterministic entity normalisation** (a `config` lookup adding a `TSLA debt`
-variant) and then **RRF's agreement principle**: the chunk is found by two independent query
-variants, and agreement beats any single strong hit. The *How I answered* panel labels the
-ticker form as a ticker form, not as "sub-query 1", precisely so a `config` lookup is not
-credited to a model. The full before/after is in [3.15](./docs/implementation.md#315-hybrid-search).
-
-One thing to keep honest on camera: under the shipped default the **top** entry is a `TSLA
-Item 1` chunk that is not about debt — it wins on three BM25 votes across sub-queries. Precision
-is much better than before (5/5 correct filer against 1/5) and the answer cites the liquidity
-passage, but this is not a perfect ranking and `n=1`.
-
-### Before you record, two preconditions
-
-**Warm the quote cache.** Run one `get_stock_data` per ticker you plan to show, a couple of
-minutes ahead. A stalled Yahoo endpoint can hold the quote cache lock for
-`config.QUOTE_FETCH_WORST_CASE_SECONDS` — **91.5 s** — because `FETCH_TIMEOUT_SECONDS` bounds a
-single HTTP *request*, one `fetch_quote` makes two, `FETCH_ATTEMPTS` is 3, and `TimedCache`
-holds its lock across the whole retry sequence. Step 3 on a `big_tech` company resolves **six**
-quotes through that cache (peers go through the same cached path — ADR-0009), so a cold first
-take is the slowest possible take. `QUOTE_TTL_SECONDS` is 900, so a 15-minute window covers a
-take comfortably and every fetch after the warm-up is a cache hit. A stall is not a crash: the
-`st.status` block sits on "Fetching …", the page stays responsive, and the card comes back
-either stale-with-its-age or saying the figure could not be fetched.
-
-**Enable the event sink** for step 5, and for any step whose numbers you intend to quote:
-
-```bash
-FINBRIEF_LOG_FILE=data/events.jsonl uv run streamlit run app/Home.py
-```
-
-Unset, events go to stderr and vanish with the process, and gate-trigger metadata, token counts
-and latency samples exist nowhere else. One consequence to accept deliberately: a **blocked**
-question's normalised text is kept on disk, bounded by `config.GATE_LOGGED_INPUT_MAX_CHARS` —
-the one documented exception to the no-user-content rule (ADR-0006, ADR-0011). The file is
-gitignored, append-only and never rotated; it is a run artifact, not one of the five committed
-evidence files.
-
----
-
----
+**Five steps, 2–3 minutes, reproducible exactly** — [`docs/demo.md`](./docs/demo.md). Risk factors
+for Tesla, then a follow-up that names no company and still resolves while the citations continue
+from `[6]` rather than restarting, then valuation with its tool cards, then the full brief, then an
+advice refusal and a blocked injection payload. Two preconditions are in that file and both matter
+on a first take: **warm the quote cache** (a cold stall can hold the cache lock for 91.5 s) and
+**enable the event sink**, without which step 5 leaves no gate-trigger record.
 
 # Part 2 — How it works
 
@@ -247,70 +200,18 @@ noise in the chain's numbers.
 
 ## 2.3 The grounding-scope disclosure
 
-A knowledge base scoped to four Items is only honest if the app says so, which is user story 18
-and an ADR-0007 obligation. The app states it in two places, and the model is given the same
-words:
+The app says what it is grounded in, in the words the model is given — one constant,
+`prompts.GROUNDING_SCOPE`, read by the caption under the title, the sidebar's scope panel and four
+prompts:
 
 > Filing answers are grounded only in Items 1, 1A, 7 and 7A of the latest annual 10-K for each of
 > the 15 companies in FinBrief's Universe.
 
-That sentence is `prompts.GROUNDING_SCOPE`. It is rendered as the caption under the app's title
-(with EDGAR named as the source), and it opens `SYSTEM_PROMPT`, `AGENT_SYSTEM_PROMPT`,
-`search_filings`' own tool description and the query planner's prompt — so the page, the persona
-and the tool cannot disagree about what is grounded. The sidebar's **Grounding scope** panel
-(`prompts.GROUNDING_SCOPE_DETAILS`, five lines, one sentence each) carries what the headline
-sentence leaves out: the pair count, which six filers answer Item 7A by reference, what is out
-of scope, that there is one filing per company, and that live figures never come from the
-filings.
-
-**Every number in it is derived, never typed.** `54 = 15 × 4 − 6` is computed from
-`config.UNIVERSE`, the `Section` enum and `config.ITEM_7A_POINTER_FILERS`; the Item labels are
-read out of the enum, so a fifth Section cannot leave a sentence on screen listing four. Three
-things follow, and each is a test:
-
-- **The derivation is checked against reality, not just against itself.** Self-consistent
-  arithmetic is not truth — the subtraction assumes each pointer filer really does answer Item
-  7A by reference. `tests/test_grounding_scope.py` cross-checks the six filers and both counts
-  against the ingest run's own gate table.
-- **The app renders it from `config` alone**, with no generated artifact on disk: a missing or
-  half-written report must never take the UI down.
-- **This file is bound to the same source.** The README cannot import `prompts.py`, so the test
-  suite is where the two are allowed to disagree — loudly, in CI. Change the Universe and this
-  section fails until the prose follows.
-
-A tool description is a prompt, so it lives in `prompts.py` too and its scope claim is derived
-like every other. That surface was found unbound during review: it had "Items 1, 1A, 7, 7A" and
-"the fifteen Universe companies" typed by hand, in a prompt the *model* reads and plans its
-searches against.
-
-### What is in scope, in numbers
-
-Curated Sections, not full filings (ADR-0007). Full-filing ingestion was rejected because
-table-of-contents and boilerplate pollute the exact-identifier bucket and Section labels become
-unreliable.
-
-| property | value |
-|---|---|
-| companies | 15, in four curated peer clusters |
-| Sections per company | Items 1 (Business), 1A (Risk Factors), 7 (MD&A), 7A (Market Risk) |
-| company × Section pairs in the knowledge base | **54 of 60** |
-| answered by incorporation into Item 7 | 6 filers — BAC, GS, JNJ, JPM, LLY, PFE |
-| chunks in the collection | 5,842 |
-| filings per company | one — the latest 10-K only |
-
-All 15 companies have market-risk grounding; 9 have an `Item 7A` Section. The six that do not
-answer Item 7A with a sentence directing the reader to Item 7, which is a lawful filing rather
-than a defect: their market-risk disclosure *is* in the knowledge base, labelled `Item 7`. A
-reader who does not know this reads "no Item 7A" as "no market-risk grounding", which is why the
-app says it on screen.
-
-The fiscal year differs by filer — NVDA is FY2026, the other fourteen FY2025 — and each citation
-states its own. **Where these counts come from:** the ingest run's own evidence,
-[`docs/verification/ingest-report.md`](./docs/verification/ingest-report.md), whose chunk counts
-are read back from the persisted collection after the run rather than taken from the run's own
-writes. The numbers above describe the knowledge base as ADR-0007 defines it and are **not a
-live count of the index** behind any particular deployment: a partial or stale ingest would
-leave them overstating coverage, and the evidence file is what a reviewer checks them against.
+That is **54 of 60** company × Section pairs, and every number in it is derived from `config` and
+the `Section` enum rather than typed — then cross-checked against the ingest run's own gate table,
+because self-consistent arithmetic is not the same as true. The full disclosure, the six filers who
+answer Item 7A by reference, and where the counts come from are in
+[`implementation.md`: The grounding-scope disclosure](./docs/implementation.md#22-the-grounding-scope-disclosure).
 
 ## 2.4 The rest of the build, in brief
 
@@ -622,4 +523,3 @@ The five committed evidence files:
 | [`evaluation.md`](./docs/verification/evaluation.md) | **the measurement artifact of record.** The per-bucket A/B over six arms, all four RAGAs metrics, both pre-registered decisions with their verdicts, the power audit, latency and token spend, the tool-calling eval, and the four deferred measurements. Quote a quality number from here and from nowhere else |
 
 Never invoke any of the five from a test.
-
