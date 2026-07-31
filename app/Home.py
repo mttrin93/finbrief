@@ -316,28 +316,32 @@ def fill_spend_meter(slot, *, answering: bool) -> None:
     The label lives here rather than at the two call sites — the same panel written twice is two
     panels the day one of them is edited.
 
-    **The slot is cleared before it is written, and that is not belt-and-braces.** Writing a
-    container into a placeholder twice in one run does *not* replace the subtree: the frontend
-    keeps the node and addresses its children by index, so a child the second fill does not
-    reach survives. The two fills are different lengths — the eager one opens with the
-    "measuring this turn" caption and the settled one does not, shifting every index by one —
-    so the eager fill's **last** element was orphaned and stayed on screen beside its
-    replacement. Observed as two `Partial:` banners one call apart (`11 of 12` above
-    `10 of 11`), figures that matched only the first, and it did **not** clear when the run
-    settled.
+    **The two fills go to two slots, and the reason is a defect this docstring got wrong once.**
+    Writing a container into a placeholder twice in one run does *not* replace the subtree: the
+    frontend keeps the node and addresses its children by index, so any child the second fill
+    does not reach survives. The two fills are legitimately different lengths — the eager one
+    opens with the "measuring this turn" caption, and `unfinished` is true mid-turn and false
+    after — so the tail was orphaned and stayed on screen beside its replacement: two `Partial:`
+    banners a call apart on a partial total, the classifier caption twice on a complete one.
 
-    `slot.empty()` sends an `Empty` delta for the node itself, which drops its children, and the
-    container that follows rebuilds them — so the panel is replaced rather than merged, whatever
-    the two fills' lengths are. Equalising the lengths would fix today's instance and leave the
-    next conditional branch to reintroduce it; this makes the orphan unrepresentable.
+    **`slot.empty()` before the refill was the first fix and it did not work.** Clearing a
+    placeholder and immediately writing to the same path again leaves the frontend applying two
+    deltas to one node, and the children came back; the browser showed the duplicate on the next
+    run either way. `examples_slot` is the shape that *does* work — cleared and then not written
+    again — and it is what this follows now: the eager panel gets its own slot, which the
+    settled fill empties before filling a **second** slot below it. The settled panel's path
+    never carries the eager fill's children, so no arrangement of the two lengths can collide.
 
-    **`AppTest` cannot see the defect this fixes**, and that is why it went out: the tree it
-    exposes is the settled one, in which the orphan does not appear — a scratch run reported one
-    panel and one warning while the browser showed two. The browser is the only instrument for
-    it, so this was verified by hand there, and
-    `test_the_spend_panel_is_a_single_panel` below guards the half a test *can* reach.
+    Equalising the lengths was the other candidate and is not available here: `unfinished` and
+    `Partial:` are read from the log, so the panel's shape is a function of the data rather than
+    of this code.
+
+    **`AppTest` cannot see any of this**, which is why it went out twice: the tree it exposes is
+    the settled one, in which an orphan is already pruned — a scratch run reported one panel and
+    one warning while the browser showed two. The browser is the only instrument, so both the
+    defect and the fix were confirmed there. `spend_panel` in the tests asserts the half a test
+    *can* reach: that exactly one panel survives to the end of a run.
     """
-    slot.empty()
     with slot.container(), st.expander(":material/toll: Token spend"):
         render_spend_meter(answering=answering)
 
@@ -580,8 +584,21 @@ with st.sidebar:
     # is affordable for the reason `observability/events.py` reads it eagerly at all — the
     # volume is bounded by a human typing questions — and is not affordable in the one place it
     # would matter, so `sink_offset` bounds it.
+    # **Two slots, filled by two different fills.** See `fill_spend_meter`: one slot written
+    # twice in a run merges by child index and leaves the longer fill's tail on screen. The
+    # eager panel lives here and is emptied at the end of the script — the `examples_slot`
+    # pattern, which is the one placeholder shape measured to clear — and the settled panel is
+    # written into the slot below it, whose path has never held anything else.
+    #
+    # **Filled unconditionally, as it was when this was one slot**, so there is no rerun — a
+    # panel opening, a button click — on which the sidebar has a hole where the panel was. That
+    # costs a second read of the log on such a rerun, which is affordable for the reason
+    # `observability/events.py` reads it eagerly at all: the volume is bounded by a human
+    # typing, and `sink_offset` bounds it where it would not be. Two panels never coexist even
+    # for a frame, because the settled fill below **clears this slot before** writing its own.
+    spend_eager_slot = st.empty()
     spend_slot = st.empty()
-    fill_spend_meter(spend_slot, answering=answering_now())
+    fill_spend_meter(spend_eager_slot, answering=answering_now())
 
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
@@ -1696,11 +1713,13 @@ if prompt:
 # Nothing at all when there is no conversation: a download button offering a file with no turns
 # in it reads as a broken feature rather than as an empty one.
 if st.session_state.messages:
-    # Cleared first, like the spend slot and for the reason `fill_spend_meter` records: a second
-    # container written to a placeholder merges with the first by child index. This slot happens
-    # to be safe — its eager fill is one caption against the three elements below — but "safe
-    # because the settled fill is longer" is an invariant nobody would notice breaking.
-    export_slot.empty()
+    # **One slot here, unlike the spend panel's two, and the difference is arithmetic.** A
+    # second container written to a placeholder merges by child index, so what matters is
+    # whether the settled fill is at least as long as the eager one: here it is one caption
+    # against a caption and two buttons, so every index the eager fill wrote is overwritten.
+    # The spend panel could not rest on that — its length varies with the log it reads — so it
+    # splits the slot instead (`fill_spend_meter`). Clearing this one first was tried and
+    # removed: it does not help, because the write that follows lands on the same path.
     with export_slot.container():
         render_export_buttons(st.session_state.messages)
 
@@ -1709,4 +1728,9 @@ if st.session_state.messages:
 # **The second of two fills, not the only one** — the sidebar filled this slot on the way past
 # so the panel is on screen for the wait, and this replaces it with the settled figures.
 # `answering` is `False` here whatever this run did: the turn is over, and its total is logged.
+# The eager panel's job is over the moment this one exists, and it is *cleared* rather than
+# overwritten: an `Empty` at a path nothing writes to again is the one placeholder operation
+# measured to remove what it held (`examples_slot`, and `fill_spend_meter`'s own record of the
+# fix that assumed more than that).
+spend_eager_slot.empty()
 fill_spend_meter(spend_slot, answering=False)

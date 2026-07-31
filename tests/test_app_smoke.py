@@ -1959,11 +1959,14 @@ def spend_panel(app):
     """The sidebar's `Token spend` panel — and there is exactly one of it.
 
     **`panels[0] if panels else None` is what this used to be, and it hid a defect for every
-    test below.** The panel is filled twice per run into one `st.empty()` (`fill_spend_meter`),
-    so a duplicated panel is a live possibility rather than a hypothetical — and a helper that
-    silently takes the first of two makes all thirteen spend assertions blind to it. The one
-    time a duplicate did reach the browser it was found by a person looking at the sidebar, not
-    by this file.
+    test below.** The panel is filled twice per run (`fill_spend_meter`), so a duplicated panel
+    is a live possibility rather than a hypothetical — and a helper that silently takes the
+    first of two makes all thirteen spend assertions blind to it. The one time a duplicate did
+    reach the browser it was found by a person looking at the sidebar, not by this file.
+
+    Since the two fills went to two slots this is also the guard on the *fix*: a failed clear
+    leaves a whole second panel, which is visible in the settled tree — where the previous
+    design's leftover was an orphaned child inside the one panel, and invisible here.
 
     So the count is asserted here, once, rather than in thirteen callers. `None` is still
     returned when there is no panel at all, because `test_the_meter_says_the_log_is_off...`
@@ -1971,9 +1974,9 @@ def spend_panel(app):
     """
     panels = [panel for panel in app.sidebar.expander if "Token spend" in panel.label]
     assert len(panels) <= 1, (
-        f"{len(panels)} `Token spend` panels on one page. The slot is filled twice per run and "
-        f"a second container written to a placeholder merges by child index, so this is the "
-        f"shape that failure takes — see `fill_spend_meter`."
+        f"{len(panels)} `Token spend` panels on one page. The two fills write two slots and "
+        f"the settled one clears the eager slot first (`fill_spend_meter`); drop that clear "
+        f"and this is the shape the failure takes — the half of it a test can see."
     )
     return panels[0] if panels else None
 
