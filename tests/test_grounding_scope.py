@@ -559,20 +559,40 @@ def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
 #: can see. A rate quoted without it reads as a simple failure rate, which it is not.
 CITED_MARKER_COMPOSITION = "22 fully supported / 40 partly supported / 8 not supported"
 
+#: The same composition in the register a table cell and a one-line summary use.
+#:
+#: Bound as well as the long form, and per document, because two spellings of one measurement
+#: are two things that can drift apart — and the short one is what the README's limitations row
+#: and `limitations.md` both carry, which is the copy a reviewer reads last and remembers.
+CITED_MARKER_COMPOSITION_SHORT = "22 fully / 40 partly / 8 not supported"
 
-def test_the_cited_marker_composition_is_quoted_the_same_way_in_both():
-    """The README leads with the split, and the artifact is where it comes from."""
-    readme = prose()
+#: `(spelling, the documents that must carry it)`, on `EVALUATION_FIGURES`' rule.
+CITED_MARKER_SPELLINGS = (
+    (CITED_MARKER_COMPOSITION, (README, IMPLEMENTATION)),
+    (CITED_MARKER_COMPOSITION_SHORT, (README, LIMITATIONS)),
+)
+
+
+@pytest.mark.parametrize(("spelling", "documents"), CITED_MARKER_SPELLINGS)
+def test_the_cited_marker_composition_is_quoted_the_same_way_everywhere(spelling, documents):
+    """Every document that states the split states it as the artifact rendered it.
+
+    **Per document, not over the five concatenated**, and the difference is the mutation this
+    test used to allow: it asserted against `prose()`, so the README could drop the sentence
+    entirely and `implementation.md`'s copy would satisfy the assertion written about the
+    README — a check that cannot fail for the reason its own docstring named (CLAUDE.md).
+    """
     artifact = EVALUATION.read_text(encoding="utf-8")
 
     assert CITED_MARKER_COMPOSITION in artifact, (
         f"the artifact no longer renders {CITED_MARKER_COMPOSITION!r}. If the run moved those "
-        f"counts, requote the README from it and update this constant."
+        f"counts, requote the docs from it and update these constants."
     )
-    assert CITED_MARKER_COMPOSITION in readme, (
-        "the README must lead with the composition rather than the derived rate: a 31% "
-        "full-support rate hides that partial support is the largest bucket."
-    )
+    for document in documents:
+        assert spelling in prose(document), (
+            f"{document.name} must lead with the composition rather than the derived rate: a "
+            f"31% full-support rate hides that partial support is the largest bucket."
+        )
 
 
 # --------------------------------------------------------------------------------------
