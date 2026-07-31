@@ -640,8 +640,13 @@ class Settings:
     #: The default is a *stronger* model than the answerer rather than a cheaper one, which is
     #: the opposite of the gate's choice and for the opposite reason: the gate pays for one
     #: YES/NO per turn, while a judge that misreads a filing passage silently moves every number
-    #: in the report. Measured cost of the difference over a full six-arm run: about $1.28
-    #: against $0.57 (docs/verification/evaluation.md records the arithmetic).
+    #: in the report. The cost of the difference over a full six-arm run is **estimated** at
+    #: about $1.28 against $0.57 — #11's planning figures, and this comment previously called
+    #: them "measured … (docs/verification/evaluation.md records the arithmetic)", which was
+    #: false twice over: no run produced them, and that artifact carries token counts rather
+    #: than prices (T11, #12). The estimate is kept because the order of magnitude is what the
+    #: decision rests on; it is labelled because a number nobody measured must not sit
+    #: unlabelled beside ones that were. `evaluation/cache.py` cites the same estimate.
     judge_model: str
     embedding_model: str
     retrieval_strategy: RetrievalStrategy

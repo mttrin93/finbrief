@@ -213,6 +213,13 @@ if "messages" not in st.session_state:
 QUESTION_KEY = "question"
 PENDING_QUESTION_KEY = "pending_question"
 
+#: The label the progress box ends on, and the one a replayed row puts back.
+#:
+#: A constant because it is written at the live turn and read on every rerun after it: a label
+#: spelled twice is a box that says one thing while a turn is answered and another once the
+#: reader clicks anything, which is the drift this file keeps a single source of truth for.
+TURN_COMPLETE = "Answered"
+
 
 def answering_now() -> bool:
     """Whether this run has a question in it, asked before the input that carries one exists.
@@ -308,6 +315,32 @@ def fill_spend_meter(slot, *, answering: bool) -> None:
 
     The label lives here rather than at the two call sites — the same panel written twice is two
     panels the day one of them is edited.
+
+    **The two fills go to two slots, and the reason is a defect this docstring got wrong once.**
+    Writing a container into a placeholder twice in one run does *not* replace the subtree: the
+    frontend keeps the node and addresses its children by index, so any child the second fill
+    does not reach survives. The two fills are legitimately different lengths — the eager one
+    opens with the "measuring this turn" caption, and `unfinished` is true mid-turn and false
+    after — so the tail was orphaned and stayed on screen beside its replacement: two `Partial:`
+    banners a call apart on a partial total, the classifier caption twice on a complete one.
+
+    **`slot.empty()` before the refill was the first fix and it did not work.** Clearing a
+    placeholder and immediately writing to the same path again leaves the frontend applying two
+    deltas to one node, and the children came back; the browser showed the duplicate on the next
+    run either way. `examples_slot` is the shape that *does* work — cleared and then not written
+    again — and it is what this follows now: the eager panel gets its own slot, which the
+    settled fill empties before filling a **second** slot below it. The settled panel's path
+    never carries the eager fill's children, so no arrangement of the two lengths can collide.
+
+    Equalising the lengths was the other candidate and is not available here: `unfinished` and
+    `Partial:` are read from the log, so the panel's shape is a function of the data rather than
+    of this code.
+
+    **`AppTest` cannot see any of this**, which is why it went out twice: the tree it exposes is
+    the settled one, in which an orphan is already pruned — a scratch run reported one panel and
+    one warning while the browser showed two. The browser is the only instrument, so both the
+    defect and the fix were confirmed there. `spend_panel` in the tests asserts the half a test
+    *can* reach: that exactly one panel survives to the end of a run.
     """
     with slot.container(), st.expander(":material/toll: Token spend"):
         render_spend_meter(answering=answering)
@@ -545,14 +578,23 @@ with st.sidebar:
     #
     # **Filled here as well as at the end, unlike the export's.** See `fill_spend_meter`: the
     # deferral above is what made the panel disappear mid-turn, and a panel whose subject is
-    # *this conversation's cost* is one a reader looks at while the cost is being incurred. It
-    # is filled unconditionally rather than only while answering, so there is no rerun on which
-    # the sidebar has a hole where a panel was. That reads the log twice on such a rerun, which
-    # is affordable for the reason `observability/events.py` reads it eagerly at all — the
-    # volume is bounded by a human typing questions — and is not affordable in the one place it
-    # would matter, so `sink_offset` bounds it.
+    # *this conversation's cost* is one a reader looks at while the cost is being incurred.
+    #
+    # **Two slots, filled by two different fills.** See `fill_spend_meter`: one slot written
+    # twice in a run merges by child index and leaves the longer fill's tail on screen. The
+    # eager panel lives here and is emptied at the end of the script — the `examples_slot`
+    # pattern, which is the one placeholder shape measured to clear — and the settled panel is
+    # written into the slot below it, whose path has never held anything else.
+    #
+    # **Filled unconditionally, as it was when this was one slot**, so there is no rerun — a
+    # panel opening, a button click — on which the sidebar has a hole where the panel was. That
+    # costs a second read of the log on such a rerun, which is affordable for the reason
+    # `observability/events.py` reads it eagerly at all: the volume is bounded by a human
+    # typing, and `sink_offset` bounds it where it would not be. Two panels never coexist even
+    # for a frame, because the settled fill below **clears this slot before** writing its own.
+    spend_eager_slot = st.empty()
     spend_slot = st.empty()
-    fill_spend_meter(spend_slot, answering=answering_now())
+    fill_spend_meter(spend_eager_slot, answering=answering_now())
 
     with st.expander(":material/policy: Grounding scope"):
         for detail in GROUNDING_SCOPE_DETAILS:
@@ -1351,6 +1393,24 @@ if not st.session_state.messages:
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
+        # **The status box is replayed, and the reason is an index and not a decoration.**
+        # Streamlit addresses a container's children by position, so a row whose live render
+        # opened with `st.status` and whose replay does not shifts every index by one — and the
+        # element the shift leaves unclaimed is the row's *last*, the disclaimer. Measured
+        # through `AppTest`'s own child map: `(Status, Markdown, Expander, Expander, Caption)`
+        # live against `(Markdown, Expander, Expander, Caption)` replayed, and the browser then
+        # showed the disclaimer twice for the whole of the next turn — the second copy faded,
+        # because it belongs to the previous run and is pruned when this one ends.
+        #
+        # So the replay renders the box too. `.get`, because a row written before this shape
+        # carries no label and must replay rather than raise (the tolerance every reader on this
+        # path has), and because a **gate-blocked** row legitimately has none: it never reached
+        # the agent, so it had no status box live either and must not grow one here.
+        #
+        # No body: the step log is not kept past the turn, and inventing one would be a claim
+        # about which tools ran. The label is the fact worth replaying — that the turn finished.
+        if (completed := message.get("status")) is not None:
+            st.status(completed, state="complete", expanded=False)
         st.markdown(as_markdown(message["content"]))
         if message["role"] == "assistant":
             # `.get` returning `None`, not a default, because a live session's transcript
@@ -1523,7 +1583,7 @@ def answer_turn(prompt: str) -> None:
                         agent=shared_agent(),
                         on_step=note,
                     )
-                    status.update(label="Answered", state="complete", expanded=False)
+                    status.update(label=TURN_COMPLETE, state="complete", expanded=False)
             except GraphRecursionError:
                 # The **generation tier** of PLAN §2's tiered handling: a failure of the
                 # answering loop itself rather than of a data source. The agent ran out of
@@ -1587,7 +1647,14 @@ def answer_turn(prompt: str) -> None:
                     st.markdown(as_markdown(ADVICE_REFUSAL))
                     st.caption(DISCLAIMER)
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": ADVICE_REFUSAL}
+                        # `status`: this row *had* a status box, so its replay needs one at the
+                        # same index — see the transcript loop. The label is the one the box
+                        # ended on, not a description of the refusal.
+                        {
+                            "role": "assistant",
+                            "content": ADVICE_REFUSAL,
+                            "status": TURN_COMPLETE,
+                        }
                     )
                     return
 
@@ -1618,6 +1685,9 @@ def answer_turn(prompt: str) -> None:
                     {
                         "role": "assistant",
                         "content": reply.text,
+                        # As above: the box's label, so the replay puts an element at the index
+                        # the live render used.
+                        "status": TURN_COMPLETE,
                         # The whole turn, because the panels need four facts about it and two of
                         # them — the query variants each search ran, and the tool cards — belong
                         # to the call rather than to any chunk. Display data, not memory: the
@@ -1639,6 +1709,13 @@ if prompt:
 # Nothing at all when there is no conversation: a download button offering a file with no turns
 # in it reads as a broken feature rather than as an empty one.
 if st.session_state.messages:
+    # **One slot here, unlike the spend panel's two, and the difference is arithmetic.** A
+    # second container written to a placeholder merges by child index, so what matters is
+    # whether the settled fill is at least as long as the eager one: here it is one caption
+    # against a caption and two buttons, so every index the eager fill wrote is overwritten.
+    # The spend panel could not rest on that — its length varies with the log it reads — so it
+    # splits the slot instead (`fill_spend_meter`). Clearing this one first was tried and
+    # removed: it does not help, because the write that follows lands on the same path.
     with export_slot.container():
         render_export_buttons(st.session_state.messages)
 
@@ -1647,4 +1724,9 @@ if st.session_state.messages:
 # **The second of two fills, not the only one** — the sidebar filled this slot on the way past
 # so the panel is on screen for the wait, and this replaces it with the settled figures.
 # `answering` is `False` here whatever this run did: the turn is over, and its total is logged.
+# The eager panel's job is over the moment this one exists, and it is *cleared* rather than
+# overwritten: an `Empty` at a path nothing writes to again is the one placeholder operation
+# measured to remove what it held (`examples_slot`, and `fill_spend_meter`'s own record of the
+# fix that assumed more than that).
+spend_eager_slot.empty()
 fill_spend_meter(spend_slot, answering=False)
