@@ -366,6 +366,58 @@ are asserted by walking the element tree for `vega_lite_chart`.
 
 ---
 
+## 2.7 Running everything
+
+```bash
+# hermetic — what CI runs
+uv run ruff check . && uv run ruff format --check .
+uv run pytest
+
+# the app
+uv run streamlit run app/Home.py
+
+# non-hermetic: the network, and four of the five spend money. Run from the repo root.
+uv run python scripts/ingest_filings.py                # full Universe: EDGAR + paid embeddings
+uv run python scripts/ingest_filings.py --dry-run       # fetch + gate only; no key, no writes
+uv run python scripts/ingest_filings.py --tickers AAPL  # one or more companies
+uv run python scripts/retrieval_smoke.py                # 5 sanity queries over the ingested KB
+uv run python scripts/security_suite.py                 # the gate against the committed corpus
+uv run python scripts/security_suite.py --gate-only     # layers 1-4 only: no embeddings, no agent
+uv run python scripts/evaluate.py                       # every stage, every arm, 28 golden rows
+uv run python scripts/evaluate.py --stage judge          # re-judge only; replay the rest from cache
+```
+
+Every one of them writes its own evidence file, and none of those files is ever hand-authored.
+Four rules govern them, and each exists because its absence caused a real problem:
+
+- **A partial run says so.** `--gate-only`, `--stage`, `--rows` and `--no-ablations` each render a
+  **PARTIAL RUN** banner naming what did not execute. Never commit a partial run as a whole one.
+- **`evaluate.py` refuses to start with `FINBRIEF_LOG_FILE` unset**, because the latency half of
+  ADR-0005's dominance test is measured from that log and discovering the sink was off after a
+  30-minute paid run means re-running the whole thing. `--allow-missing-sink` proceeds, and the
+  artifact then reports those figures as absent.
+- **A warm run has nothing to time.** Latency comes from this run's own window of the sink, so a
+  fully replayed run's window is empty and the artifact says "not measured, and therefore not met"
+  rather than serving the previous run's median.
+- **`ingest_filings.py` rewrites `ingest-report.md` only on a full-Universe run**, because a
+  `--tickers` or `--dry-run` run cannot speak to what the whole collection holds, and refuses to
+  re-render the hand-verification checklist from a subset at all — that would delete fifty-six
+  ticks and every note attached to them.
+
+The five committed evidence files:
+
+| file | what it is |
+|---|---|
+| [`ingest-report.md`](verification/ingest-report.md) | the section-detection gate table plus what the collection holds, read back from the persisted store |
+| [`section-starts.md`](verification/section-starts.md) | ADR-0007's hand-verification checklist. The only hand-edits it tolerates are ticking a box and adding a note — the generator re-parses it to carry both forward |
+| [`retrieval-smoke.md`](verification/retrieval-smoke.md) | five wiring queries over `retrieve()`. **Not an evaluation** — no buckets, no ground truth, no baseline, so no number in it may be cited as a quality claim. It leads with that, because a file of distances in a repo is read as an evaluation unless it says otherwise |
+| [`security-gate.md`](verification/security-gate.md) | every corpus case, which layer stopped it, the false-positive control, both latency medians against **both** budgets, and each planted payload's answer. **Pass/fail, not an evaluation** |
+| [`evaluation.md`](verification/evaluation.md) | **the measurement artifact of record.** The per-bucket A/B over six arms, all four RAGAs metrics, both pre-registered decisions with their verdicts, the power audit, latency and token spend, the tool-calling eval, and the four deferred measurements. Quote a quality number from here and from nowhere else |
+
+Never invoke any of the five from a test.
+
+---
+
 # Part 3 — Optional tasks implemented
 
 **A note on the numbering.** The assignment lists optional tasks unnumbered under Easy, Medium
