@@ -31,6 +31,15 @@ where it sits: `calls_behind` is imported from `spend.py` (one definition of wha
 which cannot be imported, because `evaluation/` is the harness and the app must not depend on
 it.
 
+**A binding is a behavioural equality, not an identity check on a name.** There was an alias
+here — `_calls_behind = calls_behind`, existing only so a test could assert the two were the
+same object — and it did not hold what it claimed: `token_totals` calls `calls_behind` directly,
+which resolves at call time, so a local reimplementation further down this file left the
+identity assertion passing while the arithmetic diverged (measured during the #14 review; the
+*behavioural* test caught it instead). `TokenTotals` is therefore bound to `Spend` by running
+both over one conversation's lines and comparing the answers, which is the shape the `Rate` and
+`p50` bindings already use.
+
 **What this module deliberately cannot do.** It never separates an app session from an
 evaluation run: the sink is append-only across every run that named it and **no field
 distinguishes them** (ADR-0011's T10 amendment, where a planner p50 over 13 appended runs
@@ -59,10 +68,6 @@ from finbrief.config import (
 )
 from finbrief.observability.events import Event, EventLog, read_events
 from finbrief.observability.spend import TOKEN_EVENTS, TOKEN_FIELDS, Tokens, calls_behind
-
-#: `spend.calls_behind`, under the name the tests bind. One definition of "how many paid chat
-#: calls does this line stand behind", including the cap-of-zero rule below.
-_calls_behind = calls_behind
 
 #: The `max_sub_queries` at which the planner makes **no chat round at all** (ADR-0004 §6: the
 #: cap removes the `model.invoke`, it does not truncate its output).

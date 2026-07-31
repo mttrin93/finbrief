@@ -954,12 +954,172 @@ def test_a_planner_line_at_a_cap_of_zero_stands_behind_no_call(sink):
     assert totals.partial is False
 
 
-def test_the_call_count_behind_a_line_is_the_one_the_spend_meter_uses():
-    # One definition of "how many paid calls does this line stand behind", shared rather than
-    # copied: the sidebar's meter and this page must not disagree about a conversation's cost.
-    from finbrief.observability import analytics, spend
+THREAD = "6f1c9e2a-1111-2222-3333-444455556666"
 
-    assert analytics._calls_behind is spend.calls_behind
+#: One conversation shape per branch the two implementations could take, because a binding
+#: over a happy path is a binding any two implementations pass.
+#:
+#: **The third `partial` clause is why this is a table and not one fixture.** `partial` is true
+#: three ways — a field's own calls did not all report it, *or* one field was reported and the
+#: other not at all — and the first version of this binding metered both fields on some line
+#: of a single conversation, so the third clause never fired: deleting it from `partial`
+#: left the test green. Measured while writing it, which is why the branch coverage is itself
+#: asserted below rather than trusted.
+CONVERSATIONS = {
+    "both-fields-complete": lambda logger: a_turn(
+        logger,
+        calls=1,
+        input_tokens=1200,
+        input_tokens_calls=1,
+        output_tokens=340,
+        output_tokens_calls=1,
+    ),
+    "input-only": lambda logger: log_event(
+        logger, "agent_turn", calls=1, input_tokens=1200, input_tokens_calls=1
+    ),
+    "output-only": lambda logger: log_event(
+        logger, "agent_turn", calls=1, output_tokens=340, output_tokens_calls=1
+    ),
+    "under-reported": lambda logger: a_turn(
+        logger,
+        calls=3,
+        input_tokens=1200,
+        input_tokens_calls=2,
+        output_tokens=340,
+        output_tokens_calls=2,
+    ),
+    "nothing-metered": lambda logger: log_event(
+        logger, "agent_turn", searches=1, verbatim_searches=1
+    ),
+    "planner-at-a-cap-of-zero": lambda logger: log_event(
+        logger, "query_translation", max_sub_queries=0, sub_queries=0, latency_ms=1
+    ),
+    "planner-metered": lambda logger: log_event(
+        logger,
+        "query_translation",
+        max_sub_queries=3,
+        sub_queries=2,
+        latency_ms=1400,
+        input_tokens=210,
+        input_tokens_calls=1,
+        output_tokens=48,
+        output_tokens_calls=1,
+    ),
+}
+
+SHAPES = sorted(CONVERSATIONS)
+
+
+@pytest.fixture(params=SHAPES, ids=SHAPES)
+def one_conversation(request, sink):
+    """One shape from `CONVERSATIONS`, written under a single thread id. Yields the log."""
+    logger, path = sink
+    with turn(f"{THREAD}:aa"):
+        CONVERSATIONS[request.param](logger)
+    return events(path)
+
+
+def its_token_lines(log):
+    """The lines both implementations are handed — this page's population over the thread."""
+    return log.of("agent_turn", "query_translation")
+
+
+def test_the_token_totals_agree_with_the_spend_meter_over_one_conversation(one_conversation):
+    """The binding, and it is behavioural because an identity check was not.
+
+    There used to be an alias here — `analytics._calls_behind = spend.calls_behind` — with a
+    test asserting the two were one object. It could not fail for the thing it was written for:
+    `token_totals` calls `calls_behind` by name, which resolves at call time, so a local
+    reimplementation in `analytics.py` left that assertion green while the two modules disagreed
+    about a conversation's cost. Measured during the #14 review — the identity assertion passed
+    and a *behavioural* test three lines away failed instead.
+
+    So the two are compared by result, over every shape in `CONVERSATIONS`. The sidebar totals
+    these events over one conversation and this page over a file; on the same lines the answers
+    must be the same numbers, including the two the review found copied and unbound — `partial`
+    and `dollars`.
+    """
+    from finbrief.observability.spend import conversation_spend
+
+    theirs = conversation_spend(one_conversation, thread_id=THREAD)
+    mine = token_totals(one_conversation, its_token_lines(one_conversation))
+
+    assert mine.calls == theirs.calls
+    assert mine.floored == theirs.floored
+    assert mine.calls_are_a_floor == theirs.calls_are_a_floor
+    for field in ("total", "reported_calls", "calls", "measured", "partial"):
+        assert getattr(mine.input, field) == getattr(theirs.input, field), field
+        assert getattr(mine.output, field) == getattr(theirs.output, field), field
+    assert mine.partial == theirs.partial
+    assert mine.measured == theirs.measured
+
+
+@pytest.mark.parametrize(
+    ("input_price", "output_price"),
+    [(None, None), (1.0, None), (None, 2.0), (1.0, 2.0)],
+    ids=["unpriced", "input-only", "output-only", "both"],
+)
+def test_the_priced_total_agrees_with_the_spend_meter_at_every_price(
+    one_conversation, input_price, output_price
+):
+    """`dollars` was the other verbatim copy, and all four price combinations are the binding.
+
+    Both-`None` is the default and the case that matters most: unpriced is an *absence*, not
+    `$0.00`, because there is no rate card in this repo (ADR-0011 §3). A single price is where
+    the two could return a number and a `None` while both look right — crossed with every
+    conversation shape, because a price and an unmetered field interact.
+    """
+    from finbrief.observability.spend import conversation_spend
+
+    theirs = conversation_spend(one_conversation, thread_id=THREAD)
+    mine = token_totals(one_conversation, its_token_lines(one_conversation))
+
+    assert mine.dollars(
+        input_per_mtok=input_price, output_per_mtok=output_price
+    ) == theirs.dollars(input_per_mtok=input_price, output_per_mtok=output_price)
+
+
+def test_the_binding_spans_every_branch_of_partial(sink):
+    """The binding's own coverage, asserted — its first version did not reach one branch.
+
+    Left implicit, the shape set drifted at once: every conversation metered both fields, so
+    the clause about *one field reported and the other not at all* never fired and deleting it
+    from `TokenTotals.partial` broke nothing. A set of fixtures that is claimed to span the
+    branches is a claim, and a claim in a comment cannot fail (CLAUDE.md).
+    """
+    logger, path = sink
+    outcomes = set()
+    for index, shape in enumerate(SHAPES):
+        with turn(f"{THREAD}:{index}"):
+            CONVERSATIONS[shape](logger)
+        log = events(path)
+        mine = token_totals(
+            log,
+            [event for event in its_token_lines(log) if event.turn_id == f"{THREAD}:{index}"],
+        )
+        outcomes.add((mine.measured, mine.partial, mine.input.measured, mine.output.measured))
+
+    assert (True, False, True, True) in outcomes, "a complete total is not partial"
+    assert (True, True, True, False) in outcomes, "input reported, output not at all"
+    assert (True, True, False, True) in outcomes, "output reported, input not at all"
+    assert (False, False, False, False) in outcomes, (
+        "nothing metered is unmeasured, not partial"
+    )
+
+
+def test_the_analytics_module_keeps_no_second_definition_of_a_lines_call_count(sink):
+    """The identity the deleted test meant to assert, at the level where it can fail.
+
+    Not `analytics.calls_behind is spend.calls_behind` — that is the check that could not fail,
+    because the call site resolves the name later. This drives the one branch the two
+    implementations would most plausibly disagree about: a `query_translation` line at
+    `PLANNER_SILENT_CAP` stands behind **no** chat call, and any copy written without ADR-0004
+    §6 in hand charges it one.
+    """
+    logger, path = sink
+    log_event(logger, "query_translation", max_sub_queries=0, sub_queries=0, latency_ms=1)
+
+    assert token_totals(events(path)).calls == 0, "a cap of zero made no `model.invoke`"
 
 
 def test_spend_over_time_buckets_by_day_and_names_the_unmetered_lines(sink):
