@@ -8,14 +8,7 @@ personalised investment advice and resists prompt injection. The retrieval pipel
 independently evaluated — RAGAs, a per-bucket A/B over six configurations, and pre-registered
 hypotheses settled by an exact paired test.
 
-> **The honest headline, before anything else.** The shipping retrieval default is **retained,
-> not validated**: only **4 of 18** pre-registered comparisons carried a measurement at all, so
-> the experiment could not resolve the question it was built to answer. That is written up
-> here, in [Part 5](#part-4--what-the-evaluation-established), rather than buried — the
-> pre-registration and the artifact it is judged against are deliberately separate things, and
-> this is what that separation is for.
-
-*Hero GIF here — steps 1 → 4 of the walkthrough below.*
+*Hero GIF here — steps 1 → 4 of [the walkthrough](./docs/demo.md).*
 
 | | |
 |---|---|
@@ -28,9 +21,10 @@ hypotheses settled by an exact paired test.
 ([`evaluation.md`](./docs/verification/evaluation.md) is the measurement artifact of record),
 then the ADR behind any decision that looks arbitrary. Every quality number here is requoted
 from a generated artifact and bound to it by `tests/test_grounding_scope.py`, so a run that
-moves a figure fails the suite instead of leaving this file asserting the old one.
-
----
+moves a figure fails the suite instead of leaving this file asserting the old one. The
+pre-registration and the artifact that judges it are deliberately separate documents — an ADR
+records what was predicted, a generated file records what happened, and neither can quietly
+become the other. [Part 4](#part-4--what-the-evaluation-established) is where that lands.
 
 ---
 
@@ -370,8 +364,6 @@ and the cut-if-undefendable rule says an item nobody can explain is worth less t
 does not exist. **Deployment plus a live URL is Tier-2 #1 and also unbuilt**; it is not on this
 list because it is not one of the 21, but it is the highest-value remaining item, since reach
 gates the value of everything else.
-
----
 
 ---
 
