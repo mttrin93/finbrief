@@ -13,7 +13,11 @@ generated file under [`docs/verification/`](./docs/verification/) and bound to i
 leaving prose asserting the old one. Several of those numbers came back saying *we cannot tell*,
 and that is what they say here.
 
-*Hero GIF here — steps 1 → 4 of [the walkthrough](./docs/demo.md).*
+![A question about Tesla's risk factors answered with numbered citations and a sources panel, then a
+follow-up naming no company that resolves anyway while the citations keep counting, then a full brief
+with price and peer-ratio cards](./docs/assets/finbrief-demo.gif)
+
+*Steps 1 → 4 of [the walkthrough](./docs/demo.md), which is reproducible exactly as written.*
 
 | | |
 |---|---|
@@ -106,6 +110,8 @@ from `[6]` rather than restarting, then valuation with its tool cards, then the 
 advice refusal and a blocked injection payload. Two preconditions are in that file and both matter
 on a first take: **warm the quote cache** (a cold stall can hold the cache lock for 91.5 s) and
 **enable the event sink**, without which step 5 leaves no gate-trigger record.
+
+---
 
 # Part 2 — How it works
 
