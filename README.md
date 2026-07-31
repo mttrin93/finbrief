@@ -191,7 +191,7 @@ Three mechanisms keep the gap small and, where they cannot, measured:
   *first* searches in their thread, which cannot be reference resolutions — so none of them is
   the one rewrite the description permits. That is a finding rather than a criterion this project
   claims to have met, and it is not something to tune the prompt against
-  ([5.4](./docs/findings.md#54-prompt-rules-are-instruments-not-enforcement)).
+  ([findings.md §4](./docs/findings.md#4-prompt-rules-are-instruments-not-enforcement)).
 
 One consequence worth being explicit about: a multi-hop question is decomposed *inside*
 `retrieve()` under evaluation, so if the agent instead answers one by making several tool calls,

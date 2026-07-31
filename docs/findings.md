@@ -5,7 +5,7 @@ strongest material the work produced, and none of them a retrieval number.
 
 ---
 
-## 5.1 What the evaluation established
+## 1. What the evaluation established
 
 **The pre-registered default is `hybrid + translation`, and it is retained because the experiment
 could not resolve the question — not because it was validated.** Every figure here is requoted
@@ -59,7 +59,7 @@ rather than approximated. Three outcomes, not two, and `Paired.detectable` is wh
 None of that is a defect in the pipeline. It is a measurement that came back saying *we cannot
 tell*, reported as that instead of as a result.
 
-## 5.2 Which half of the pipeline is deterministic
+## 2. Which half of the pipeline is deterministic
 
 Two findings from the same runs answer this precisely, and they point opposite ways.
 
@@ -100,7 +100,7 @@ planner that writes those variants is not, and neither is the judge — response
 re-sampled every time it is judged, which is why the artifact fences that column off from every
 pre-registered decision.
 
-## 5.3 The recurring theme: a claim the thing making it could not check
+## 3. The recurring theme: a claim the thing making it could not check
 
 The same defect, **eighteen** times in seventeen places — tiktoken's warm cache did it twice —
 across ingestion, retrieval, security, evaluation, instrumentation and process. They look
@@ -172,7 +172,7 @@ attempted, and a test asserting on the return value passes. Which is why
 detector three times. And **off-by-default has to be set twice**, where the library is used and in
 `conftest.py`, on the principle that a hole is a hole whether today's code walks through it.
 
-## 5.4 Prompt rules are instruments, not enforcement
+## 4. Prompt rules are instruments, not enforcement
 
 The strongest generalisable claim these measurements produced is not a retrieval number. It is
 that **a rule stated in a prompt is a thing you can measure compliance with, and not a thing you

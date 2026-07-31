@@ -527,7 +527,7 @@ never quoted alone. Source:
 
 The related **square-bracket adherence rate is unmeasured**, and the reason is an
 instrument-placement bug rather than an unwilling model — see
-[6.1](limitations.md#limitations-each-with-its-mechanism).
+[limitations.md](limitations.md).
 
 ### 3.4 Interactive help / guide
 
@@ -642,7 +642,7 @@ claim back where the review found it. **A passing security suite is evidence abo
 its corpus, not evidence about the layer** — and it cannot be, because the corpus is a sample
 drawn by the same author, from the same intuitions, that wrote the rules it tests.
 
-What the gate does **not** cover is in [6.1](limitations.md#limitations-each-with-its-mechanism).
+What the gate does **not** cover is in [limitations.md](limitations.md).
 
 ### 3.9 Token usage + cost display
 
@@ -753,7 +753,7 @@ refusal they were given.
 **PDF is declined, and the reason is this project's dependency record rather than effort.** It
 needs a new library, and every library added here for quality or safety shipped a telemetry path
 enabled by default — all three of them, each switched off somewhere different (the table is in
-[5.3](findings.md#53-the-recurring-theme-a-claim-the-thing-making-it-could-not-check)). A rendering library
+[findings.md §3](findings.md#3-the-recurring-theme-a-claim-the-thing-making-it-could-not-check)). A rendering library
 is a worse bet than those three rather than a better one: it would be added for **presentation**,
 which buys none of the argument that made the other three worth their switches and their
 per-backend tests. JSON and CSV need no dependency at all — `json` and `csv` are stdlib — so the
@@ -1125,7 +1125,7 @@ is *not to call a tool* (a retrieval-only question that must not fetch a quote, 
 ticker that must be refused as a result, and an advice-shaped question that must not send the loop
 off to price the recommendation). **Accuracy 100%** — and **every case in that denominator can
 fail**, which was not true when the rate was first published (see
-[5.3](findings.md#53-the-recurring-theme-a-claim-the-thing-making-it-could-not-check)). The valuation
+[findings.md §3](findings.md#3-the-recurring-theme-a-claim-the-thing-making-it-could-not-check)). The valuation
 quote-plus-peers pairing that `tool_expectation`'s one-tool shape cannot express is measured as its
 own rate — **1 of 2** — rather than by reshaping hand-verified reference data.
 
