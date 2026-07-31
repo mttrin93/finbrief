@@ -2109,6 +2109,35 @@ def test_an_assistant_row_replays_the_shape_it_rendered_live(app, monkeypatch):
     assert row_shape(app.chat_message[3]) == live
 
 
+def test_an_advice_refused_row_replays_the_shape_it_rendered_live(app, monkeypatch):
+    """The third row shape, and the one whose `status` key nothing held.
+
+    Layer 4 `return`s before the answer's panels, so this row is `(Status, Markdown, Caption)`
+    — shorter than an answered row and longer than a blocked one, and the *only* one of the
+    three whose `status` was written by this ticket. Deleting that key left the whole app suite
+    green (code review of #12): `test_an_assistant_row_replays_the_shape_it_rendered_live`
+    drives an answered turn and `…_without_a_status_box_it_never_had` drives a blocked one, so
+    the branch the change was in was the branch no equality covered.
+
+    The same defect as the answered row's, one branch over: without the key the replay drops
+    the box, the caption slides into the markdown's index, and the disclaimer is left on screen
+    under the *next* turn — a stale disclaimer beneath a refusal being the worst place for one.
+    """
+    stub_answer(monkeypatch, a_turn(text="You should buy Tesla — the multiple is fair [1]."))
+    app.run()
+
+    app.chat_input[0].set_value("Should I buy Tesla stock?").run()
+    live = row_shape(app.chat_message[1])
+    assert "Status" in live, live
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    assert row_shape(app.chat_message[1]) == live, (
+        "the refusal replays with a different element sequence than it rendered with, so its "
+        "disclaimer stays on screen under the following turn"
+    )
+
+
 def test_a_gate_blocked_row_replays_without_a_status_box_it_never_had(app, monkeypatch):
     """The other direction, which the fix must not break.
 
