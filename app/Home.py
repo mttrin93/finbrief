@@ -213,6 +213,13 @@ if "messages" not in st.session_state:
 QUESTION_KEY = "question"
 PENDING_QUESTION_KEY = "pending_question"
 
+#: The label the progress box ends on, and the one a replayed row puts back.
+#:
+#: A constant because it is written at the live turn and read on every rerun after it: a label
+#: spelled twice is a box that says one thing while a turn is answered and another once the
+#: reader clicks anything, which is the drift this file keeps a single source of truth for.
+TURN_COMPLETE = "Answered"
+
 
 def answering_now() -> bool:
     """Whether this run has a question in it, asked before the input that carries one exists.
@@ -1373,6 +1380,24 @@ if not st.session_state.messages:
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
+        # **The status box is replayed, and the reason is an index and not a decoration.**
+        # Streamlit addresses a container's children by position, so a row whose live render
+        # opened with `st.status` and whose replay does not shifts every index by one — and the
+        # element the shift leaves unclaimed is the row's *last*, the disclaimer. Measured
+        # through `AppTest`'s own child map: `(Status, Markdown, Expander, Expander, Caption)`
+        # live against `(Markdown, Expander, Expander, Caption)` replayed, and the browser then
+        # showed the disclaimer twice for the whole of the next turn — the second copy faded,
+        # because it belongs to the previous run and is pruned when this one ends.
+        #
+        # So the replay renders the box too. `.get`, because a row written before this shape
+        # carries no label and must replay rather than raise (the tolerance every reader on this
+        # path has), and because a **gate-blocked** row legitimately has none: it never reached
+        # the agent, so it had no status box live either and must not grow one here.
+        #
+        # No body: the step log is not kept past the turn, and inventing one would be a claim
+        # about which tools ran. The label is the fact worth replaying — that the turn finished.
+        if (completed := message.get("status")) is not None:
+            st.status(completed, state="complete", expanded=False)
         st.markdown(as_markdown(message["content"]))
         if message["role"] == "assistant":
             # `.get` returning `None`, not a default, because a live session's transcript
@@ -1545,7 +1570,7 @@ def answer_turn(prompt: str) -> None:
                         agent=shared_agent(),
                         on_step=note,
                     )
-                    status.update(label="Answered", state="complete", expanded=False)
+                    status.update(label=TURN_COMPLETE, state="complete", expanded=False)
             except GraphRecursionError:
                 # The **generation tier** of PLAN §2's tiered handling: a failure of the
                 # answering loop itself rather than of a data source. The agent ran out of
@@ -1609,7 +1634,14 @@ def answer_turn(prompt: str) -> None:
                     st.markdown(as_markdown(ADVICE_REFUSAL))
                     st.caption(DISCLAIMER)
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": ADVICE_REFUSAL}
+                        # `status`: this row *had* a status box, so its replay needs one at the
+                        # same index — see the transcript loop. The label is the one the box
+                        # ended on, not a description of the refusal.
+                        {
+                            "role": "assistant",
+                            "content": ADVICE_REFUSAL,
+                            "status": TURN_COMPLETE,
+                        }
                     )
                     return
 
@@ -1640,6 +1672,9 @@ def answer_turn(prompt: str) -> None:
                     {
                         "role": "assistant",
                         "content": reply.text,
+                        # As above: the box's label, so the replay puts an element at the index
+                        # the live render used.
+                        "status": TURN_COMPLETE,
                         # The whole turn, because the panels need four facts about it and two of
                         # them — the query variants each search ran, and the tool cards — belong
                         # to the call rather than to any chunk. Display data, not memory: the
