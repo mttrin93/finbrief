@@ -378,9 +378,12 @@ gates the value of everything else.
 
 # Part 4 — What the evaluation established
 
-Six numbers, requoted from [`docs/verification/evaluation.md`](./docs/verification/evaluation.md)
-and bound to it by `tests/test_grounding_scope.py`. The reasoning behind each, and the four findings
-this project would put its name to, are in [`docs/findings.md`](./docs/findings.md).
+Six numbers. **Five** are requoted from
+[`docs/verification/evaluation.md`](./docs/verification/evaluation.md) and bound to it by
+`tests/test_grounding_scope.py`; the sixth is marked † because it is not one artifact's figure —
+it is a range across three passes, and only the last of them is committed. The reasoning behind
+each, and the four findings this project would put its name to, are in
+[`docs/findings.md`](./docs/findings.md).
 
 | | measured | what it means |
 |---|---|---|
@@ -389,7 +392,14 @@ this project would put its name to, are in [`docs/findings.md`](./docs/findings.
 | p50 added by translation, against a 1500 ms budget | **3212** ms | over budget by more than 2×, recorded as missed and left **unamended** |
 | RAGAs faithfulness · context precision · context recall, shipping default, 28 rows | **0.758** · **0.543** · **0.675** | with `[min–max]` and `n` on every bucket mean in the artifact |
 | retrieval cells re-paid from scratch, then cells replayed on context-body keys | **168** re-paid → **672** replayed, zero misses | `retrieve()` is byte-identical across re-runs on keys carrying the full text of every context |
-| planner runs returning an identical sub-query set | **0–2 of 8** across three passes | the planner is *not* reproducible, which is why the A/B arms replay a recorded reply |
+| planner runs returning an identical sub-query set † | **0–2 of 8** across three passes | the planner is *not* reproducible, which is why the A/B arms replay a recorded reply |
+
+† **The one row above that is not a committed artifact's number.** The pass makes live planner
+calls, so it inherits the variance it is measuring and is quoted as a range rather than as one
+run's figure. `evaluation.md` carries the last pass — **2 of 8** — and the two earlier ones exist
+only in `docs/findings.md`'s account of them. The conclusion is the same in all three (6, 7 and 8
+of 8 questions varied), which is what makes the range usable; the range itself is not requotable
+from the artifact and is not presented as though it were.
 
 **So the shipping default is retained, not validated.** Hybrid earns nothing detectable on any
 bucket, the one root-caused live case favours the simpler arm, translation misses its latency

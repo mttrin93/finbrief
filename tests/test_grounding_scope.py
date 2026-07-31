@@ -550,7 +550,9 @@ EVALUATION_FIGURES = (
     ("0.944", (IMPLEMENTATION,)),  # section recall — free, deterministic
     ("770", (README, IMPLEMENTATION)),  # cells replayed from cache on the run described
     ("0.900", (IMPLEMENTATION,)),  # leakage-free precision on the hybrid arms
-    ("2/8", (FINDINGS,)),  # planner stability on the artifact's own run
+    # Planner stability on the artifact's own run. The README quotes it too, in the footnote
+    # separating the committed pass from the two that are only `findings.md`'s account.
+    ("2/8", (README, FINDINGS)),
     ("100", (README, IMPLEMENTATION, FINDINGS)),  # tool selection, and the divergence rate
     # `1838` (the planner's p50) is deliberately absent: it was only ever quoted inside the
     # latency table, and that table is now single-copy in the artifact, so no prose quotes the
