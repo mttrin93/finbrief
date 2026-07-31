@@ -1066,15 +1066,24 @@ disagree. The cost of keeping the contract is that `analytics.Rate` and `analyti
 the harness's, since the app may not import `evaluation/`; both pairs are **bound by test**, and
 `PLANNER_DISABLED_CAP` is now a third copy in the same binding.
 
-**Four absent states, because a page cannot refuse to render.** The harness's reader raises when it
+**Five absent states, because a page cannot refuse to render.** The harness's reader raises when it
 has nothing (`latency.load_log`); a page has to say something instead. So the sink resolves to one
-of four: `FINBRIEF_LOG_FILE` unset, named but never written, present but holding no events, and
-readable. The third carries `EventLog.malformed`, because a file nobody wrote and a file whose
-lines are not ours are different problems and only one is worth investigating. Below that every
-panel repeats the rule: a figure nothing measured says so where the number would be, and
-`Distribution.within` returns `bool | None` so "not measured" can never render as "missed". This is
-the trap the cost meter hit during T12 — a panel that disappears cannot be told apart from a broken
-feature.
+of five: `FINBRIEF_LOG_FILE` unset, named but never written, naming a path that will not open,
+present but holding no events, and readable. The fourth carries `EventLog.malformed`, because a file
+nobody wrote and a file whose lines are not ours are different problems and only one is worth
+investigating. Below that every panel repeats the rule: a figure nothing measured says so where the
+number would be, and `Distribution.within` returns `bool | None` so "not measured" can never render
+as "missed". This is the trap the cost meter hit during T12 — a panel that disappears cannot be told
+apart from a broken feature.
+
+It shipped with **four**, and the fifth is the review's finding rather than a late idea: an
+enumeration of absences is exhaustive only over what the code can actually reach, and a directory, a
+file the process cannot open and a file whose bytes are not UTF-8 all raised out of `open_sink` onto
+the page as a traceback — the one rendering a design built on telling an absence from a zero may not
+have. The `UnicodeDecodeError` case defeated `malformed` itself, which exists for a run killed
+mid-write: truncate inside a multi-byte sequence and the *file* is undecodable, not the line.
+`SinkState.UNREADABLE` carries the exception's type name, because "unreadable" alone sends a reader
+to the wrong knob.
 
 | panel | reads | the claim it is careful about |
 |---|---|---|

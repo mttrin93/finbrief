@@ -6,9 +6,10 @@ on this page writes a line either, and that is ADR-0011's amendment rather than 
 an event wired to a page can be reached by a human clicking and by nothing else, so the
 instrument belongs where the behaviour is produced and a page is only ever a reader.
 
-**Four states, four sentences, no empty charts.** `FINBRIEF_LOG_FILE` unset, named but never
-written, written but holding no events, and readable are four different things, and the first
-three each stop here with the sentence that fits. Below that every panel keeps the same rule: a
+**Five states, five sentences, no empty charts.** `FINBRIEF_LOG_FILE` unset, named but never
+written, naming a path that will not open, written but holding no events, and readable are five
+different things, and the first four each stop here with the sentence that fits. Below that
+every panel keeps the same rule: a
 figure nothing measured says so where the number would have been. That is the trap the sidebar's
 spend meter hit during #13 — a panel that vanishes, or renders `0`, cannot be told apart from a
 broken feature.
@@ -171,7 +172,7 @@ def tally_chart(counted: Tally, *, what: str, height: int = 220) -> None:
 def render_header(sink: Sink) -> bool:
     """What is being read, and whether there is anything to read. `False` stops the page.
 
-    The three absent states are the reason this returns a decision rather than just rendering:
+    The four absent states are the reason this returns a decision rather than just rendering:
     each of them is a complete answer, and a panel drawn underneath one of them would be a
     figure about a file that holds nothing.
     """
@@ -193,6 +194,25 @@ def render_header(sink: Sink) -> bool:
             f"The sink is opened by the app and by the scripts, not by this page — ask a "
             f"question on the FinBrief page and come back.",
             icon=":material/hourglass_empty:",
+        )
+        return False
+    if sink.state is SinkState.UNREADABLE:
+        # **The fifth sentence, and the reason there are five.** A directory where a file was
+        # meant, a file this process cannot open, and a file whose bytes are not UTF-8 all
+        # reached `read_events` in the first version and arrived here as a traceback — which on
+        # a page built around telling an absence from a zero is the one rendering that tells a
+        # reader nothing at all (code review of #14).
+        st.error(
+            f"`FINBRIEF_LOG_FILE` names `{sink.path}`, and it **cannot be read** "
+            f"(`{sink.reason}`). A path that exists and will not open is usually a directory "
+            f"where a file was meant, a permission the app does not have, or a file written by "
+            f"something other than this logger.",
+            icon=":material/error:",
+        )
+        st.caption(
+            "Its own state rather than folded into the not-yet-written one, because that "
+            "sentence would send you to the wrong knob: nothing here is waiting on a question "
+            "being asked."
         )
         return False
     if sink.state is SinkState.EMPTY:

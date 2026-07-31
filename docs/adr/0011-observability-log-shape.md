@@ -385,14 +385,30 @@ not import the harness — and the two pairs are therefore **bound by test** rat
 drift, like `spend.PLANNER_SILENT_CAP` and `latency.PLANNER_DISABLED_CAP` before them. That cap is
 now a third copy and is in the same binding.
 
-**The four states, and why a dashboard needed a fourth.** `latency.load_log` has two answers
+**The five states, and why a dashboard needed more than two.** `latency.load_log` has two answers
 (sink off, or a window with nothing in it) because a harness can refuse to proceed. A page cannot
-refuse; it has to say something. So `SinkState` splits the absence three ways — off, named but
-never written, present but holding no events — and the third carries `EventLog.malformed`, because
-an empty file and a file of unreadable lines are different problems and only one is worth
-investigating. Every panel repeats the rule one layer down: a figure nothing measured says so
-where the number would be, and `Distribution.within` returns `bool | None` so that "not measured"
-cannot render as "missed".
+refuse; it has to say something. So `SinkState` splits the absence four ways — off, named but
+never written, named but unopenable, present but holding no events — and the last carries
+`EventLog.malformed`, because an empty file and a file of unreadable lines are different problems
+and only one is worth investigating. Every panel repeats the rule one layer down: a figure nothing
+measured says so where the number would be, and `Distribution.within` returns `bool | None` so
+that "not measured" cannot render as "missed".
+
+*Amended by the #14 code review — it shipped with four.* The missing state is the general lesson
+and not a detail: **an enumeration of absences is exhaustive only over the cases the code can
+actually reach**, and three things a real filesystem path resolves to were not among them. A
+directory raises `IsADirectoryError`, a file the process cannot open raises `PermissionError`, and
+a file whose bytes are not UTF-8 raises `UnicodeDecodeError` — all three out of `read_events` and
+onto the page as a Streamlit traceback, which is precisely the rendering a design built around
+telling an absence from a zero may not have. The third is the one worth recording, because it
+defeated a promise made one layer down: `malformed` exists for a run killed mid-write leaving a
+truncated final line, and a write truncated *inside* a multi-byte sequence makes the whole file
+undecodable rather than the one line unparsable. `SinkState.UNREADABLE` carries the exception's
+**type name** (never its message — `finance/cache.py`'s rule, since an error string can carry a
+path and this one is rendered), because "unreadable" alone sends a reader to the wrong knob: a
+directory where a file was meant is a typo in `FINBRIEF_LOG_FILE` and a permission is not. A
+broken symlink stays `MISSING`, which is what it is, and there is a test saying so — widening the
+catch must not quietly capture it.
 
 **What this page does *not* do, and both omissions are decisions.** It renders **no** blocked
 question's `normalised` text: that field is this ADR's one bounded exception to no-user-content,

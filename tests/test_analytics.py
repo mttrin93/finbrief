@@ -22,6 +22,7 @@ from finbrief.observability.analytics import (
     Distribution,
     Rate,
     SinkState,
+    SinkUnreadable,
     activity,
     agent_behaviour,
     citations,
@@ -223,7 +224,7 @@ def test_a_list_valued_field_is_counted_per_member(sink):
     assert counted.absent == 0
 
 
-# --- The sink's four states, which are four different sentences --------------------------
+# --- The sink's five states, which are five different sentences --------------------------
 
 
 def test_an_unnamed_sink_is_off_and_carries_no_log():
@@ -264,6 +265,89 @@ def test_a_sink_of_unparsable_lines_is_empty_with_its_malformed_lines_counted(tm
     empty = open_sink(path)
     assert empty.state is SinkState.EMPTY
     assert empty.readable.malformed == 2
+
+
+def test_a_directory_where_a_file_was_meant_is_unreadable_not_missing(tmp_path):
+    """The first of the three paths that used to raise instead of answering.
+
+    `open_sink`'s docstring named this case as the reason the existence check sits ahead of the
+    read — and then let it reach `read_events`, which raised `IsADirectoryError` into a
+    Streamlit traceback (code review of #14). It is a typo in `FINBRIEF_LOG_FILE`, and the
+    sentence for it is not "nothing has written to it yet".
+    """
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+
+    resolved = open_sink(directory)
+    assert resolved.state is SinkState.UNREADABLE
+    assert resolved.log is None
+    with pytest.raises(SinkUnreadable):
+        assert resolved.readable
+    assert resolved.reason == "IsADirectoryError", "the type, so the page can name the problem"
+
+
+def test_a_file_the_process_cannot_open_is_unreadable(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"event": "agent_turn", "ts": "2026-01-01T00:00:00"}\n', encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        resolved = open_sink(path)
+    finally:
+        # Restored whatever the assertions do, or `tmp_path` teardown inherits the problem.
+        path.chmod(0o644)
+
+    assert resolved.state is SinkState.UNREADABLE
+    assert resolved.reason == "PermissionError"
+    assert resolved.log is None
+
+
+def test_a_sink_whose_bytes_are_not_utf8_is_unreadable_rather_than_a_traceback(tmp_path):
+    """The case that defeated `malformed`, which is why it is the one worth a docstring.
+
+    `EventLog.malformed` exists for a run killed mid-write leaving a truncated final line. A
+    write truncated *inside* a multi-byte sequence makes the whole file undecodable, so the one
+    corruption that count was built to survive was the one that took the page down. It is a
+    state now, and deliberately not a lenient decode: bytes this emitter did not write are a
+    different problem from a line this reader cannot parse.
+    """
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(
+        b'{"event": "agent_turn", "ts": "2026-01-01T00:00:00"}\n\xff\xfe truncated'
+    )
+
+    resolved = open_sink(path)
+    assert resolved.state is SinkState.UNREADABLE
+    assert resolved.reason == "UnicodeDecodeError"
+    # Not the one line that *did* decode: a partial read presented as the file is the narrowing
+    # this module is built against, and the caller cannot tell it from a short log.
+    assert resolved.log is None
+
+
+def test_a_broken_symlink_is_missing_because_that_is_what_it_is(tmp_path):
+    """The fourth path, and the one whose existing answer was already right.
+
+    `Path.exists()` follows the link and reports `False`, so this lands in `MISSING` — which is
+    the honest state: there is a name and no file behind it, exactly as if nobody had written
+    one. Asserted so that widening the `UNREADABLE` catch cannot quietly capture it.
+    """
+    link = tmp_path / "events.jsonl"
+    link.symlink_to(tmp_path / "nothing-here.jsonl")
+
+    resolved = open_sink(link)
+    assert resolved.state is SinkState.MISSING
+    assert resolved.reason is None, "nothing failed to be read — there was nothing to read"
+
+
+def test_only_an_unreadable_sink_carries_a_reason(tmp_path, sink):
+    # The reason is a rendering for one state, so every other state leaves it `None` rather than
+    # carrying an empty string a page would have to test for.
+    logger, populated = sink
+    log_event(logger, "agent_turn", searches=1)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+
+    for candidate in (None, tmp_path / "never-written.jsonl", empty, populated):
+        assert open_sink(candidate).reason is None, candidate
 
 
 def test_a_populated_sink_is_readable_with_its_span(sink):

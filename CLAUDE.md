@@ -399,11 +399,20 @@ the_download_buttons` is the guard).
   `evaluation/deferrals.Rate`/`evaluation/latency.p50` (the app may not import the harness), so
   both pairs are **bound by test** like `spend.PLANNER_SILENT_CAP` and
   `latency.PLANNER_DISABLED_CAP` — which `analytics` makes a third copy of, in the same binding.
-  A page reading this sink owes **four** states and not two, because a page cannot refuse to
+  A page reading this sink owes **five** states and not two, because a page cannot refuse to
   render the way `latency.load_log` refuses to proceed: off, named-but-never-written,
-  present-but-no-events (carrying `malformed`, since an empty file and a file of unreadable lines
-  are different problems) and readable. `Distribution.within` is `bool | None` for the same
-  reason — "not measured" may not render as "missed".
+  named-but-unopenable, present-but-no-events (carrying `malformed`, since an empty file and a
+  file of unreadable lines are different problems) and readable. It was four until the #14
+  review, and the missing one is the lesson: **an enumeration of absences is only exhaustive over
+  what the code can actually meet**, and three things a real path resolves to — a directory, a
+  file the process cannot open, a file whose bytes are not UTF-8 — reached `read_events` and
+  raised, so the page rendered a traceback where its whole design promised a sentence. The
+  `UnicodeDecodeError` case also defeated `EventLog.malformed`, which exists for a run killed
+  mid-write: truncate inside a multi-byte sequence and the *file* is undecodable, not the line.
+  `open_sink` therefore carries **two** checks that look redundant and are not — `exists()` ahead
+  of the read so a never-written sink keeps its own state, and a `try` around the read for what
+  `open` and the decode throw once the path does exist. `Distribution.within` is `bool | None` for
+  the same family of reasons — "not measured" may not render as "missed".
   Never a secret in `fields`, and **never a question or a query variant**: a variant is derived
   from user content and these lines are kept. Counts, lengths and verdicts only — which is why the
   `retrieval` event records a chunk's provenance by *variant index* while `Surfaced` itself

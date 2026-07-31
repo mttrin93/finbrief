@@ -138,6 +138,51 @@ def test_a_sink_of_unreadable_lines_says_how_many(page, tmp_path, monkeypatch):
     assert not charts(page)
 
 
+@pytest.mark.parametrize(
+    ("what", "expected_reason"),
+    [
+        ("directory", "IsADirectoryError"),
+        ("unreadable", "PermissionError"),
+        ("bytes", "UnicodeDecodeError"),
+    ],
+)
+def test_a_sink_that_cannot_be_read_says_so_instead_of_raising(
+    page, tmp_path, monkeypatch, what, expected_reason
+):
+    """The fifth state, at the level where its absence was a traceback.
+
+    All three of these reached `read_events` in the first version and raised out of `open_sink`,
+    so the page rendered a Streamlit exception where a sentence belonged (code review of #14).
+    `not page.exception` is the assertion that matters here: the other three absent states are
+    tested for what they *say*, and this one is tested for the rendering it must not be.
+    """
+    path = tmp_path / "events.jsonl"
+    if what == "directory":
+        path.mkdir()
+    elif what == "unreadable":
+        path.write_text("{}\n", encoding="utf-8")
+        path.chmod(0o000)
+    else:
+        path.write_bytes(b"\xff\xfe not utf8\n")
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(path))
+
+    try:
+        page.run()
+    finally:
+        if what == "unreadable":
+            path.chmod(0o644)
+
+    assert not page.exception, "a traceback is the one rendering this page may not have"
+    body = text(page)
+    assert "cannot be read" in body
+    assert expected_reason in body, "the reason, so a typo and a permission read differently"
+    assert str(path) in body
+    assert not charts(page)
+    # Not the *missing* sentence: nothing here is waiting on a question being asked, and that
+    # sentence would send a reader to the wrong knob.
+    assert "nothing has written to it yet" not in body
+
+
 def test_an_empty_file_says_it_holds_no_lines_at_all(page, tmp_path, monkeypatch):
     path = tmp_path / "events.jsonl"
     path.write_text("", encoding="utf-8")

@@ -11,10 +11,14 @@ samples, because ADR-0005's and ADR-0006's p50 budgets belong to the *reports* t
 and `security/report.py` already owns one median over in-process `Screening` objects. A
 dashboard is such a report. So the reader keeps its contract and the statistics live here.
 
-**Absence is a state, not a zero, and this module has four of them.** `SinkState` names them —
-the log is off, the file was named and never written, the file exists and holds no events, and
-the file is readable — because the page owes a different sentence to each, and a chart of zeros
-is a claim of no traffic. Below that, every figure follows the same rule one layer down: a
+**Absence is a state, not a zero, and this module has five of them.** `SinkState` names them —
+the log is off, the file was named and never written, the path exists and cannot be read, the
+file exists and holds no events, and the file is readable — because the page owes a different
+sentence to each, and a chart of zeros is a claim of no traffic. The third arrived late: the
+first version enumerated four, and a directory, an unopenable file and a file that is not valid
+UTF-8 each raised out of `open_sink` into a traceback, which is the one rendering a page built
+around honest absence may not have (code review of #14).
+Below that, every figure follows the same rule one layer down: a
 `Distribution` over no samples has no p50 rather than a p50 of `0.0`, a `Rate` over no
 denominator has no percentage, and a `Tally` reports the lines that carried nothing beside the
 values it counted. `within_budget` is `bool | None` for the same reason: `False` reads as
@@ -84,18 +88,27 @@ FAIL_OPEN_EVENTS = (
 
 
 class SinkUnreadable(RuntimeError):
-    """A caller asked for a log that is not there — the sink is off, or was never written."""
+    """A caller asked for a log that is not there — off, never written, or unreadable."""
 
 
 class SinkState(StrEnum):
-    """Which of four things is true about the sink, because each is a different sentence.
+    """Which of five things is true about the sink, because each is a different sentence.
 
-    `OFF` and `MISSING` carry no log at all; `EMPTY` carries one whose `malformed` count is the
-    difference between a file nobody wrote and a file whose lines are not ours.
+    `OFF`, `MISSING` and `UNREADABLE` carry no log at all; `EMPTY` carries one whose `malformed`
+    count is the difference between a file nobody wrote and a file whose lines are not ours.
+
+    **`UNREADABLE` was the gap, and it is the reason this enum is not three states.** A page
+    cannot refuse to render the way `latency.load_log` refuses to proceed, so every case a real
+    path resolves to owes a sentence — and the first version enumerated four while a directory,
+    a file the process cannot open and a file that is not valid UTF-8 each reached
+    `read_events` and raised, surfacing as a traceback where the sentence should have been
+    (code review of #14). Measured: `IsADirectoryError`, `PermissionError`,
+    `UnicodeDecodeError`.
     """
 
     OFF = "off"
     MISSING = "missing"
+    UNREADABLE = "unreadable"
     EMPTY = "empty"
     READABLE = "readable"
 
@@ -104,7 +117,7 @@ class SinkState(StrEnum):
 class Sink:
     """What the page is reading, and whether there is anything in it.
 
-    **`log` is `None` rather than an empty `EventLog` for the two absent states.** "Nobody
+    **`log` is `None` rather than an empty `EventLog` for the three absent states.** "Nobody
     enabled the log" read as "this run emitted nothing" is the failure `events.read_events`
     raises about, and it arrives one layer up as an empty aggregate rendering as zero activity.
     `readable` is the accessor that raises, so a caller that has not checked the state gets an
@@ -117,6 +130,12 @@ class Sink:
     log: EventLog | None
     first_event: datetime | None
     last_event: datetime | None
+    #: Why the sink could not be read — the exception's **type name**, and only for
+    #: `UNREADABLE`. A type rather than the message on `finance/cache.py`'s rule: a client's
+    #: error string can carry a path or a URL, and this one is rendered on a page. It is carried
+    #: at all because "unreadable" alone sends a reader to the wrong knob — a directory where a
+    #: file was meant is a typo in `FINBRIEF_LOG_FILE`, and a `PermissionError` is not.
+    reason: str | None = None
 
     @property
     def readable(self) -> EventLog:
@@ -137,7 +156,7 @@ class Sink:
 
 
 def open_sink(path: Path | str | None) -> Sink:
-    """Resolve the sink at `path` into one of `SinkState`'s four cases.
+    """Resolve the sink at `path` into one of `SinkState`'s five cases.
 
     **The whole file, with no `start_offset`**, and that is the one place this page differs
     from every other reader of the sink. `evaluation/latency.py` windows by an offset because
@@ -146,9 +165,22 @@ def open_sink(path: Path | str | None) -> Sink:
     which is the only claim a whole-file read supports — so it makes that claim in its header
     rather than narrowing to a pool it cannot name.
 
-    The existence check is here rather than in a `try` around `read_events` so that a named
-    sink nobody has written to is its own state: catching the `FileNotFoundError` would work,
-    and would also swallow an unreadable directory and call it "not written yet".
+    **Two checks, and they catch different things — which is why one did not subsume the
+    other.** The existence check stays ahead of the read so that a named sink nobody has
+    written to is its own state: catching `FileNotFoundError` instead would work, and would
+    also file an unopenable path under "not written yet". The `try` is for what the read itself
+    can throw once the path *does* exist, which is a disjoint set — `IsADirectoryError` and
+    `PermissionError` from the `open`, and `UnicodeDecodeError` from the decode. The first
+    version had only the existence check and let all three reach the page as a traceback (code
+    review of #14).
+
+    `UnicodeDecodeError` is the one worth naming, because it defeats a promise made one layer
+    down. `EventLog.malformed` exists for a run killed mid-write leaving a truncated final
+    line — and a write truncated inside a multi-byte sequence makes the *whole file*
+    undecodable, so the single corruption `malformed` was built to survive was the one that took
+    the page down. It is caught here rather than repaired by decoding leniently: bytes this
+    emitter did not write are a different problem from a line this reader cannot parse, and
+    guessing at the bytes would report the second when it is the first.
     """
     if path is None:
         return Sink(
@@ -169,16 +201,42 @@ def open_sink(path: Path | str | None) -> Sink:
             first_event=None,
             last_event=None,
         )
-    log = read_events(path)
+    try:
+        log = read_events(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        return Sink(
+            path=path,
+            state=SinkState.UNREADABLE,
+            size_bytes=_size(path),
+            log=None,
+            first_event=None,
+            last_event=None,
+            reason=type(exc).__name__,
+        )
     stamps = [event.ts for event in log.events]
     return Sink(
         path=path,
         state=SinkState.READABLE if log.events else SinkState.EMPTY,
-        size_bytes=path.stat().st_size,
+        size_bytes=_size(path),
         log=log,
         first_event=min(stamps) if stamps else None,
         last_event=max(stamps) if stamps else None,
     )
+
+
+def _size(path: Path) -> int:
+    """`path`'s size in bytes, or `0` when even that cannot be asked.
+
+    `stat` is a second syscall after the read, so it can fail where the read did not — a sink
+    rotated out from under a page mid-render is the ordinary case. A size is a decoration on
+    this page and a failure to read one may not cost the reader the panels: `0` here is the
+    honest floor for a figure nobody uses in arithmetic, unlike every other absence in this
+    module.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 # --- The three primitives every panel is built from -------------------------------------
