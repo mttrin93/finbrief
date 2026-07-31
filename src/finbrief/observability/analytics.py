@@ -439,6 +439,24 @@ def _ordered(counter: Counter[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(counter.items(), key=lambda row: (-row[1], row[0])))
 
 
+def _count(event: Event, field: str) -> int | None:
+    """`field` as a count, or `None` when the line did not carry one.
+
+    **The `or 0` this replaces was the fabricated zero, in two published rates.** A sum written
+    `int(event.field(name) or 0)` reads an absent field as a measurement of nothing and shrinks
+    no denominator while doing it, so a turn written before `verbatim_searches` existed reported
+    every one of its searches as divergent, and a `citation_markers` line without `resolved`
+    rendered a confident **0% support** (code review of #14). `Event.field` defaults to `None`
+    for exactly this reason, and `Distribution`/`Tally` already honour it — these two sums did
+    not.
+
+    A `bool` is not a count either, for `distribution`'s reason: `isinstance(True, int)` is
+    `True` in Python, so a flag would otherwise arrive here as a `1`.
+    """
+    value = event.field(field)
+    return None if isinstance(value, bool) or not isinstance(value, int) else value
+
+
 def _rate(events: Sequence[Event], field: str, *, label: str) -> Rate:
     """How many of `events` reported `field` as truthy, over how many reported it at all.
 
@@ -595,11 +613,17 @@ class AgentBehaviour:
     for the question verbatim, and §2 of its T4 amendment records that the rule is measured,
     not enforced. Counting verbatim searches and labelling the result divergence is the
     inversion worth naming, since both numbers are plausible on a panel.
+
+    `divergence_absent` is the turns that could not contribute to that rate — one of the pair
+    missing, or both. Named beside the figure rather than folded into it, the way `Tally.absent`
+    and `RetrievalLatency.unattributed` are: the rate is over the searches whose verbatim count
+    is *known*, and a reader is owed how many were not.
     """
 
     turns: int
     searches: int
     divergence: Rate
+    divergence_absent: int
     grounded: Rate
     searched: Rate
     tools_used: Tally
@@ -620,14 +644,30 @@ def agent_behaviour(log: EventLog) -> AgentBehaviour:
     exactly this reader ("so a reader who only aggregates turns still sees the divergence
     rate", `agent/agent.py`) — and a turn whose per-search lines were written by an older
     deploy still contributes.
+
+    **Both halves of the pair, or neither.** A line carrying `searches` and not
+    `verbatim_searches` is not a line whose searches all diverged, which is what folding the
+    absence to `0` claimed: it is a line that cannot answer the question, and it is counted in
+    `divergence_absent` and excluded from both sides of the rate. `searches` itself stays a
+    total over every line that reported one — a wider population than the rate's, which is why
+    `searches_per_turn.absent` reports its own gap.
     """
     turns = log.of("agent_turn")
-    searches = sum(int(event.field("searches") or 0) for event in turns)
-    verbatim = sum(int(event.field("verbatim_searches") or 0) for event in turns)
+    paired = [
+        event
+        for event in turns
+        if _count(event, "searches") is not None
+        and _count(event, "verbatim_searches") is not None
+    ]
+    counted = sum(_count(event, "searches") or 0 for event in paired)
+    verbatim = sum(_count(event, "verbatim_searches") or 0 for event in paired)
     return AgentBehaviour(
         turns=len(turns),
-        searches=searches,
-        divergence=Rate(label="divergence", hits=searches - verbatim, total=searches),
+        searches=sum(
+            value for event in turns if (value := _count(event, "searches")) is not None
+        ),
+        divergence=Rate(label="divergence", hits=counted - verbatim, total=counted),
+        divergence_absent=len(turns) - len(paired),
         grounded=_rate(turns, "grounded", label="grounded"),
         searched=_rate(turns, "searched", label="searched the KB"),
         tools_used=tally_each(turns, "tools_used", label="tool"),
@@ -653,6 +693,13 @@ class Citations:
     names. `clean` is the turn-level view of the same behaviour — a turn with nothing
     unresolved and nothing non-numeric — and the two differ whenever one bad turn carries many
     markers.
+
+    `absent` is the lines that could not contribute to `support` — no `resolved` count, or no
+    `unresolved` list. It is published for the reason `divergence_absent` is, and it mattered
+    more here: this rate is the deferral the whole page exists to make readable, and folding an
+    absent `resolved` to `0` rendered it as a confident **0% support** over a line that had
+    measured nothing (code review of #14). The raw `resolved`/`unresolved`/`non_numeric` counts
+    are over the same contributing lines, so the three agree with the rate above them.
     """
 
     turns: int
@@ -661,6 +708,7 @@ class Citations:
     resolved: int
     unresolved: int
     non_numeric: int
+    absent: int
 
     @property
     def measured(self) -> bool:
@@ -668,17 +716,31 @@ class Citations:
 
 
 def citations(log: EventLog) -> Citations:
-    """The bracket rate and the clean-turn rate over the sink's `citation_markers` lines."""
+    """The bracket rate and the clean-turn rate over the sink's `citation_markers` lines.
+
+    A line contributes to `support` only if it carried **both** halves of the fraction: a
+    `resolved` count and an `unresolved` list. One without the other cannot say what share of
+    this turn's markers resolved, and reading the gap as a zero is a claim about the answer's
+    citations that the line never made.
+    """
     lines = log.of("citation_markers")
-    resolved = sum(int(event.field("resolved") or 0) for event in lines)
-    unresolved = sum(len(event.field("unresolved") or ()) for event in lines)
+    counted = [
+        event
+        for event in lines
+        if _count(event, "resolved") is not None and isinstance(event.field("unresolved"), list)
+    ]
+    resolved = sum(_count(event, "resolved") or 0 for event in counted)
+    unresolved = sum(len(event.field("unresolved")) for event in counted)
     return Citations(
         turns=len(lines),
         support=Rate(label="cited-marker support", hits=resolved, total=resolved + unresolved),
         clean=_rate(lines, "clean", label="clean turns"),
         resolved=resolved,
         unresolved=unresolved,
-        non_numeric=sum(int(event.field("non_numeric") or 0) for event in lines),
+        non_numeric=sum(
+            value for event in counted if (value := _count(event, "non_numeric")) is not None
+        ),
+        absent=len(lines) - len(counted),
     )
 
 

@@ -368,6 +368,14 @@ def render_agent(log) -> None:
         "company name is a permitted rewrite — so this is a description of behaviour, not a "
         "count of faults."
     )
+    if behaviour.divergence_absent:
+        # Named rather than folded in, because folding it in was the bug: a turn missing either
+        # half of the pair reported every search as divergent, which is an absence rendered as
+        # the worst possible measurement.
+        st.caption(
+            f"{behaviour.divergence_absent} of {behaviour.turns} turn(s) carried no verbatim "
+            f"count and are in no part of that rate — absent, not divergent."
+        )
     st.markdown(f"Turn latency: {figures(behaviour.turn_latency)}")
     st.markdown("**Tools chosen**")
     tally_chart(behaviour.tools_used, what="tool selections")
@@ -387,6 +395,14 @@ def render_citations(log) -> None:
             f"**{cited.unresolved:,}** unresolved · **{cited.non_numeric:,}** non-numeric "
             f"marker(s)"
         )
+        if cited.absent:
+            # The rate this page exists for, so the gap in it is said out loud. A line missing
+            # either half of the fraction used to read as 0% support — an absence rendered as
+            # the worst measurement available, in the one figure the page was built to publish.
+            st.caption(
+                f"{cited.absent} of {cited.turns} record(s) carried no marker counts and are "
+                f"in no part of the support rate — absent, not unsupported."
+            )
     # **Why this panel exists, and what its number is worth.** ADR-0011's amendment establishes
     # that `citation_markers` is written by `app/Home.py` and by nothing else, so T10's ten live
     # agent turns produced none and `docs/verification/evaluation.md` reports the rate as

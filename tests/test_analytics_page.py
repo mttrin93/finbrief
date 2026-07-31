@@ -375,6 +375,63 @@ def test_the_bracket_rate_renders_and_says_what_kind_of_claim_it_is(page, seeded
     assert "evaluation.md" in body
 
 
+def test_the_agent_panel_names_the_turns_no_divergence_rate_can_include(page, seeded):
+    """An older-deploy turn, and the sentence it is owed instead of a verdict.
+
+    A line carrying `searches` and not `verbatim_searches` used to report every one of its
+    searches as divergent — an absence rendered as the worst measurement available. The rate is
+    now over the paired lines and the excluded count is on the panel (code review of #14).
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        a_turn(logger, searches=1, verbatim_searches=0)
+    with turn("t:2"):
+        log_event(logger, "agent_turn", searches=3, grounded=True, calls=1)
+
+    page.run()
+
+    body = text(page)
+    assert "divergence: **100%** (1/1)" in body, "over the one turn that reported both halves"
+    assert "1 of 2 turn(s) carried no verbatim count" in body
+    assert "absent, not divergent" in body
+
+
+def test_the_bracket_panel_names_the_records_no_support_rate_can_include(page, seeded):
+    """The same shape in the figure the page exists for, so it gets its own page-level test.
+
+    `docs/verification/evaluation.md` reports this rate as unmeasured, which makes this panel
+    the only surface it has — and a record without `resolved` rendered `0%` support: not "we
+    cannot say" but "this answer cited nothing that resolved".
+    """
+    logger, _ = seeded
+    with turn("t:1"):
+        log_event(
+            logger, "citation_markers", thread_id="a", sources=3, unresolved=[7], clean=False
+        )
+    with turn("t:2"):
+        log_event(
+            logger,
+            "citation_markers",
+            thread_id="a",
+            sources=2,
+            resolved=2,
+            unresolved=[],
+            non_numeric=0,
+            clean=True,
+        )
+
+    page.run()
+
+    body = text(page)
+    assert "cited-marker support: **100%** (2/2)" in body
+    # The exact string the old arithmetic produced, named rather than a substring search for
+    # `0%` — which `100%` contains, and which would therefore have passed on the bug.
+    assert "cited-marker support: **67%** (2/3)" not in body
+    assert "cited-marker support: **0%**" not in body
+    assert "1 of 2 record(s) carried no marker counts" in body
+    assert "absent, not unsupported" in body
+
+
 def test_the_bracket_rate_renders_even_with_no_agent_turns_beside_it(page, seeded):
     """Two events, two emitters, and the panel may not gate one on the other.
 

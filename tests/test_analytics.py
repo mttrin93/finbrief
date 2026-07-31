@@ -588,6 +588,54 @@ def test_the_agent_summary_divergence_over_no_searches_is_unmeasured(sink):
     assert behaviour.divergence.rate is None, "no searches is not 0% divergence"
 
 
+def test_a_turn_with_no_verbatim_count_is_absent_from_divergence_not_divergent(sink):
+    """The fabricated zero, in the first of the two figures it reached.
+
+    `agent_turn` gained `verbatim_searches` after it gained `searches`, so a line from before it
+    carries one and not the other — and the sum was written `int(field(...) or 0)`, which read
+    the gap as "none of these searches was verbatim" and reported **100% divergence** over a
+    turn that had measured nothing (code review of #14). `Event.field` defaults to `None`
+    precisely so this cannot happen, and `Distribution` beside it already honoured that.
+    """
+    logger, path = sink
+    log_event(logger, "agent_turn", searches=3, grounded=True)  # before `verbatim_searches`
+    a_turn(logger, searches=1, verbatim_searches=0)
+
+    behaviour = agent_behaviour(events(path))
+    # The rate is over the searches whose verbatim count is *known* — one, and it diverged.
+    assert behaviour.divergence.hits == 1
+    assert behaviour.divergence.total == 1
+    assert behaviour.divergence_absent == 1, "counted, the way `Tally.absent` is"
+    # And the search total is still every search anyone reported: a wider population than the
+    # rate's, which is the whole reason the two numbers are kept apart.
+    assert behaviour.searches == 4
+    assert behaviour.searches_per_turn.absent == 0, "both lines reported `searches`"
+
+
+def test_a_log_with_no_verbatim_counts_at_all_makes_no_divergence_claim(sink):
+    # The degenerate case of the same bug: with nothing paired the rate has no denominator, and
+    # `100% (3/3)` was the answer before. `not measured` is the honest one.
+    logger, path = sink
+    log_event(logger, "agent_turn", searches=3, grounded=True)
+
+    behaviour = agent_behaviour(events(path))
+    assert behaviour.divergence.rate is None
+    assert "not measured" in behaviour.divergence.render()
+    assert behaviour.divergence_absent == 1
+
+
+def test_a_flag_where_a_count_belongs_is_not_counted_as_one(sink):
+    # `_count` excludes `bool` for `distribution`'s reason: `isinstance(True, int)` is `True`,
+    # so a field that arrived as a flag would be summed as a `1` and reported as a search.
+    logger, path = sink
+    log_event(logger, "agent_turn", searches=True, verbatim_searches=True, grounded=True)
+
+    behaviour = agent_behaviour(events(path))
+    assert behaviour.searches == 0
+    assert behaviour.divergence.rate is None
+    assert behaviour.divergence_absent == 1
+
+
 def test_the_agent_summary_counts_grounding_and_tools(sink):
     logger, path = sink
     a_turn(logger, grounded=True, tools_used=["get_stock_data"], finance_calls=1)
@@ -629,6 +677,50 @@ def test_the_bracket_rate_is_resolved_markers_over_every_marker_issued(sink):
     assert cited.clean.hits == 1 and cited.clean.total == 2
     assert cited.unresolved == 1
     assert cited.non_numeric == 0
+
+
+def test_a_marker_record_missing_its_counts_is_absent_from_support_not_unsupported(sink):
+    """The same fabricated zero, in the figure this page exists to publish.
+
+    `docs/verification/evaluation.md` reports this rate as unmeasured, so the page is the only
+    surface it has — and a `citation_markers` line without `resolved` rendered
+    **0% support (0/1)**, which is not "we could not tell" but "this answer cited nothing that
+    resolved". The worst available measurement, from a line that made no measurement at all
+    (code review of #14).
+    """
+    logger, path = sink
+    log_event(logger, "citation_markers", thread_id="a", sources=3, unresolved=[7], clean=False)
+    log_event(
+        logger,
+        "citation_markers",
+        thread_id="a",
+        sources=2,
+        resolved=2,
+        unresolved=[],
+        non_numeric=0,
+        clean=True,
+    )
+
+    cited = citations(events(path))
+    assert cited.turns == 2, "both records are still records"
+    # Only the complete one is in the fraction, and it resolved everything it issued.
+    assert cited.support.hits == 2 and cited.support.total == 2
+    assert cited.absent == 1, "counted, so the rate's denominator is visible"
+    # The raw counts agree with the rate above them rather than with a wider population.
+    assert cited.resolved == 2 and cited.unresolved == 0
+    # `clean` reads its own field and keeps its own denominator, so it sees both lines.
+    assert cited.clean.total == 2
+
+
+def test_a_marker_record_with_no_counts_at_all_makes_no_support_claim(sink):
+    logger, path = sink
+    log_event(logger, "citation_markers", thread_id="a", sources=3, unresolved=[7], clean=False)
+
+    cited = citations(events(path))
+    assert cited.measured is True, "there *is* a record — the turn happened"
+    assert cited.support.rate is None, "and it says nothing about support"
+    assert "not measured" in cited.support.render()
+    assert cited.absent == 1
 
 
 def test_the_bracket_rate_over_no_logged_turns_is_unmeasured(tmp_path):
