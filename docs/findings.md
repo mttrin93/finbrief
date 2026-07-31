@@ -102,8 +102,9 @@ pre-registered decision.
 
 ## 5.3 The recurring theme: a claim the thing making it could not check
 
-The same defect, seventeen times, across ingestion, retrieval, security, evaluation,
-instrumentation and process. They look unrelated apart, which is why they are listed together.
+The same defect, **eighteen** times in seventeen places — tiktoken's warm cache did it twice —
+across ingestion, retrieval, security, evaluation, instrumentation and process. They look
+unrelated apart, which is why they are listed together.
 
 | where | it asserted | what it had established |
 |---|---|---|
@@ -161,8 +162,12 @@ library added here **for quality or safety** ships with a telemetry path enabled
 
 **The switch is in a different place every time** — an SDK method call, an environment variable
 that must be set before a cached read, an event-loop policy — and only one of the three documents
-it anywhere a reader would look. **The failure is silent by construction**: both libraries return
-a completely normal result while a packet is being attempted, which is why
+it anywhere a reader would look. **The failure is silent by construction** — for the two rows that
+POST, and by a different mechanism each: `ragas._analytics.track` is decorated `@silent` and fires
+from a background thread and again at `atexit`, while guardrails' POST happens inside
+OpenTelemetry's `BatchSpanProcessor`, which catches the exception on its own export thread and logs
+it. So `guardrails-ai` and `ragas` both return a completely normal result while a packet is being
+attempted, and a test asserting on the return value passes. Which is why
 `conftest.EGRESS_ATTEMPTS` is the only detector that survives, and why it has now been the only
 detector three times. And **off-by-default has to be set twice**, where the library is used and in
 `conftest.py`, on the principle that a hole is a hole whether today's code walks through it.

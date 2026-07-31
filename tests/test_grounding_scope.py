@@ -621,6 +621,52 @@ def test_no_document_credits_the_shipped_arm_with_the_ablations_rank():
     )
 
 
+#: The header of `findings.md`'s table of checks that could not fail.
+_COULD_NOT_FAIL_HEADER = "| where | it asserted | what it had established |"
+
+#: A row recording more than one occurrence of its defect, as tiktoken's `(twice)` does.
+_ROW_MULTIPLICITY = re.compile(r"\((twice|three times)\)")
+
+#: Spelled out, because the prose spells them out and a binding may not quietly accept digits.
+_NUMBER_WORDS = {16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen"}
+
+
+def _could_not_fail_rows() -> list[str]:
+    lines = FINDINGS.read_text(encoding="utf-8").splitlines()
+    start = lines.index(_COULD_NOT_FAIL_HEADER) + 2  # past the header and its separator
+    end = next(n for n, line in enumerate(lines[start:], start) if not line.startswith("|"))
+    return lines[start:end]
+
+
+def test_the_table_of_checks_that_could_not_fail_counts_itself():
+    """The count in the prose is the count in the table, rows *and* multiplicities.
+
+    Three sentences said **seventeen** over a seventeen-row table whose first row reads
+    "tiktoken's warm cache **(twice)**" — eighteen instances (code review of #12). The count is
+    the section's whole argument, since the claim is that the instances look unrelated until
+    they are listed, and a table that miscounts itself is that section's own bug class.
+
+    Derived from the table rather than asserted against a constant: a nineteenth instance
+    arrives as a row, and this is what makes the three sentences follow it.
+    """
+    rows = _could_not_fail_rows()
+    instances = sum(2 if _ROW_MULTIPLICITY.search(row) else 1 for row in rows)
+
+    assert (len(rows), instances) == (17, 18), (
+        f"the table now holds {len(rows)} row(s) and {instances} instance(s). Update the "
+        f"sentence above it and the README's two references to it, then update this equality "
+        f"— it is here so a new row cannot leave three stale counts behind."
+    )
+    assert (
+        f"**{_NUMBER_WORDS[instances]}** times in {_NUMBER_WORDS[len(rows)]} places"
+        in prose(FINDINGS)
+    ), "findings.md must state both counts, since they differ and the difference is the point"
+    assert prose(README).count(f"{_NUMBER_WORDS[instances]}-instance table") == 2, (
+        "the README names the table twice — in the document map and in Part 5 — and both "
+        "namings carry the instance count"
+    )
+
+
 def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
     """Its twin `GATE_LATENCY_BUDGET_MS` is bound by equalities in two places, which is the
     reason `config.py` cites for the move. This one's only coverage was `within_budget is True`
