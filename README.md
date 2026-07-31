@@ -315,8 +315,11 @@ Two to four lines each; the full section for every one is in
 
 - **Hybrid search** — BM25 + vector over every query variant, fused by RRF at the published `k=60`,
   with deterministic entity normalisation adding a ticker form. The case that motivated it moved a
-  target chunk from rank 5 → **absent** under hybrid alone → rank 1 once normalised, and the
-  mechanism proved **embedding-side, not lexical**: BM25 is one vote of three.
+  target chunk from rank 5 → **absent** under hybrid alone → rank **2** once normalised, on a panel
+  where **5/5** entries are the right filer against 1/5 before. Not a perfect ranking, and said so:
+  the top entry is a chunk that is not about debt, and the planner-off ablation reaches rank 1 where
+  the shipped arm does not. The mechanism proved **embedding-side, not lexical**: BM25 is one vote
+  of three.
   → [3.15](./docs/implementation.md#315-hybrid-search)
 - **A/B testing of RAG strategies** — six arms (two of them planner-off ablations that are a
   pre-registered refutation channel), four buckets of seven questions, six hypotheses settled by an

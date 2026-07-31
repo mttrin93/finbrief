@@ -588,6 +588,37 @@ def test_every_evaluation_figure_the_docs_quote_is_in_the_artifact(figure, docum
     )
 
 
+#: The row of ADR-0004 §6's before/after table that describes the arm the app actually runs.
+_SHIPPED_ARM_ROW = "normalisation + 3 sub-queries — **what ships**"
+
+
+def test_no_document_credits_the_shipped_arm_with_the_ablations_rank():
+    """`n=1`, and the one number in it that a summary is tempted to round up.
+
+    #12's second comment is binding here — *"Don't claim a perfect ranking"* — and the README's
+    summary claimed one: *"rank 5 → absent under hybrid alone → rank 1 once normalised"*. Rank 1
+    is state 3 and state 5 of that table, both **ablation** arms; the arm that ships is state 4,
+    at rank **2** with 5/5 entries on the right filer. `findings.md` reads the table correctly
+    and said the opposite of the README — *"`vector + normalisation` put the target chunk at
+    rank 1 against the default's rank 2"* — which is the drift a summary of a table introduces.
+
+    Bound to the table rather than to a typed number: the rank is read out of
+    `implementation.md`'s own row, so moving the measurement moves the expectation with it.
+    """
+    table = IMPLEMENTATION.read_text(encoding="utf-8")
+    row = next(line for line in table.splitlines() if _SHIPPED_ARM_ROW in line)
+    rank = [cell.strip() for cell in row.strip().strip("|").split("|")][4]
+
+    assert rank == "2", (
+        f"ADR-0004 §6's shipped-arm row now reports rank {rank!r}. Requote the README's "
+        f"summary from it — this test holds the two together, not the value 2."
+    )
+    assert f"rank **{rank}** once normalised" in prose(README), (
+        "the README's hybrid-search summary must name the shipped arm's rank, not the "
+        "planner-off ablation's — the ablation is the one that reaches rank 1"
+    )
+
+
 def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
     """Its twin `GATE_LATENCY_BUDGET_MS` is bound by equalities in two places, which is the
     reason `config.py` cites for the move. This one's only coverage was `within_budget is True`
