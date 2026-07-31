@@ -325,7 +325,7 @@ sentence that was wrong.
 EDGAR, market and news fixtures are **recorded, never fetched**, and retrieval runs against a
 real on-disk Chroma with a deterministic fake embedding — never the ingested `data/chroma`, which
 is only searchable by the paid model that wrote it. CI runs exactly the lint and test commands
-below; the suite is 1,454 tests.
+below; the suite is 1,507 tests.
 
 ```bash
 uv run ruff check . && uv run ruff format --check .

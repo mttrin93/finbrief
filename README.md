@@ -240,7 +240,7 @@ is not an injection. → [`implementation.md`: Domain specialisation](./docs/imp
 **Technical implementation** — LangGraph `create_agent` over OpenRouter with a `SqliteSaver`
 checkpointer, every knob in `config.py`, error handling in three tiers (API retry with a stale
 banner · retrieval fallback · refusals as UX), input validation against the Universe whitelist, and
-a hermetic test suite of **1,454 tests** whose no-network contract is enforced at the socket layer,
+a hermetic test suite of **1,507 tests** whose no-network contract is enforced at the socket layer,
 all four DNS resolvers, `curl_cffi` and `uvloop` rather than asserted.
 → [`implementation.md`: Technical implementation](./docs/implementation.md#25-technical-implementation)
 
