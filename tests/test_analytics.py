@@ -13,6 +13,7 @@ them. `test_the_gate_summary_reads_the_lines_the_real_gate_writes` and
 the two panels where a renamed field would silently report a measurement about nothing.
 """
 
+import dataclasses
 import io
 import logging
 import math
@@ -260,6 +261,28 @@ def test_a_list_valued_field_is_counted_per_member(sink):
     assert counted.lines == 3
     assert counted.total == 3
     assert counted.absent == 0
+
+
+def test_a_line_carrying_no_list_at_all_is_absent_from_a_per_member_tally(sink):
+    """`tally_each`'s `absent` branch, which no test reached (code review of #14).
+
+    Two ways to arrive here and both are absences rather than empty lists: a turn from before
+    `tools_used` existed, and a line where the field is not a list at all. The distinction from
+    an
+    **empty** list is the branch's whole point — "this turn used no tool" is a measurement, and
+    "this line does not say" is not, so only the second is counted here.
+    """
+    logger, path = sink
+    log_event(logger, "agent_turn", tools_used=["get_stock_data"])
+    log_event(logger, "agent_turn", tools_used=[])  # measured: this turn used no tool
+    log_event(logger, "agent_turn", searches=1)  # before `tools_used` existed
+    log_event(logger, "agent_turn", tools_used="get_stock_data")  # not a list
+
+    counted = tally_each(events(path).of("agent_turn"), "tools_used", label="tool")
+    assert counted.rows == (("get_stock_data", 1),), "the string is not iterated per character"
+    assert counted.lines == 4
+    assert counted.absent == 2, "the missing field and the non-list, not the empty list"
+    assert counted.total == 1
 
 
 # --- The sink's five states, which are five different sentences --------------------------
@@ -934,20 +957,60 @@ def test_a_pair_tally_files_a_line_missing_either_half_as_absent(sink):
     assert tools.unavailable_by_error.lines == 3
 
 
-def test_the_tool_summary_publishes_no_cache_hit_rate(sink):
-    """A deliberate absence, asserted so it cannot be added without a decision.
+def test_the_emitter_rounds_an_age_that_a_hit_rate_would_have_to_read(sink, monkeypatch):
+    """**The reason there is no cache hit rate, driven rather than described.**
 
-    `age_seconds` is `round()`ed to whole seconds at the emitter, so a cache hit 400 ms after a
-    fetch reads as `0` — indistinguishable from a miss. A hit rate derived from it could be
-    wrong invisibly, which is the check-that-cannot-fail class this repo keeps hitting. The
-    explicit fields (`stale`, and the `stale_fallback` event) are what the panel publishes.
+    The first version of this test asserted `not hasattr(tools, "cache_hit_rate")` and
+    `not hasattr(tools, "hits")` on a frozen slots dataclass — two names nobody was about to
+    add,
+    which is a check that describes a decision instead of exercising the fact behind it (code
+    review of #14). The fact is this: `finance/cache.py` writes `age_seconds=round(age)`, so a
+    real serve **0.4 s** after the last successful fetch reaches the log as `0` and is
+    indistinguishable from one at 0 s. A rate derived from that field could be wrong invisibly.
+
+    Driven through the real `TimedCache` with an injected clock — no network, no sleep. The
+    absence of the rate is then asserted at the level that matters: nothing on the summary is
+    computed from `age_seconds` except the distribution the panel prints as an explicit figure.
     """
+    from finbrief.finance.cache import TimedCache
+
     logger, path = sink
-    a_tool_call(logger)
+    monkeypatch.setattr("finbrief.finance.cache.logger", logger)
+    ticks = iter([0.0, 0.0, 0.4, 0.4])
+    cache = TimedCache(
+        name="quotes",
+        ttl_seconds=0.0,
+        attempts=1,
+        backoff_seconds=0.0,
+        clock=lambda: next(ticks),
+        sleep=lambda _: None,
+    )
+    cache.fetch("AAPL", lambda: 190.0)
+
+    def unavailable():
+        raise TimeoutError("the free tier said no")
+
+    served = cache.fetch("AAPL", unavailable)
+
+    # The real age is sub-second and the value *is* the cached one — a hit, in every sense a hit
+    # rate would care about.
+    assert served.stale is True
+    assert 0.0 < served.age_seconds < 1.0
+    # And the log says `0`, which is what a serve at zero seconds would also say.
+    (line,) = events(path).of("stale_fallback")
+    assert line.field("age_seconds") == 0, "rounded at the emitter — a hit reads as a miss"
 
     tools = tool_summary(events(path))
-    assert not hasattr(tools, "cache_hit_rate")
-    assert not hasattr(tools, "hits")
+    assert tools.age_seconds.p50 is None, "no `tool_call` line here to take an age from"
+    # The decision, at the level a rename cannot slip past: no field on the summary is a rate
+    # over this. `stale` and the fallback tally are the explicit fields published instead.
+    rates = {
+        field.name
+        for field in dataclasses.fields(tools)
+        if isinstance(getattr(tools, field.name), Rate)
+    }
+    assert rates == {"stale"}, f"a second rate appeared on this panel: {rates - {'stale'}}"
+    assert tools.stale_fallbacks.rows == (("quotes", 1),)
 
 
 # --- Panel 7: token spend over time -----------------------------------------------------
