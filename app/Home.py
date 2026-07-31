@@ -578,12 +578,8 @@ with st.sidebar:
     #
     # **Filled here as well as at the end, unlike the export's.** See `fill_spend_meter`: the
     # deferral above is what made the panel disappear mid-turn, and a panel whose subject is
-    # *this conversation's cost* is one a reader looks at while the cost is being incurred. It
-    # is filled unconditionally rather than only while answering, so there is no rerun on which
-    # the sidebar has a hole where a panel was. That reads the log twice on such a rerun, which
-    # is affordable for the reason `observability/events.py` reads it eagerly at all — the
-    # volume is bounded by a human typing questions — and is not affordable in the one place it
-    # would matter, so `sink_offset` bounds it.
+    # *this conversation's cost* is one a reader looks at while the cost is being incurred.
+    #
     # **Two slots, filled by two different fills.** See `fill_spend_meter`: one slot written
     # twice in a run merges by child index and leaves the longer fill's tail on screen. The
     # eager panel lives here and is emptied at the end of the script — the `examples_slot`

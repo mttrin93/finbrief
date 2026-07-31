@@ -183,7 +183,16 @@ drew at that position. So a slot created early and filled at the end of the scri
 inside a blocking call. That is how the sidebar's `Token spend` panel came to vanish for the
 whole of every answer and return when the turn completed, while the three panels beside it never
 moved — they are rendered inline (manual testing of #13). A slot whose fill is deferred past a
-model call needs a **second, eager fill**, and `app/Home.py`'s two are the pattern. **And
+model call needs a **second, eager fill**, and `app/Home.py`'s two are the pattern — but *two
+fills of one slot* is not the pattern, and that is the correction: the eager and settled fills
+**merge by child index**, so the longer one's tail survives under the shorter one. `export_slot`
+gets away with one slot because its eager fill is a single caption and its settled fill starts
+with one too; the `Token spend` panel did not, and now writes **two** slots, the eager one
+`.empty()`d at the end of the script — an `Empty` at a path nothing writes to again being the
+one placeholder operation measured to remove what it held (`examples_slot`). Clearing the slot
+*before* refilling it was tried first and does not work: the clear and the refill are two deltas
+against one path in one run, and the refill merges into what the clear was supposed to remove.
+**And
 `AppTest` cannot see a mid-run screen at all**: it runs the script to completion, so a slot
 holds only its *last* fill and an eager fill's contents are unreachable by any assertion on the
 element tree — a `KeyboardInterrupt` from a stubbed seam does not rescue it either, it fails
