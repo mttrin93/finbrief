@@ -1,12 +1,17 @@
 # FinBrief — a domain-specialised RAG assistant for equity research
 
-**Ask a question about a company's 10-K and get an answer you can check.** Every factual claim
-carries an inline `[n]` that resolves to a retrieved chunk with its ticker, Section, fiscal year
-and accession number, linked to that filing's own index page on EDGAR. Three finance tools put
-live price, peer ratios and headlines beside the filing text. A four-layer security gate refuses
-personalised investment advice and resists prompt injection. The retrieval pipeline is
-independently evaluated — RAGAs, a per-bucket A/B over six configurations, and pre-registered
-hypotheses settled by an exact paired test.
+**Ask about a company's 10-K and get an answer you can check.** Every claim carries an inline
+`[n]` resolving to the chunk it came from, linked to that filing on EDGAR; price, peer ratios and
+headlines come from tools, because a 10-K has no prices in it; and a question the assistant should
+not answer is refused rather than answered badly. The scope is 15 large-cap companies and four
+Items of each one's latest annual filing — [declared on screen, with its exact
+arithmetic](#23-the-grounding-scope-disclosure), rather than implied.
+
+**What it asks to be judged on.** Every quality number in these documents is requoted from a
+generated file under [`docs/verification/`](./docs/verification/) and bound to it by
+`tests/test_grounding_scope.py` — so a re-run that moves a figure fails the test suite instead of
+leaving prose asserting the old one. Several of those numbers came back saying *we cannot tell*,
+and that is what they say here.
 
 *Hero GIF here — steps 1 → 4 of [the walkthrough](./docs/demo.md).*
 
@@ -16,15 +21,6 @@ hypotheses settled by an exact paired test.
 | **Data** | SEC EDGAR via `edgartools` · Yahoo Finance (unofficially, via `yfinance`) · news RSS |
 | **Evidence** | five generated files under [`docs/verification/`](./docs/verification/) — never hand-authored |
 | **Design record** | eleven ADRs under [`docs/adr/`](./docs/adr/) · plan in [`PLAN.md`](./PLAN.md) · spec in [`docs/spec/finbrief.md`](./docs/spec/finbrief.md) · glossary in [`CONTEXT.md`](./CONTEXT.md) |
-
-**Read in this order.** This README, then the artifact behind any number that matters
-([`evaluation.md`](./docs/verification/evaluation.md) is the measurement artifact of record),
-then the ADR behind any decision that looks arbitrary. Every quality number here is requoted
-from a generated artifact and bound to it by `tests/test_grounding_scope.py`, so a run that
-moves a figure fails the suite instead of leaving this file asserting the old one. The
-pre-registration and the artifact that judges it are deliberately separate documents — an ADR
-records what was predicted, a generated file records what happened, and neither can quietly
-become the other. [Part 4](#part-4--what-the-evaluation-established) is where that lands.
 
 ---
 
@@ -47,7 +43,11 @@ is how each requirement and each optional task is built. [`docs/findings.md`](./
 what the project found out, including the seventeen-instance table of checks that could not fail.
 [`docs/limitations.md`](./docs/limitations.md) is all eighteen limitations with their mechanisms.
 Under those, [`docs/verification/`](./docs/verification/) is generated evidence and
-[`docs/adr/`](./docs/adr/) is the design record.
+[`docs/adr/`](./docs/adr/) is the design record: consult an artifact for any number that matters
+([`evaluation.md`](./docs/verification/evaluation.md) is the measurement artifact of record) and an
+ADR for any decision that looks arbitrary. The two are separate documents on purpose — an ADR
+records what was predicted, a generated file records what happened, and neither can quietly become
+the other.
 
 ---
 
