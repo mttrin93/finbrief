@@ -744,10 +744,11 @@ def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, see
 
     tables = [frame.value for frame in page.dataframe]
     (split,) = [frame for frame in tables if "Model" in frame.columns]
-    assert list(split["Model"]) == [PRICED_MODEL, OTHER_MODEL] or list(split["Model"]) == [
-        OTHER_MODEL,
-        PRICED_MODEL,
-    ], "one row per model"
+    # **An equality on the order, not a disjunction over both orders** — which is what this line
+    # was, and a disjunction over every possible order is a check that cannot fail (review of
+    # #15). One turn each, so `by_model`'s documented tie-break decides it: label order, and
+    # `anthropic/…` precedes `openai/…`.
+    assert list(split["Model"]) == [OTHER_MODEL, PRICED_MODEL]
     assert set(split.columns) == {"Model", "Turns", "Input", "Output", "Turn latency"}
     assert len(split) == 2
     # The planner caveat, which is what stops the rows summing to less than the totals above
@@ -781,6 +782,64 @@ def test_a_single_model_log_says_so_instead_of_drawing_a_one_row_comparison(page
     body = text(page)
     assert f"Every answered turn in this log ran on `{PRICED_MODEL}`" in body
     assert not [f for f in page.dataframe if "Model" in f.value.columns], "no table for one row"
+
+
+def test_a_reroute_is_named_on_the_page_and_silence_is_the_default(page, seeded):
+    # `model_reported`'s reader (review of #15): the field was emitted, round-tripped and read
+    # by nothing, so "a routing surprise should be visible rather than silent" described a fact
+    # no surface could show. Both halves asserted, because a caption that always renders is one
+    # a reader learns to skip.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
+
+    page.run()
+
+    body = text(page)
+    assert "served by a different model than requested" in body
+    assert "openai/gpt-4o-mini-2024-07-18" in body
+    assert "counted against the model that was asked for" in body, "and how to read the rows"
+
+
+def test_a_provider_that_agreed_produces_no_reroute_caption(page, seeded):
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, model_reported=PRICED_MODEL)
+    a_turn(logger, model=OTHER_MODEL)  # reported nothing at all
+
+    page.run()
+
+    assert "served by a different model" not in text(page)
+
+
+def test_a_log_whose_only_metered_line_is_the_planners_does_not_blame_another_model(
+    page, seeded, monkeypatch
+):
+    """The wrong-reason defect at the surface (review of #15).
+
+    `models` is built from answering lines only, so a turn that raised after the planner's round
+    leaves metered tokens and no attribution — and the literal this replaced said *"answered on
+    another model"* about a log where nothing had answered. The sentence is a function of the
+    state now, and this is the state that had no case.
+    """
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "1.0")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "2.0")
+    logger, _ = seeded
+    with turn("abc:aaaa"):
+        log_event(
+            logger,
+            "query_translation",
+            max_sub_queries=3,
+            sub_queries=2,
+            latency_ms=900,
+            input_tokens=600,
+            input_tokens_calls=1,
+        )
+
+    page.run()
+
+    body = text(page)
+    assert "records no model" in body
+    assert "another model" not in body, "nothing answered, so nothing answered elsewhere"
+    assert "**Cost (estimate)**" not in body, "and still no figure at the wrong rate"
 
 
 def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(page, seeded):

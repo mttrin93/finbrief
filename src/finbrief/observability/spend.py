@@ -171,7 +171,12 @@ class Spend:
     #: (`retrieval/retrieve.py`), so its line is always on the configured model and carries no
     #: `model` field at all — reading those absences in would make every translated turn
     #: unattributed for a reason that does not exist.
-    models: frozenset[str | None] = frozenset()
+    #:
+    #: **No default.** Every construction is `conversation_spend`'s and passes one, and a
+    #: default here would be the empty set — which is the value that makes a total
+    #: *unpriceable*. A silently-defaulted field that withholds a figure is the same hazard
+    #: `dollars` takes `priced_model` as a required keyword to avoid (code review of #15).
+    models: frozenset[str | None]
 
     @property
     def measured(self) -> bool:
@@ -179,15 +184,8 @@ class Spend:
         return self.input.measured or self.output.measured
 
     def all_answered_on(self, model: str) -> bool:
-        """Whether every answering turn here ran on `model`, and something said so.
-
-        An **equality** against a one-element set, which is what makes each of the three ways to
-        fail fail: a second model in the conversation, a turn that recorded no model at all, and
-        a conversation with no answering line yet. The last two are absences and this returns
-        `False` for them, because "nothing attributed this" is not "this ran on the priced
-        model" — the distinction the whole module is built around.
-        """
-        return self.models == frozenset({model})
+        """Whether every answering turn here ran on `model`, and something said so."""
+        return answered_only_on(self.models, model)
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -311,6 +309,61 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         # Answering lines only — `COMPLETED_EVENT` and not `TOKEN_EVENTS`. See `Spend.models`
         # for why the planner's line is excluded rather than read as an absence.
         models=frozenset(event.field("model") for event in ours(COMPLETED_EVENT)),
+    )
+
+
+def answered_only_on(models: frozenset[str | None], model: str) -> bool:
+    """Whether `models` says every answering turn ran on `model`, and something said so.
+
+    **The one definition, shared by import rather than copied** (T14, #15).
+    `observability/analytics.py` calls this the way it already calls `calls_behind` — the
+    duplications in that module (`Rate`, `p50`, `PLANNER_DISABLED_CAP`) exist because the app
+    may not import `evaluation/`, and **nothing forbids importing this module**: it is the same
+    package. A second copy here was in fact written first, with a docstring claiming the import
+    was forbidden — a claim the same file's own import block falsified, which is the
+    claim-in-a-comment-cannot-fail family exactly (code review of #15).
+
+    An **equality** against a one-element set, which is what makes each of the three ways to
+    fail fail: a second model in the pool, a turn that recorded no model at all, and no
+    answering line yet. The last two are absences and this returns `False` for them, because
+    "nothing attributed this" is not "this ran on the priced model" — the distinction the whole
+    module is built around.
+    """
+    return models == frozenset({model})
+
+
+def unpriced_because_of_the_model(
+    models: frozenset[str | None], priced_model: str, *, scope: str
+) -> str:
+    """Why a measured total carries no dollar figure, when the reason is *which model ran*.
+
+    **One definition of a sentence two surfaces render**, on the precedent
+    `UNMETERED_CLASSIFIER_NOTE` sets: the sidebar and the analytics page both had a copy, and
+    two copies of one sentence disagree on the turn one is edited (code review of #15).
+
+    **Three states, because "another model answered" is false in one of them** — and it is
+    reachable, which is what makes this a function rather than a constant. `models` is built
+    from answering lines only, so a conversation whose one metered line is the *planner's* (a
+    turn in flight, or one that raised after the planner's round — what `Spend.unfinished`
+    counts) arrives here with an **empty** set. The first version said "answered on another
+    model" about a turn where nothing had answered at all: an absence reported as a measurement
+    of something else, which is the failure this module exists against.
+
+    `scope` is the caller's noun for its own pool — "this conversation" for one thread, "this
+    log" for a whole sink — because the two surfaces total different things and neither may
+    borrow the other's word for it.
+    """
+    named = sorted(one for one in models if one is not None)
+    unrecorded = None in models or not models
+    if named and unrecorded:
+        answered = f"{scope} holds turns answered on another model — and turns recording none"
+    elif named:
+        answered = f"{scope} was answered on another model"
+    else:
+        answered = f"{scope} records no model for the turns it measured"
+    return (
+        f"Cost is not shown: the configured prices are for `{priced_model}`, and "
+        f"{answered}. The tokens above are measured."
     )
 
 

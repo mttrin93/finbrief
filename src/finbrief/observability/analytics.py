@@ -24,12 +24,19 @@ denominator has no percentage, and a `Tally` reports the lines that carried noth
 values it counted. `within_budget` is `bool | None` for the same reason: `False` reads as
 "measured and missed", which is a different claim from "not measured".
 
-**Three constants and one function are shared or bound rather than copied**, and each is named
-where it sits: `calls_behind` is imported from `spend.py` (one definition of what a line costs),
-`PLANNER_DISABLED_CAP` is a third copy of ADR-0004 §6's cap bound by test to the other two, and
-`Rate`/`p50` are bound by test to `evaluation/deferrals.Rate` and `evaluation/latency.p50` —
-which cannot be imported, because `evaluation/` is the harness and the app must not depend on
+**What is shared, what is bound, and the test for telling which is which.** `spend.py` is the
+same package, so anything it owns is *imported*: `calls_behind` (one definition of what a line
+costs), `Tokens`, and since T14 `answered_only_on` (one definition of when a pool is one model).
+Only what genuinely cannot be imported is duplicated-and-bound: `Rate` and `p50` against
+`evaluation/deferrals.Rate` and `evaluation/latency.p50`, plus `PLANNER_DISABLED_CAP` as a third
+copy of ADR-0004 §6's cap — because `evaluation/` is the harness and the app must not depend on
 it.
+
+That distinction is easy to get wrong in the direction of copying, and the #15 review caught it
+here: `all_answered_on` shipped as a local reimplementation whose docstring said "this page may
+not import the sidebar's scoping" — while the import block four lines above pulled
+`calls_behind` out of exactly that module. **The test is whether an import would fail, not
+whether a sentence says it would.**
 
 **A binding is a behavioural equality, not an identity check on a name.** There was an alias
 here — `_calls_behind = calls_behind`, existing only so a test could assert the two were the
@@ -74,6 +81,7 @@ from finbrief.observability.spend import (
     TOKEN_EVENTS,
     TOKEN_FIELDS,
     Tokens,
+    answered_only_on,
     calls_behind,
 )
 
@@ -904,28 +912,29 @@ class TokenTotals:
     input: Tokens
     output: Tokens
     #: The models the **answering** lines in this population ran on, `None` among them for a
-    #: line that recorded none — `spend.Spend.models`' rule, bound to it by test (T14, #15).
+    #: line that recorded none — `spend.Spend.models`' rule (T14, #15).
     #: `query_translation` lines are excluded there and here: the planner takes no model
     #: override, so its line is always the configured model and carries no field to read.
-    models: frozenset[str | None] = frozenset()
+    #:
+    #: No default, for the reason `Spend.models` gives: the empty set is what makes a total
+    #: unpriceable, and a field that withholds a figure may not arrive by omission.
+    models: frozenset[str | None]
 
     @property
     def measured(self) -> bool:
         return self.input.measured or self.output.measured
 
     def all_answered_on(self, model: str) -> bool:
-        """Whether every answering line here ran on `model` — `spend.Spend`'s rule verbatim.
+        """Whether every answering line here ran on `model`.
 
-        A **third** copy of a definition this repo has already bound twice across these two
-        modules (`calls_behind`, `partial`, `dollars`), and duplicated for the same reason: the
-        app may not import the harness and this page may not import the sidebar's scoping.
-
-        Bound by `test_the_priced_total_agrees_with_the_spend_meter_at_every_price`, which now
-        compares this verdict as well as the arithmetic behind it — two implementations agreeing
-        on a number and disagreeing on when to withhold it would still render two different
-        panels.
+        **`spend.answered_only_on`, imported rather than copied.** The duplications in this
+        module (`Rate`, `p50`, `PLANNER_DISABLED_CAP`) exist because the app may not import
+        `evaluation/`; `spend.py` is the same package and is already imported here for
+        `calls_behind`, so there is nothing to work around. The first version *was* a copy, with
+        a docstring asserting the import was forbidden — which this file's own import block
+        contradicted three lines up (code review of #15).
         """
-        return self.models == frozenset({model})
+        return answered_only_on(self.models, model)
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -1088,10 +1097,31 @@ class ModelSlice:
     turns: int
     tokens: TokenTotals
     latency: Distribution
+    #: What the *provider* said answered these turns (`agent_turn.model_reported`), when it said
+    #: anything and when it said something other than `model` — so a reader can see OpenRouter
+    #: having routed elsewhere (T14, #15).
+    #:
+    #: **This exists because the field it reads was otherwise write-only** (code review of #15).
+    #: `model_reported` was emitted, round-tripped by a test, and consumed by nothing, which
+    #: makes "a routing surprise should be visible rather than silent" a claim about a fact
+    #: nobody could see — and a write-only instrument is precisely what T13 (#14) existed to
+    #: fix in the one other place it happened.
+    #:
+    #: Empty is the ordinary case twice over: a provider that names nothing, and a provider that
+    #: names exactly what was asked for. Only a *disagreement* is worth a reader's attention, so
+    #: only a disagreement is kept.
+    rerouted_to: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
-        """How to name this slice on screen. UI copy's own words stay in the page."""
+        """How this slice is named on screen — the display fallback included.
+
+        **The fallback string lives here rather than in the page, and that is a departure worth
+        naming**: UI copy is normally the page's. It is here because it is the *name of an
+        absence in this dataclass's own key*, which the page and the tests must spell the same
+        way — the one-sentence version of why `prompts.py` owns the strings it does. An earlier
+        docstring claimed the opposite while returning this literal (code review of #15).
+        """
         return self.model if self.model is not None else "not recorded"
 
 
@@ -1106,6 +1136,8 @@ def by_model(log: EventLog) -> tuple[ModelSlice, ...]:
     dictionary order would reshuffle the panel between reruns of the same file. `None` sorts
     with the empty string, which puts the unattributed slice first among equals — visible
     rather than buried, which is the point of giving it a slice.
+    `test_a_tie_on_turn_count_is_broken_by_label_and_the_unattributed_slice_leads` is what makes
+    that sentence checkable; without it the tie-break was a claim with no test (review of #15).
     """
     buckets: dict[str | None, list[Event]] = {}
     for event in log.of(ANSWERING_TURN_EVENT):
@@ -1116,6 +1148,18 @@ def by_model(log: EventLog) -> tuple[ModelSlice, ...]:
             turns=len(turns),
             tokens=token_totals(log, turns),
             latency=distribution(turns, "latency_ms", label="turn"),
+            # Only what disagrees with the request — see `ModelSlice.rerouted_to`. Sorted for a
+            # stable rendering, and de-duplicated because a hundred turns on one reroute is one
+            # fact about this slice and not a hundred.
+            rerouted_to=tuple(
+                sorted(
+                    {
+                        reported
+                        for event in turns
+                        if (reported := event.field("model_reported")) and reported != model
+                    }
+                )
+            ),
         )
         for model, turns in buckets.items()
     ]

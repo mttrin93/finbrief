@@ -52,7 +52,10 @@ from finbrief.observability.analytics import (
     spend_over_time,
     tool_summary,
 )
-from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
+from finbrief.observability.spend import (
+    UNMETERED_CLASSIFIER_NOTE,
+    unpriced_because_of_the_model,
+)
 
 st.set_page_config(page_title="FinBrief · Analytics", page_icon=":material/analytics:")
 
@@ -602,41 +605,58 @@ def render_by_model(log) -> None:
         # **One model is not a comparison, and a one-row table implies the others answered
         # nothing.** The figures are already above; what a reader gains here is the label.
         st.caption(f"Every answered turn in this log ran on `{slices[0].label}`.")
-        return
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "Model": one.label,
-                    "Turns": one.turns,
-                    "Input": _tokens(one.tokens.input.total),
-                    "Output": _tokens(one.tokens.output.total),
-                    "Turn latency": figures(one.latency),
-                }
-                for one in slices
-            ]
-        ),
-        hide_index=True,
-        width="stretch",
-        height="content",
-    )
-    # **Two sentences the table cannot carry, and both are about what is *not* in it.**
-    #
-    # The planner's tokens belong to no row: `query_translation` carries no model because the
-    # planner takes no override, so the rows sum to less than the totals above by exactly the
-    # planner's share. Unsaid, that difference reads as an arithmetic bug in the table.
-    st.caption(
-        "Rows cover answering calls only. The sub-query planner runs on the configured model "
-        "whatever is picked and is logged separately, so these rows sum to less than the "
-        "totals above."
-    )
-    # And an unattributed row is not a fifth model: it is turns from before the field existed,
-    # which is most of an established sink. Named only when there is one, because a caveat about
-    # a row nobody can see is noise.
-    if any(one.model is None for one in slices):
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Model": one.label,
+                        "Turns": one.turns,
+                        "Input": _tokens(one.tokens.input.total),
+                        "Output": _tokens(one.tokens.output.total),
+                        "Turn latency": figures(one.latency),
+                    }
+                    for one in slices
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            height="content",
+        )
+        # **Two sentences the table cannot carry, and both are about what is *not* in it.**
+        #
+        # The planner's tokens belong to no row: `query_translation` carries no model because
+        # the planner takes no override, so the rows sum to less than the totals above by
+        # exactly the planner's share. Unsaid, that reads as an arithmetic bug in the table.
         st.caption(
-            "`not recorded` is turns logged before the model was recorded on a turn — not a "
-            "model, and not the configured one either."
+            "Rows cover answering calls only. The sub-query planner runs on the configured "
+            "model whatever is picked and is logged separately, so these rows sum to less than "
+            "the totals above."
+        )
+        # And an unattributed row is not a fifth model: it is turns from before the field
+        # existed, which is most of an established sink. Named only when there is one, because a
+        # caveat about a row nobody can see is noise.
+        if any(one.model is None for one in slices):
+            st.caption(
+                "`not recorded` is turns logged before the model was recorded on a turn — "
+                "not a model, and not the configured one either."
+            )
+    # **Outside the branch above, and that was a bug when it was inside it.** A reroute is news
+    # whether or not the log holds more than one requested model — arguably *more* so on a
+    # single-model log, since there is no table to notice it against. The early return
+    # skipped it entirely and the test for it failed on that log (review of #15).
+    #
+    # Rendered **only when a provider disagreed** with the request, which is the whole reason
+    # the reply's own model name is recorded beside the requested one: answers are routed, and
+    # rows attributing tokens to what was *asked for* owe a reader the reroute that served them.
+    # Silent otherwise, because "the provider agreed" and "the provider said nothing" are both
+    # the ordinary case and a caption that always renders is one a reader skips.
+    rerouted = [one for one in slices if one.rerouted_to]
+    if rerouted:
+        st.caption(
+            "Some answers were served by a different model than requested — "
+            + " · ".join(f"`{one.label}` → {', '.join(one.rerouted_to)}" for one in rerouted)
+            + ". Tokens above are counted against the model that was asked for."
         )
 
 
@@ -664,11 +684,11 @@ def render_cost(totals) -> None:
         # way: it is the more specific claim, and "set the two variables" would be advice that
         # does not help. It names no per-model breakdown as a remedy, because none exists — the
         # per-model panel above splits *tokens*, which is what this repo can measure.
-        st.caption(
-            f"Cost is not shown: the configured prices are for `{priced_model}`, and this log "
-            "holds turns answered on another model — or on none it recorded. The token counts "
-            "above are measured."
-        )
+        #
+        # The sentence is `spend.py`'s, and `scope` is this page's own noun for its pool: the
+        # sidebar totals one conversation and this totals a file, so neither may borrow the
+        # other's word for what it is describing (code review of #15).
+        st.caption(unpriced_because_of_the_model(totals.models, priced_model, scope="this log"))
     elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through
         # OpenRouter's routing, so there is no rate card in this repo to read one from

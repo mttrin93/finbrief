@@ -1398,6 +1398,51 @@ def test_an_empty_log_yields_no_slices_rather_than_one_slice_of_nothing(sink):
     assert by_model(events(path)) == ()
 
 
+def test_a_tie_on_turn_count_is_broken_by_label_and_the_unattributed_slice_leads(sink):
+    """`by_model`'s tie-break, which was documented and untested (review of #15).
+
+    Two claims in that docstring had no assertion behind them: that the ordering is **total**,
+    so a panel does not reshuffle between reruns of the same file, and that `None` sorts with
+    the empty string — putting the unattributed slice first among equals, which is the point of
+    giving it a slice rather than burying it. Reversing the key broke no test.
+    """
+    logger, path = sink
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=1000)
+    a_turn(logger, latency_ms=1000)  # no `model` field
+
+    slices = by_model(events(path))
+
+    assert [one.model for one in slices] == [None, OTHER_MODEL, PRICED_MODEL]
+    assert len({one.turns for one in slices}) == 1, "a genuine tie, or this proves nothing"
+
+
+def test_a_provider_that_served_a_different_model_is_recorded_against_the_slice(sink):
+    """The reader `model_reported` did not have (review of #15).
+
+    The field was emitted, round-tripped by a test, and consumed by nothing — which made
+    ADR-0011's "a routing surprise should be visible rather than silent" a claim about a fact no
+    surface could show, and a write-only instrument is what T13 (#14) already existed to fix.
+    """
+    logger, path = sink
+    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
+    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
+
+    (only,) = by_model(events(path))
+
+    assert only.rerouted_to == ("openai/gpt-4o-mini-2024-07-18",), "de-duplicated across turns"
+
+
+def test_a_provider_that_agreed_or_said_nothing_records_no_reroute(sink):
+    # Both are the ordinary case and neither is news, so the panel stays silent: a caption on
+    # every log would train a reader to skip the one time it mattered.
+    logger, path = sink
+    a_turn(logger, model=PRICED_MODEL, model_reported=PRICED_MODEL)  # agreed
+    a_turn(logger, model=OTHER_MODEL)  # said nothing
+
+    assert all(one.rerouted_to == () for one in by_model(events(path)))
+
+
 def test_the_analytics_module_keeps_no_second_definition_of_a_lines_call_count(sink):
     """The identity the deleted test meant to assert, at the level where it can fail.
 

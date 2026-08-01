@@ -71,7 +71,11 @@ from finbrief.observability.logging_setup import configure_logging, log_event
 # died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
 # would not have.
 from finbrief.observability.logging_setup import turn as log_turn
-from finbrief.observability.spend import Spend, conversation_spend
+from finbrief.observability.spend import (
+    Spend,
+    conversation_spend,
+    unpriced_because_of_the_model,
+)
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -472,13 +476,17 @@ def render_spend_meter(*, answering: bool = False) -> None:
         # not help, and with no prices configured this reader has the same two things to do
         # either way.
         #
-        # It names the configured model rather than the picked one, because what a reader has to
-        # act on is which rate the knobs describe — and it does not offer to price the other
-        # model, since no rate card ships here (ADR-0011 §3) and inventing one is the failure
-        # this branch exists to avoid.
+        # **The sentence is `spend.py`'s and it is a function of the state**, not a literal
+        # here. This branch is reachable with an *empty* model set — a turn in flight, or one
+        # that raised after the planner's round, leaves a metered `query_translation` line and
+        # no `agent_turn` — and the literal this replaced said "answered on another model" about
+        # a conversation where nothing had answered (code review of #15). It also had a
+        # near-copy on the analytics page, which is the duplication `UNMETERED_CLASSIFIER_NOTE`
+        # exists to have already taught us about.
         st.caption(
-            f"Cost is not shown: the configured prices are for `{settings.chat_model}`, and "
-            "this conversation was answered on another model. The tokens above are measured."
+            unpriced_because_of_the_model(
+                spend.models, settings.chat_model, scope="this conversation"
+            )
         )
     elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through

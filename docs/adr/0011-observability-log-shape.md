@@ -513,3 +513,39 @@ parses nothing.
 the measurement artifact of record and every figure in it ran on the default model; a per-model
 number would mean the harness run once per model. ADR-0001's T14 amendment records that as a
 scoping decision rather than an omission.
+
+### Corrections from #15's code review
+
+Three things this amendment claimed that the code did not do, recorded rather than quietly fixed
+— the practice this ADR's own §4 correction established.
+
+**1. `model_reported` was write-only.** §1 above argues the field exists so "a routing surprise
+should be visible rather than silent", and nothing read it: it was emitted, round-tripped by a
+test, and consumed by no reader, panel or aggregate. That is a claim about a fact no surface could
+show, and it is the *same* defect T13 (#14) was partly written to fix in `citation_markers` — one
+ticket after learning it. `ModelSlice.rerouted_to` is the reader, and the per-model panel names a
+reroute when the provider disagreed with the request. Silent when it agreed or said nothing, since
+both are the ordinary case and a caption that always renders is one a reader skips.
+
+**2. "Another model answered" was said about turns where nothing answered.** `Spend.models` is
+built from answering lines only, so a conversation whose one metered line is the *planner's* — a
+turn in flight, or one that raised after the planner's round, which is exactly what
+`Spend.unfinished` counts — reaches the withheld-figure branch with an **empty** set. The sidebar
+rendered a literal claiming another model had answered. Measured: `measured=True`,
+`models=frozenset()`, `unfinished=1`. An absence reported as a measurement of something else,
+which is the failure this whole document is organised around, arriving in the sentence added to
+*prevent* a wrong figure.
+
+The fix makes the sentence a **function of the state** — `spend.unpriced_because_of_the_model`,
+three cases (another model, no model recorded, both) with the caller's own scope noun — which also
+collapses the near-duplicate the sidebar and the analytics page had each grown. That duplication
+is `UNMETERED_CLASSIFIER_NOTE`'s lesson repeated one ticket later, and it is worth naming twice:
+**a sentence two surfaces render has one owner**, and the pressure to type it twice comes back
+every time the two surfaces phrase it slightly differently.
+
+**3. `all_answered_on` was copied where an import was available.** The duplications in
+`analytics.py` are licensed by one rule — the app may not import `evaluation/` — and this was not
+one of them: `spend.py` is the same package, and the same file already imports `calls_behind` from
+it. The copy's docstring asserted the import was forbidden, four lines below the import that
+disproved it. It is now `spend.answered_only_on`, imported. **The test of a shared-versus-copied
+decision is whether the import would fail, not whether a comment says it would.**

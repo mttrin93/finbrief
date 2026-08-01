@@ -231,6 +231,36 @@ def test_the_picked_model_reaches_the_builder_and_gets_its_own_cached_agent(
     assert len(agents) == 2, "and the two sessions ran on two different instances"
 
 
+def test_switching_back_reuses_the_first_models_agent_instead_of_rebuilding_it(
+    app, stubbed_agent
+):
+    """`@st.cache_resource` **adds** an entry per model, never replacing one (review of #15).
+
+    ADR-0008's amendment quotes `a1 is a3: True` as measured — the first model's agent surviving
+    after a second is built — and nothing in the suite reached it: every test picked each model
+    once, so an implementation that *replaced* the cached entry on each switch would have passed
+    them all while rebuilding an agent other sessions were mid-conversation on.
+
+    Asserted as an equality on the built list and on instance identity, because the interesting
+    value is the *third* ask: three selections, two constructions, and the first object back.
+    """
+    app.run()
+    pick_model(app, CHAT_MODEL_CHOICES[0]).run()
+    app.chat_input[0].set_value(QUESTION).run()
+    first = stubbed_agent["asked"][-1]["agent"]
+
+    pick_model(app, CHAT_MODEL_CHOICES[1]).run()
+    app.chat_input[0].set_value(FOLLOW_UP).run()
+    pick_model(app, CHAT_MODEL_CHOICES[0]).run()
+    app.chat_input[0].set_value("And its cash flow?").run()
+
+    assert [build.model for build in stubbed_agent["built"]] == [
+        CHAT_MODEL_CHOICES[0],
+        CHAT_MODEL_CHOICES[1],
+    ], "two constructions for three selections — the third was a cache hit"
+    assert stubbed_agent["asked"][-1]["agent"] is first, "and it is the very same instance"
+
+
 def test_the_model_that_answered_is_reported_to_the_seam_that_logs_it(app, stubbed_agent):
     # The picker is only visible in the record if the slug reaches `answer()`, which is what
     # writes it onto `agent_turn`. Without this the log attributes every turn to the configured

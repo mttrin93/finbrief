@@ -606,6 +606,13 @@ configured slug: `answer()` is handed a *built* agent and cannot see which model
 filling it in would be a guess rendered indistinguishable from a reading. A slug is configuration
 and not user content, so neither field needs an exception to the logging rules.
 
+The second field shipped **write-only** and the review caught it: emitted, round-tripped by a test,
+read by nothing — which made "visible rather than silent" a claim about a fact no surface could
+show, one ticket after [3.19](#319-advanced-analytics-dashboard) existed partly to fix the same
+thing in `citation_markers`. The per-model panel names a reroute now, and only when the provider
+disagreed with the request: agreement and silence are both the ordinary case, and a caption that
+always renders is one a reader skips.
+
 **The cost meter gives something up, and that is the most interesting part of the ticket.** The two
 price knobs are a single pair describing one model, and no per-model rate card ships — ADR-0011
 refused one because OpenRouter fronts many upstreams, so a price in this repo is a figure nobody
@@ -616,6 +623,17 @@ model, and otherwise reports its tokens with the reason. It is `Tokens.partial`'
 absence beside "no price configured" and "nothing reported the tokens" — and `priced_model` is a
 **required** keyword, because an optional check defaults to not checking and the wrong figure would
 have survived in whichever caller went unupdated.
+
+**The sentence that replaces the figure is a function of the state, and the first version was
+wrong about one.** `models` is built from answering lines only, so a conversation whose one metered
+line is the *planner's* — a turn in flight, or one that raised after the planner's round — arrives
+with an empty set, and the literal the sidebar rendered said "answered on another model" about a
+conversation where nothing had answered at all. An absence reported as a measurement of something
+else, inside the sentence added to prevent a wrong number. Three states now, one owner
+(`spend.unpriced_because_of_the_model`), and the caller supplies its own noun for its pool — the
+sidebar totals a conversation and the dashboard a file, so neither may borrow the other's word.
+That single owner also collapses the near-duplicate the two surfaces had each grown, which is
+`UNMETERED_CLASSIFIER_NOTE`'s lesson arriving one ticket later.
 
 **The dashboard splits tokens and turn latency by model**, which is nearly free once the field
 exists and is exactly what this sink needs: append-only across every session, so four models' turns

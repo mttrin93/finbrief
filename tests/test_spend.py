@@ -15,7 +15,12 @@ import pytest
 from finbrief.evaluation.latency import PLANNER_DISABLED_CAP
 from finbrief.observability.events import read_events
 from finbrief.observability.logging_setup import log_event, turn
-from finbrief.observability.spend import PLANNER_SILENT_CAP, conversation_spend
+from finbrief.observability.spend import (
+    PLANNER_SILENT_CAP,
+    answered_only_on,
+    conversation_spend,
+    unpriced_because_of_the_model,
+)
 from finbrief.observability.tokens import usage_total
 
 THREAD = "3294dcff-0f78-4e82-a07c-47e8552e378f"
@@ -424,6 +429,80 @@ def test_the_planners_tokens_do_not_carry_a_model_and_do_not_block_pricing(sink,
     assert spend.dollars(
         input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL
     ) == pytest.approx(0.15)
+
+
+def test_the_shared_verdict_refuses_all_three_ways_a_pool_can_fail_to_be_one_model():
+    """`answered_only_on`'s contract, at the one definition both surfaces now import.
+
+    It was two copies until the #15 review, the second carrying a docstring that claimed the
+    import was forbidden — while its own module imported `calls_behind` from here three lines
+    up. Tested directly as well as through the two `dollars()` bindings, because an equality
+    against a one-element set is the whole mechanism and each refusal is a separate claim.
+    """
+    assert answered_only_on(frozenset({PRICED_MODEL}), PRICED_MODEL)
+
+    assert not answered_only_on(frozenset({OTHER_MODEL}), PRICED_MODEL), "another model"
+    assert not answered_only_on(frozenset({PRICED_MODEL, OTHER_MODEL}), PRICED_MODEL), (
+        "a switch mid-conversation"
+    )
+    assert not answered_only_on(frozenset({PRICED_MODEL, None}), PRICED_MODEL), "one unrecorded"
+    assert not answered_only_on(frozenset(), PRICED_MODEL), "nothing answered at all"
+
+
+def test_the_reason_given_for_an_unpriced_total_matches_which_state_it_is_in(sink, emitter):
+    """The defect this function exists to make unrepresentable (code review of #15).
+
+    The sidebar rendered a literal — *"this conversation was answered on another model"* — in
+    the branch `dollars is None and not all_answered_on(...)`. That branch is reachable with an
+    **empty** model set, because `models` is built from answering lines only: a turn in flight,
+    or one that raised after the planner's round, leaves a `query_translation` line and no
+    `agent_turn`. Measured before the fix — `measured=True, models=frozenset(), unfinished=1` —
+    so the panel told a reader another model had answered where nothing had answered at all.
+
+    Three states, three sentences, and the words are asserted here rather than on two pages:
+    this is one definition of a claim the sidebar and the analytics page both render, on
+    `UNMETERED_CLASSIFIER_NOTE`'s precedent.
+    """
+    named = unpriced_because_of_the_model(
+        frozenset({OTHER_MODEL}), PRICED_MODEL, scope="this conversation"
+    )
+    assert "was answered on another model" in named
+
+    nothing = unpriced_because_of_the_model(
+        frozenset(), PRICED_MODEL, scope="this conversation"
+    )
+    assert "records no model" in nothing
+    assert "another model" not in nothing, "nothing answered, so nothing answered elsewhere"
+
+    unrecorded = unpriced_because_of_the_model(
+        frozenset({None}), PRICED_MODEL, scope="this log"
+    )
+    assert "records no model" in unrecorded
+
+    both = unpriced_because_of_the_model(
+        frozenset({OTHER_MODEL, None}), PRICED_MODEL, scope="this log"
+    )
+    assert "another model" in both and "recording none" in both, "a log can hold both"
+
+    # The priced model is named in every one of them, because that is what a reader acts on, and
+    # the scope noun is the caller's: the sidebar totals a conversation and the page a file.
+    for sentence in (named, nothing, unrecorded, both):
+        assert f"`{PRICED_MODEL}`" in sentence
+    assert "this conversation" in named and "this log" in unrecorded
+
+
+def test_the_wrong_model_sentence_is_reached_by_the_state_the_defect_was_in(sink, emitter):
+    # The other half: that a planner-only conversation really does land in the branch above, so
+    # the three sentences are not a distinction with no case behind it.
+    a_planner_call(emitter, Reply(input_tokens=600))
+    spend = spend_from(sink)
+
+    assert spend.measured, "there are tokens, so a figure is being withheld rather than absent"
+    assert spend.models == frozenset()
+    assert not spend.all_answered_on(PRICED_MODEL), "so the app takes the wrong-model branch"
+    assert "records no model" in unpriced_because_of_the_model(
+        spend.models, PRICED_MODEL, scope="this conversation"
+    )
 
 
 def test_an_unfinished_turn_is_not_priced_because_nothing_has_attributed_it_yet(sink, emitter):
