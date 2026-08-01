@@ -326,6 +326,9 @@ REROUTE_CAPTION = "Served by a different model than requested"
 #: while `= False` was caught. The same asymmetry as `REROUTE_CAPTION` above, in the same panel.
 UNATTRIBUTED_CAVEAT = "`not recorded` is turns from before the model was logged"
 
+#: The one-sample clause, shared by both halves for the reason the two above are (T14, #15).
+THIN_SAMPLE_CAVEAT = "A row with fewer than two timed turns has no spread to report"
+
 
 def a_turn(logger, **fields):
     defaults = {
@@ -761,7 +764,11 @@ def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, see
     # — `app.get(...)` on an element type `AppTest` has no wrapper for returns `[]` rather than
     # raising, and would be a vacuous assertion (CLAUDE.md).
     logger, _ = seeded
+    # Two turns each, because one would make both rows single-sample and blank their spread —
+    # `MIN_SPREAD_SAMPLES`, which is a different subject from this test's (columns and order).
     a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
     a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
 
     page.run()
@@ -792,6 +799,7 @@ def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, see
     # The planner caveat, which is what stops the rows totalling less than the figures above
     # from reading as an arithmetic bug. One caption now, not two stacked paragraphs.
     assert UNATTRIBUTED_CAVEAT not in text(page), "no such row here, so no caveat about one"
+    assert THIN_SAMPLE_CAVEAT not in text(page), "nor about a spread every row has"
     assert "rows total less than the figures above" in text(page)
 
 
@@ -944,6 +952,51 @@ def test_a_model_whose_turns_reported_no_latency_shows_a_blank_and_not_an_instan
     untimed = split[split["Model"] == OTHER_MODEL].iloc[0]
     assert all(pd.isna(untimed[column]) for column in ("p50 ms", "p90 ms", "max ms"))
     assert untimed["Input"] == 500, "its tokens were measured even though its latency was not"
+
+
+def test_a_row_with_one_timed_turn_reports_its_middle_and_no_spread(page, seeded):
+    """The issue's one-sample rule (#15), which the first version did not implement.
+
+    > a split with one sample says so rather than drawing a distribution
+
+    One timed turn *is* its own p50, p90 and maximum, so printing all three renders a sample as
+    a distribution — three columns of one number, indistinguishable by eye from a model whose
+    latency really was that flat. The median of one sample is that sample and stays; the spread
+    goes, because there is none.
+
+    The caption is asserted with it: an unexplained blank reads as a rendering fault, which is
+    the same reason the empty token cells are explained.
+    """
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=5000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=7000)  # the only turn on this model
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    lonely = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert lonely["p50 ms"] == 7000, "the median of one sample is that sample"
+    assert pd.isna(lonely["p90 ms"]) and pd.isna(lonely["max ms"]), "and it has no spread"
+    # The row that does have two samples keeps all three, or the rule has removed a measurement.
+    two = split[split["Model"] == PRICED_MODEL].iloc[0]
+    assert (two["p50 ms"], two["p90 ms"], two["max ms"]) == (3000, 5000, 5000)
+    assert THIN_SAMPLE_CAVEAT in text(page)
+
+
+def test_a_table_whose_rows_all_have_a_spread_does_not_explain_a_missing_one(page, seeded):
+    # The negative half, on the same terms as the other two clauses in this caption: a caveat
+    # about a blank nobody can see is noise, and a caption that always renders is one a reader
+    # learns to skip.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=5000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=2000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
+
+    page.run()
+
+    assert THIN_SAMPLE_CAVEAT not in text(page)
 
 
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):

@@ -622,8 +622,8 @@ def render_by_model(log) -> None:
                         "Input": one.tokens.input.total,
                         "Output": one.tokens.output.total,
                         "p50 ms": _ms(one.latency.p50),
-                        "p90 ms": _ms(one.latency.p90),
-                        "max ms": _ms(one.latency.maximum),
+                        "p90 ms": _spread(one.latency, one.latency.p90),
+                        "max ms": _spread(one.latency, one.latency.maximum),
                     }
                     for one in slices
                 ]
@@ -663,7 +663,15 @@ def render_by_model(log) -> None:
         #
         # It names no slug: the page knows the default *now* and not the default *then*, and a
         # sink is append-only across every deploy that ever wrote to it.
+        #
+        # **The third clause is the one-sample rule, and it renders on the same terms as the
+        # second** — only when a row it describes is on screen (code review of #15). A row with
+        # fewer than `MIN_SPREAD_SAMPLES` timed turns keeps its p50, which is that turn, and
+        # leaves p90 and max blank rather than repeating it into three columns that look like a
+        # distribution. Said here because an unexplained blank reads as a rendering fault, which
+        # is the same reason the token columns' emptiness is explained above.
         unattributed = any(one.model is None for one in slices)
+        thin = any(one.latency.count < MIN_SPREAD_SAMPLES for one in slices)
         st.caption(
             "Answering calls only — the planner is logged separately, so rows total less than "
             "the figures above."
@@ -671,6 +679,12 @@ def render_by_model(log) -> None:
                 " `not recorded` is turns from before the model was logged: they ran on"
                 " whatever the default was then, which the log does not name."
                 if unattributed
+                else ""
+            )
+            + (
+                " A row with fewer than two timed turns has no spread to report, so its p90"
+                " and max are blank rather than a repeat of its p50."
+                if thin
                 else ""
             )
         )
@@ -751,6 +765,31 @@ def _ms(value: float | None) -> int | None:
     instant. Streamlit renders `None` as an empty cell.
     """
     return None if value is None else round(value)
+
+
+#: The samples below which a row reports its middle and nothing about its spread (T14, #15).
+#:
+#: Two, because one timed turn *is* its own p50, p90 and maximum — three columns of one number,
+#: which reads as a distribution and is a sample. The issue asked for exactly this ("a split
+#: with one sample says so rather than drawing a distribution") and the first version printed
+#: all three regardless, which is the absence-versus-measurement rule this page is built on
+#: arriving as a triple of measurements that are one.
+#:
+#: An assertion about what a spread *is* rather than a knob, so it sits here like
+#: `MAX_AGENT_STEPS` and not in `config.py` — and `p50` is deliberately not gated by it, since
+#: the median of one sample is that sample and saying so is honest.
+MIN_SPREAD_SAMPLES = 2
+
+
+def _spread(latency, value: float | None) -> int | None:
+    """A p90 or a maximum, or `None` when there are too few samples to have one.
+
+    Same rule and same glyph as `_ms`'s absence: a blank cell says "not this", which is what a
+    reader is owed when the alternative is three columns repeating one turn's latency at each
+    other. The count behind every row is the `Turns` column beside it, and the caption names
+    the rule so a blank is legible rather than a rendering fault.
+    """
+    return _ms(value) if latency.count >= MIN_SPREAD_SAMPLES else None
 
 
 # --- Panels 2 and 3: retrieval latency and the planner's round --------------------------
