@@ -26,17 +26,22 @@ values it counted. `within_budget` is `bool | None` for the same reason: `False`
 
 **What is shared, what is bound, and the test for telling which is which.** `spend.py` is the
 same package, so anything it owns is *imported*: `calls_behind` (one definition of what a line
-costs), `Tokens`, and since T14 `answered_only_on` (one definition of when a pool is one model).
-Only what genuinely cannot be imported is duplicated-and-bound: `Rate` and `p50` against
-`evaluation/deferrals.Rate` and `evaluation/latency.p50`, plus `PLANNER_DISABLED_CAP` as a third
-copy of ADR-0004 §6's cap — because `evaluation/` is the harness and the app must not depend on
-it.
+costs), `Tokens`, `COMPLETED_EVENT`, and since T14 `answered_only_on` and `priced_dollars` (one
+definition of when a pool is one model, and one of what its tokens cost). Only what genuinely
+cannot be imported is duplicated-and-bound: `Rate` and `p50` against `evaluation/deferrals.Rate`
+and `evaluation/latency.p50`, plus `PLANNER_DISABLED_CAP` as a third copy of ADR-0004 §6's cap —
+because `evaluation/` is the harness and the app must not depend on it.
 
 That distinction is easy to get wrong in the direction of copying, and the #15 review caught it
-here: `all_answered_on` shipped as a local reimplementation whose docstring said "this page may
-not import the sidebar's scoping" — while the import block four lines above pulled
-`calls_behind` out of exactly that module. **The test is whether an import would fail, not
-whether a sentence says it would.**
+twice, one round apart, in the same two methods. First `all_answered_on`, which shipped as a
+local reimplementation whose docstring said "this page may not import the sidebar's scoping" —
+while the import block four lines above pulled `calls_behind` out of exactly that module. **The
+test is whether an import would fail, not whether a sentence says it would.** Then the eight
+lines *beside* it: `TokenTotals.dollars` and `Spend.dollars` were byte-identical, the fix for
+the first defect added the model gate to both bodies rather than removing one, and the required
+`priced_model` keyword migrated twice. Hoisting one function out of two and leaving the rest is
+the shape worth naming — **the licence covers a module, not a line**, so the copy left behind is
+as unlicensed as the one just removed.
 
 **A binding is a behavioural equality, not an identity check on a name.** There was an alias
 here — `_calls_behind = calls_behind`, existing only so a test could assert the two were the
@@ -75,14 +80,13 @@ from finbrief.config import (
 )
 from finbrief.observability.events import Event, EventLog, read_events
 from finbrief.observability.spend import (
-    COMPLETED_EVENT as ANSWERING_TURN_EVENT,
-)
-from finbrief.observability.spend import (
+    COMPLETED_EVENT,
     TOKEN_EVENTS,
     TOKEN_FIELDS,
     Tokens,
     answered_only_on,
     calls_behind,
+    priced_dollars,
 )
 
 #: The `max_sub_queries` at which the planner makes **no chat round at all** (ADR-0004 §6: the
@@ -973,19 +977,21 @@ class TokenTotals:
         common one: the two knobs describe one model, this total spans a whole sink, and a
         Haiku turn multiplied by the gpt-4o-mini rate is a wrong figure in the one panel about
         spend. `spend.Spend.dollars` carries the full argument.
+
+        **`spend.priced_dollars`, imported rather than copied** — this body was byte-identical
+        to `Spend.dollars`', and T14 extended the copy instead of removing it: the model gate
+        went into both and the required `priced_model` keyword migrated twice (code review of
+        #15). It is the licence rule this module's docstring states, applied one line further
+        down than last round: `spend.py` is the same package, so an import is available, so the
+        copy was never licensed.
         """
-        if not self.all_answered_on(priced_model):
-            return None
-        prices = (
-            (self.input.total, input_per_mtok),
-            (self.output.total, output_per_mtok),
+        return priced_dollars(
+            self.input.total,
+            self.output.total,
+            input_per_mtok=input_per_mtok,
+            output_per_mtok=output_per_mtok,
+            one_model=self.all_answered_on(priced_model),
         )
-        priced = [
-            tokens * price / 1_000_000
-            for tokens, price in prices
-            if tokens is not None and price is not None
-        ]
-        return sum(priced) if priced else None
 
 
 def token_totals(log: EventLog, events: Iterable[Event] | None = None) -> TokenTotals:
@@ -1018,7 +1024,7 @@ def token_totals(log: EventLog, events: Iterable[Event] | None = None) -> TokenT
         # `TokenTotals.models`. Selected by event name rather than by "has a `model` field", so
         # a turn that recorded none is an absence in the set instead of vanishing from it.
         models=frozenset(
-            event.field("model") for event in lines if event.event == ANSWERING_TURN_EVENT
+            event.field("model") for event in lines if event.event == COMPLETED_EVENT
         ),
     )
 
@@ -1153,7 +1159,7 @@ def by_model(log: EventLog) -> tuple[ModelSlice, ...]:
     that sentence checkable; without it the tie-break was a claim with no test (review of #15).
     """
     buckets: dict[str | None, list[Event]] = {}
-    for event in log.of(ANSWERING_TURN_EVENT):
+    for event in log.of(COMPLETED_EVENT):
         buckets.setdefault(event.field("model"), []).append(event)
     slices = [
         ModelSlice(

@@ -243,19 +243,17 @@ class Spend:
         A **partial** total is still priced, because the tokens in it were really spent; what
         the caller owes beside the figure is the fact that it is a floor rather than a total,
         which is `partial` above.
+
+        The arithmetic and the model gate are `priced_dollars` below, shared with
+        `analytics.TokenTotals.dollars` rather than copied into it.
         """
-        if not self.all_answered_on(priced_model):
-            return None
-        prices = (
-            (self.input.total, input_per_mtok),
-            (self.output.total, output_per_mtok),
+        return priced_dollars(
+            self.input.total,
+            self.output.total,
+            input_per_mtok=input_per_mtok,
+            output_per_mtok=output_per_mtok,
+            one_model=self.all_answered_on(priced_model),
         )
-        priced = [
-            tokens * price / 1_000_000
-            for tokens, price in prices
-            if tokens is not None and price is not None
-        ]
-        return sum(priced) if priced else None
 
 
 def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
@@ -310,6 +308,46 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         # for why the planner's line is excluded rather than read as an absence.
         models=frozenset(event.field("model") for event in ours(COMPLETED_EVENT)),
     )
+
+
+def priced_dollars(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    input_per_mtok: float | None,
+    output_per_mtok: float | None,
+    one_model: bool,
+) -> float | None:
+    """Tokens times rates, or `None` for any of the three ways a total cannot be priced.
+
+    **The one definition, shared by import** (code review of #15). `Spend.dollars` and
+    `analytics.TokenTotals.dollars` were byte-identical, and T14 extended the duplicate rather
+    than removing it: the model gate was added to both bodies and the required `priced_model`
+    keyword migrated twice. `answered_only_on` was hoisted out of the same two methods on the
+    review round before this one and the eight lines beside it were left — which is the
+    duplication this module's own docstring had just finished arguing against. **The licence
+    covers a module, not a line.**
+
+    The gate arrives as `one_model` rather than as the model and the pool, because the two
+    callers hold different pools (`Spend.models` over a conversation, `TokenTotals.models` over
+    a whole sink) and both already resolve them through `answered_only_on`. Passing the verdict
+    keeps this function about arithmetic and leaves each caller owning the population it
+    describes.
+
+    `None` and never `0.0`: an unpriced total, an unmetered one and one whose turns did not all
+    run on the priced model are three absences, and `$0.00` on a spend panel reads as "this was
+    free". A **partial** total is still priced — those tokens were really spent — and what the
+    caller owes beside the figure is that it is a floor, which is `Tokens.partial`.
+    """
+    if not one_model:
+        return None
+    prices = ((input_tokens, input_per_mtok), (output_tokens, output_per_mtok))
+    priced = [
+        tokens * price / 1_000_000
+        for tokens, price in prices
+        if tokens is not None and price is not None
+    ]
+    return sum(priced) if priced else None
 
 
 def answered_only_on(models: frozenset[str | None], model: str) -> bool:
