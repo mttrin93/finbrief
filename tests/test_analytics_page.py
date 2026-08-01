@@ -303,6 +303,20 @@ def a_screening(logger, **fields):
 PRICED_MODEL = Settings.from_env({"OPENROUTER_API_KEY": "test-key"}).chat_model
 OTHER_MODEL = "anthropic/claude-3.5-haiku"
 
+#: The reroute caption's opening words, in the case the page renders them, shared by the test
+#: that requires it and the test that forbids it (code review of #15).
+#:
+#: **One constant because the negative half could not fail.** It asserted
+#: `"served by a different model" not in text(page)` — lowercase, against a caption that begins
+#: `"Served by …"` and a `text()` that folds nothing — so the substring was absent from every
+#: page this suite can render, whatever the code did. Measured: making the caption render
+#: unconditionally left this file and `test_app_smoke.py` entirely green, which is the reroute
+#: contract's silent half having no guard at all.
+#:
+#: Not the whole sentence, because the tail names models and the two halves seed different
+#: ones; the opening clause is what distinguishes "a reroute is on screen" from "it is not".
+REROUTE_CAPTION = "Served by a different model than requested"
+
 
 def a_turn(logger, **fields):
     defaults = {
@@ -823,7 +837,7 @@ def test_a_reroute_is_named_on_the_page_and_silence_is_the_default(page, seeded)
     page.run()
 
     body = text(page)
-    assert "Served by a different model than requested" in body
+    assert REROUTE_CAPTION in body
     assert "openai/gpt-4o-mini-2024-07-18" in body
     assert "count tokens against the model asked for" in body, "how to read the rows"
 
@@ -835,7 +849,7 @@ def test_a_provider_that_agreed_produces_no_reroute_caption(page, seeded):
 
     page.run()
 
-    assert "served by a different model" not in text(page)
+    assert REROUTE_CAPTION not in text(page)
 
 
 def test_a_log_whose_only_metered_line_is_the_planners_does_not_blame_another_model(
