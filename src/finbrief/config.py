@@ -548,8 +548,8 @@ MAX_QUESTIONS_PER_SESSION = 40
 # The answering model the reader may pick (T14, #15)
 # --------------------------------------------------------------------------------------
 
-#: The models the sidebar picker offers for **answering**. A fixed set, not free text: a typo in
-#: a text box reaches OpenRouter as a provider error in the middle of a turn, and the whole
+#: The models the sidebar picker offers for **answering**. A fixed set, not free text: a typo
+#: in a text box reaches OpenRouter as a provider error in the middle of a turn, and the whole
 #: value of a picker is that the set is known.
 #:
 #: **Chat only.** `Settings.classifier_model`, `judge_model` and `embedding_model` are not
@@ -567,35 +567,88 @@ MAX_QUESTIONS_PER_SESSION = 40
 #: All four are tool-calling models, because the agent binds four tools and a model that cannot
 #: call them answers every question ungrounded.
 #:
-#: **Every slug here exists and advertises `tools`, checked against OpenRouter's public
-#: catalogue on 2026-08-01** — `GET /api/v1/models`, which needs no key and costs nothing, so
-#: the reason the first version of this list went unchecked ("checking costs a paid call") was
-#: simply wrong. Two of its four slugs did not exist: `anthropic/claude-3.5-haiku` and
-#: `google/gemini-2.0-flash-001` are both 404s, and the picker offered them anyway. Found by a
-#: reader picking one and getting an error, which is the worst way to find it (#15).
+#: **What governs whether a slug answers is the API key's own allowlist, and it took three wrong
+#: guesses to find that out.** The chain is worth writing down, because each guess was
+#: reasonable and each was a claim about an environment this repo cannot see:
 #:
-#: **What that check does *not* establish, and this is the part worth reading.** Existing in the
-#: catalogue is not the same as being reachable by a given account. OpenRouter also returns
-#: **404** when no provider endpoint matches the caller's own **data policy**, and when a model
-#: needs credits or a key the account does not have — so a slug verified here can still 404 for
-#: one reader and answer for another. That is an account setting on openrouter.ai, not something
-#: this repo can assert or fix, and it is why the picker's failure has its own message naming
-#: the model rather than the generic "try again" (`app/Home.py`).
+#: 1. Two slugs were committed **unverified**, behind a comment claiming a check would cost a
+#:    paid call. It would not: `GET /api/v1/models` is public and free. Both were 404s.
+#: 2. `meta-llama/llama-3.3-70b-instruct` existed and 404'd. Read off the logged error as a
+#:    *data-policy* exclusion — every provider serving it is a third-party inference host.
+#: 3. `x-ai/grok-4.3`, picked *because* it is first-party like the three that work, 404'd too.
+#:    Which killed that theory. The reader's key is provisioned with an **allowlist** listing
+#:    Grok 4.5 and no 4.3, and OpenRouter's message says so in the words the first two rounds
+#:    read past: "No endpoints available matching your **guardrail restrictions** and data
+#:    policy." Guardrail restrictions *are* the key's allowlist.
 #:
-#: So the freshness guarantee is narrow and dated on purpose: OpenRouter retires slugs on its
-#: own schedule, no test can watch the catalogue (the suite is hermetic — CLAUDE.md), and
-#: re-checking is one `curl` whenever this list is edited. The default is the one slug every
-#: committed measurement actually ran on.
+#: So the operative rule is that **a slug must be permitted by whatever key is in use** — which
+#: is neither a property of the catalogue nor of the model. On a provisioned key (a course, an
+#: employer, any shared org key) the issuer's dashboard is the authority and the reader may not
+#: control it at all. That is why the failure banner names the allowlist first and does not send
+#: a reader to change a setting that might not be theirs (`app/Home.py`).
 #:
-#: Four slugs across three providers plus an open weight, which is the exercise: a set of four
-#: OpenAI models would demonstrate nothing about swapping, since tool-calling dialects differ by
-#: provider and that is the difference a picker exists to expose.
+#: **First-party hosting survives as a tie-breaker, demoted to what it is: a heuristic for the
+#: data-policy half.** A model served only by third-party hosts has no endpoint left when those
+#: are excluded, and an open-weight model is *by construction* in that category — so "include
+#: one open model" (PLAN §6's phrasing, followed uncritically) is in tension with "works on a
+#: restricted key". Each of the four below has a first-party endpoint:
+#:
+#: | slug | tool-capable providers | why it is here |
+#: |---|---|---|
+#: | `openai/gpt-4o-mini` | OpenAI | the default; every committed measurement ran on it |
+#: | `anthropic/claude-haiku-4.5` | Anthropic, Bedrock, Azure, Google | verified answering |
+#: | `google/gemini-2.5-flash` | Google, Google AI Studio | verified answering |
+#: | `minimax/minimax-m2.7` | Minimax *(first-party)* + 8 hosts | a fourth provider, and the one
+#:   candidate on **both** tiers of the observed allowlist |
+#:
+#: `x-ai/grok-4.5` and `deepseek/deepseek-v4-flash` are live, tool-calling, and on that
+#: allowlist's *Advanced* tier only — either is a one-line swap for a key that has it. Neither
+#: is committed, because a picker must not offer an option the likelier tier rejects.
+#:
+#: Checked against the catalogue on **2026-08-01**. Re-checking is one unauthenticated `curl`
+#: whenever this list is edited; no test can watch a live catalogue, let alone somebody else's
+#: allowlist, since the suite is hermetic (CLAUDE.md).
 CHAT_MODEL_CHOICES: tuple[str, ...] = (
     "openai/gpt-4o-mini",
     "anthropic/claude-haiku-4.5",
     "google/gemini-2.5-flash",
-    "meta-llama/llama-3.3-70b-instruct",
+    "minimax/minimax-m2.7",
 )
+
+
+#: The two names behind an OpenRouter **restricted-route 404**: where the *account-level* half
+#: is configured, and the substring in the provider's message that identifies the whole class.
+#: Both from the logged error body of a real failure (T14, #15):
+#:
+#:     No endpoints available matching your guardrail restrictions and data policy.
+#:     Configure: https://openrouter.ai/settings/privacy
+#:
+#: **The marker is "data policy" but the *cause* is usually the other clause**, and conflating
+#: the two is the mistake this constant is named to avoid. "Guardrail restrictions" is the API
+#: key's allowlist — set by whoever issued it — and "data policy" is the account's provider
+#: preferences. One message covers both, so the match is the class and the banner names both
+#: causes with the allowlist first (`app/Home.py`). The URL is only good for the second, which
+#: is why the copy does not present it as *the* fix.
+#:
+#: **Here rather than in `app/Home.py`, which is the only caller**, for two reasons pointing
+#: the same way. This is a fact about whether a *configured* model can be reached, which is this
+#: module's subject and is already argued out beside `CHAT_MODEL_CHOICES`. And `app/` is not
+#: importable — its pages are scripts Streamlit execs — so a constant left there is one a test
+#: can only duplicate, which for a URL is exactly the second copy this repo keeps catching.
+#:
+#: **The URL is compiled in, never taken from the error message.** That is the whole reason the
+#: banner can name a fix: the provider's message is *read* to choose a sentence and never
+#: rendered, because a client error string can carry a request URL and a URL can carry a key
+#: (the rule `app/Home.py`'s generic branch already follows). So the page shows FinBrief's own
+#: words plus this.
+#:
+#: The match is short and lowercased on purpose — two words that appear in OpenRouter's message
+#: for every variant of this refusal, not the sentence around them. A longer match would be a
+#: copy of prose somebody else maintains and would stop matching the first time they reworded
+#: it; the cost of a miss is the *generic* 404 banner rather than a crash, so failing open is
+#: the right direction and a substring is acceptable where an equality would not be.
+DATA_POLICY_URL = "https://openrouter.ai/settings/privacy"
+RESTRICTED_404_MARKER = "data policy"
 
 
 def chat_model_options(configured: str) -> tuple[str, ...]:

@@ -39,10 +39,12 @@ from langgraph.errors import GraphRecursionError
 from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
     CLUSTERS,
+    DATA_POLICY_URL,
     HISTORY_PERIOD_LABEL,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
     PEERS,
+    RESTRICTED_404_MARKER,
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
@@ -1730,17 +1732,46 @@ def answer_turn(prompt: str) -> None:
                 # dependency on a client library's exception hierarchy, and the name is what the
                 # log line already records.
                 #
-                # OpenRouter returns 404 for two different things and the message names both,
-                # because they need different fixes and neither is visible from here: a slug it
-                # does not know, and a slug whose provider endpoints do not match the account's
-                # own data policy (`config.CHAT_MODEL_CHOICES` records what the committed list
-                # can and cannot promise).
+                # OpenRouter returns 404 for two different things needing two different fixes,
+                # and **it says which in the response body** — so listing both possibilities and
+                # letting the reader guess was leaving a fix on the floor. The first version did
+                # exactly that, and the reader came back to ask (manual testing of #15).
+                #
+                # The **message is read to choose a branch and never rendered**, which is the
+                # distinction that keeps the existing rule intact: a client error string can
+                # carry a request URL and a URL can carry an API key, so what reaches the page
+                # is this module's own words plus one constant. `DATA_POLICY_404` is that
+                # constant — OpenRouter's settings page, not a URL taken from the error.
                 if type(exc).__name__ == "NotFoundError":
+                    if RESTRICTED_404_MARKER in str(exc).lower():
+                        # The measured case, and it is **not about the model being wrong**:
+                        # OpenRouter had no endpoint it was allowed to route to. Two things
+                        # cause that and the sentence names the likelier one first — the **key's
+                        # own allowlist** (a course, an employer, any shared org key restricts
+                        # which models it may reach) and then the account's data policy.
+                        #
+                        # **Order matters because the reader may not own either setting**, which
+                        # is what the first version got wrong: it said "your privacy settings"
+                        # and linked them, on a key whose allowlist was somebody else's
+                        # (`config.CHAT_MODEL_CHOICES` records how that was found out). Telling
+                        # a reader to go change a control they do not have is worse than telling
+                        # them nothing, because it reads as their mistake.
+                        st.error(
+                            f"`{model}` is not available to this API key, so nothing was "
+                            "answered — FinBrief asked and OpenRouter had no provider it was "
+                            "allowed to use. Either the key is restricted to a set of models "
+                            "that excludes it (check with whoever issued the key), or the "
+                            f"account's data policy rules them out ({DATA_POLICY_URL}). "
+                            "Pick a different model under **Configuration**; retrying this "
+                            "one will not help.",
+                            icon=":material/policy:",
+                        )
+                        return
                     st.error(
-                        f"`{model}` could not be reached, so nothing was answered. That is "
-                        "either a model OpenRouter does not know or one your account's privacy "
-                        "settings exclude — retrying will not change it. Pick another model "
-                        "under **Configuration**; the default always works if a key is set.",
+                        f"`{model}` could not be reached, so nothing was answered — OpenRouter "
+                        "does not recognise it. Retrying will not change that. Pick another "
+                        "model under **Configuration**; the default always works if a key is "
+                        "set.",
                         icon=":material/swap_horiz:",
                     )
                     return

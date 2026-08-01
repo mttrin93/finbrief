@@ -571,3 +571,38 @@ tell which. The honest response was not a stronger claim but a better failure: a
 transient, so "try again" was advice that could not help. The banner names the model, says retrying
 will not change it, and points at the picker — PLAN §2's tiers being distinguished by what the
 *reader* can do, which here is switching back rather than waiting.
+
+**And the second round of the same lesson, from the same reader.** With the two absent slugs fixed,
+`meta-llama/llama-3.3-70b-instruct` still 404'd — and the log said why, which is the point of having
+one:
+
+    No endpoints available matching your guardrail restrictions and data policy.
+    Configure: https://openrouter.ai/settings/privacy
+
+Not a code defect. It was read as a *data-policy* exclusion, since every provider serving that
+model is a third-party inference host — and the replacement was chosen to be first-party on that
+basis. **`x-ai/grok-4.3` then failed the same way**, which killed the theory: the clause that
+matters is the one both rounds read past. *"Guardrail restrictions"* is the API key's **allowlist**,
+and this key is provisioned by a course whose dashboard lists Grok **4.5** and no 4.3. So what
+governs is neither the catalogue nor a property of the model but *what the key is permitted to
+reach*, which no check in this repo can see.
+
+The list is now `minimax/minimax-m2.7` — a fourth provider with a first-party endpoint, and the one
+candidate present on **both** tiers of that allowlist. First-party hosting survives as a
+tie-breaker for the data-policy half rather than as the rule, and the tension it exposed stands:
+"include one open model" (PLAN §6's phrasing, followed uncritically) is at odds with "works on a
+restricted key", because open weights are third-party-hosted by construction.
+
+Two things worth keeping from it. The **instrument paid for itself**: this was diagnosed by reading
+`chat_turn_failed`'s `exc_info` out of the sink rather than by guessing, which is the first time in
+this project the event log answered a live user-facing question that nothing else could — and it is
+the argument for `log_event` taking `exc_info` at all. And the **banner branches on the provider's
+message without rendering it**: two 404 causes, two fixes, and a URL that is a compiled-in constant
+rather than one lifted out of an error string that may carry a key. Its copy names the **allowlist
+first** and tells the reader to ask whoever issued the key — because the first version said "your
+privacy settings" and linked them, on a key whose restrictions were somebody else's. Telling a
+reader to change a control they do not have is worse than saying nothing: it reads as their mistake.
+
+**Three rounds, one lesson.** Each guess was a claim about an environment the repo cannot observe,
+and each was stated in a comment as though it were established. The instrument is what closed it
+every time — `chat_turn_failed`'s `exc_info`, read out of the sink.

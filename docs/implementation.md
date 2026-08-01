@@ -555,9 +555,46 @@ the gate — a second door for a convenience.
 A sidebar picker over four OpenRouter models, changing the **answering** model only.
 `config.CHAT_MODEL_CHOICES` is a fixed tuple, not free text: a mistyped slug reaches OpenRouter as
 a provider error in the middle of a turn, and the value of a picker is that the set is known. Four
-slugs across three providers plus an open weight, because a set of four OpenAI models would
-demonstrate nothing about swapping — tool-calling dialects differ by provider, and that is the
-difference a picker exposes.
+slugs across four providers, each serving its own model **first-party**, because a set of four
+OpenAI models would demonstrate nothing about swapping — tool-calling dialects differ by provider,
+and that is the difference a picker exposes.
+
+**What governs reachability is the API key's allowlist, and finding that out took three wrong
+guesses.** Each was reasonable and each was a claim about an environment the repo cannot see:
+
+1. Two slugs shipped **unverified**, behind a comment saying a check would cost a paid call. It
+   would not — `GET /api/v1/models` is public and free — and both were 404s.
+2. `meta-llama/llama-3.3-70b-instruct` existed and 404'd. Read off the logged error as a
+   *data-policy* exclusion, since every provider serving it is a third-party inference host.
+3. `x-ai/grok-4.3`, chosen *because* it is first-party like the three that work, 404'd too —
+   which killed that theory. The key was provisioned with an **allowlist** naming Grok 4.5 and no
+   4.3, and OpenRouter's message had said so all along in the clause both earlier rounds read
+   past: *"No endpoints available matching your **guardrail restrictions** and data policy."*
+   Guardrail restrictions are the key's allowlist.
+
+So the operative rule is that a slug must be **permitted by whatever key is in use** — a property
+of neither the catalogue nor the model. On a provisioned key (a course, an employer, any shared org
+key) the issuer's dashboard is the authority and the reader may not control it at all, which is why
+the banner names the allowlist first and does not send anyone to change a setting that might not be
+theirs.
+
+**First-party hosting survives as a tie-breaker rather than the rule**, covering the data-policy
+half: a model served only by third-party hosts has no endpoint left once those are excluded, and an
+open-weight model is in that category *by construction*. So "include one open model" — PLAN §6's
+phrasing, followed uncritically — is in tension with "works on a restricted key", and a picker
+whose fourth option most keys reject has three options and a trap.
+
+| slug | tool-capable providers | status |
+|---|---|---|
+| `openai/gpt-4o-mini` | OpenAI | the default; every committed measurement ran on it |
+| `anthropic/claude-haiku-4.5` | Anthropic, Bedrock, Azure, Google | verified answering |
+| `google/gemini-2.5-flash` | Google, Google AI Studio | verified answering |
+| `minimax/minimax-m2.7` | Minimax *(first-party)* + 8 hosts | fourth provider; the one candidate on **both** tiers of the observed allowlist |
+| *removed* — `meta-llama/llama-3.3-70b-instruct` | 13 third-party hosts | not on the allowlist |
+| *removed* — `x-ai/grok-4.3` | xAI | not on the allowlist (which lists 4.5) |
+
+`x-ai/grok-4.5` and `deepseek/deepseek-v4-flash` are live, tool-calling and on that allowlist's
+*Advanced* tier only — either is a one-line swap for a key that has it.
 
 Like the T12 items this **adds no integration**. `llm.build_chat_model` has taken a `model=`
 override since T3, OpenRouter is one base URL for every upstream, and ADR-0008's decision text
@@ -661,21 +698,18 @@ has it honoured rather than overridden. Configured-first is not cosmetic: `st.se
 index 0, so leading the list is what makes the widget's default *be* the setting rather than merely
 contain it.
 
-**Two of the four slugs did not exist, and a reader found out by picking one.** The list shipped
-with a comment saying it was unverified "because checking costs a paid call the hermetic suite
-forbids" — which was simply wrong: `GET /api/v1/models` is public, unauthenticated and free.
-`anthropic/claude-3.5-haiku` and `google/gemini-2.0-flash-001` were both 404s, offered in a picker,
-and the failure surfaced as a red banner in manual testing. All four are now checked against that
-catalogue, dated in the comment, with a test pinning the two known-bad strings so a plausible
-edit cannot restore them.
+**Existing in the catalogue is not being reachable, and the failure says which.** OpenRouter
+returns 404 both for a slug it does not know **and** for one no permitted provider serves — so a
+verified slug can 404 for one key and answer for another, and no test here can tell. Those need
+different fixes, and the provider names which in the response body, so the banner reads the message
+to choose a sentence. A restricted-route 404 names the key's allowlist first and the account's data
+policy second; an unknown slug says so and points at the picker. Neither says "try again", because
+a 404 is not transient — PLAN §2's tiers are distinguished by what the reader can *do*, and waiting
+is on neither list. A test pins all four known-bad strings so a plausible edit cannot restore them.
 
-**What the check does not buy, which is the more useful half.** Existing in the catalogue is not
-being *reachable*: OpenRouter also returns 404 when no provider endpoint matches the account's own
-**data policy**, or when a model needs credits the account lacks — so a verified slug can 404 for
-one reader and answer for another, and no test here can tell. That is why the failure has its own
-message. A 404 is not transient, so "try again" was advice that could not help; the banner names
-the model, says retrying will not change it, and points at the picker. PLAN §2's tiers are
-distinguished by what the reader can *do*, and here that is switching back.
+The message is **read and never rendered**, which is what keeps the existing rule intact: a client
+error string can carry a request URL and a URL can carry an API key, so what reaches the page is
+FinBrief's own words plus one compiled-in constant (`config.OPENROUTER_PRIVACY_URL`).
 
 ### 3.7 Prompt-injection protection
 

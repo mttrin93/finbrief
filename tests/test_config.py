@@ -444,21 +444,62 @@ def test_the_default_chat_model_is_one_of_the_offered_choices():
     assert settings.chat_model in CHAT_MODEL_CHOICES
 
 
-def test_no_choice_is_one_of_the_slugs_measured_to_be_a_404():
-    """The two dead options the picker shipped with (manual testing of #15).
+def test_no_choice_is_one_of_the_slugs_measured_to_404():
+    """The four dead options the picker shipped, over three rounds of manual testing (#15).
 
-    `anthropic/claude-3.5-haiku` and `google/gemini-2.0-flash-001` were both absent from
-    OpenRouter's catalogue, and a reader found out by picking one and getting an error. No test
-    can watch a live catalogue — the suite is hermetic — so what is pinned instead is the
-    *negative*: these exact strings are known-bad and may not come back by a plausible-looking
-    edit. Re-checking the live list is one unauthenticated `curl` and `CHAT_MODEL_CHOICES` says
-    so beside the date it was last done.
+    Two were **absent from the catalogue** (`anthropic/claude-3.5-haiku`,
+    `google/gemini-2.0-flash-001`) and two *existed, advertised tools, and were still refused* —
+    because the API key's **allowlist** does not include them. Every round was found the same
+    way: a reader picked one and got a red banner.
+
+    `x-ai/grok-4.3` is the instructive one. It was chosen *because* it is first-party, the
+    property the three working models share, and it failed anyway — which is what demoted
+    "first-party" from the rule to a heuristic for one half of the problem and identified the
+    allowlist as what actually governs (`CHAT_MODEL_CHOICES` records the chain).
+
+    No test can watch a live catalogue, let alone the allowlist on somebody else's key — the
+    suite is hermetic (CLAUDE.md). So what is pinned is the **negative**: these exact strings
+    are known-bad and may not return by a plausible-looking edit.
     """
-    known_404 = {"anthropic/claude-3.5-haiku", "google/gemini-2.0-flash-001"}
+    known_404 = {
+        # Absent from the catalogue entirely.
+        "anthropic/claude-3.5-haiku",
+        "google/gemini-2.0-flash-001",
+        # Present and tool-capable, and still refused: not on the key's allowlist. The first was
+        # also third-party-hosted only (any open-weight model is, by construction), which is
+        # what made the data-policy theory look sufficient — and `x-ai/grok-4.3` is what
+        # disproved it: first-party and refused anyway. The operative rule is the allowlist.
+        "meta-llama/llama-3.3-70b-instruct",
+        "x-ai/grok-4.3",
+    }
 
     assert not known_404 & set(CHAT_MODEL_CHOICES), (
-        "these were measured absent from OpenRouter's catalogue; verify any replacement with "
-        "`curl -s https://openrouter.ai/api/v1/models` before committing it"
+        "each of these was measured to 404. Verify a replacement exists with "
+        "`curl -s https://openrouter.ai/api/v1/models`, and prefer one served first-party by "
+        "the provider that made it — see CHAT_MODEL_CHOICES for why that is the criterion"
+    )
+
+
+def test_every_choice_is_served_first_party_by_the_provider_that_made_it():
+    """The reachability criterion, pinned as far as an offline test can pin it (#15).
+
+    The measured rule is that a model served **only** by third-party inference hosts is
+    unreachable for an account whose data policy excludes them — so every choice here is served
+    first-party by its own provider. That is a fact about OpenRouter's endpoint lists, which no
+    hermetic test can read.
+
+    What *is* checkable offline is the shape the rule implies: each slug's provider prefix is a
+    first-party vendor rather than a publisher whose weights other people host. Weak on
+    its own, and it is not the guarantee — the comment on `CHAT_MODEL_CHOICES` is, with the
+    endpoint table it was verified against. This is the tripwire for the plausible edit that
+    adds `meta-llama/…` or `mistralai/…` back without reading it.
+    """
+    first_party = {"openai", "anthropic", "google", "x-ai", "minimax"}
+    prefixes = {slug.split("/")[0] for slug in CHAT_MODEL_CHOICES}
+
+    assert prefixes <= first_party, (
+        f"{prefixes - first_party} publish weights third parties host; a strict data policy "
+        f"can leave such a model with no reachable endpoint (see CHAT_MODEL_CHOICES)"
     )
 
 
@@ -468,5 +509,10 @@ def test_every_choice_is_an_openrouter_slug_and_the_set_spans_providers():
     # models would demonstrate nothing about swapping.
     assert all(slug.count("/") == 1 and slug == slug.strip() for slug in CHAT_MODEL_CHOICES)
     providers = {slug.split("/")[0] for slug in CHAT_MODEL_CHOICES}
-    assert len(providers) >= 3, f"one provider per dialect is the exercise; got {providers}"
+    # An **equality** on the count now, not `>= 3`: with the first-party criterion above, four
+    # slugs across four providers is the arrangement, and a lower bound is satisfied by two of
+    # them collapsing onto one vendor — which is the thing worth noticing.
+    assert len(providers) == len(CHAT_MODEL_CHOICES), (
+        f"one provider per choice is the exercise; got {providers}"
+    )
     assert len(set(CHAT_MODEL_CHOICES)) == len(CHAT_MODEL_CHOICES)

@@ -22,6 +22,7 @@ from finbrief.agent.agent import AgentTurn, Search, Step
 from finbrief.config import (
     CHAT_MODEL_CHOICES,
     CLUSTERS,
+    DATA_POLICY_URL,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
     PEERS,
@@ -590,48 +591,101 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     assert [m["role"] for m in app.session_state.messages] == ["user"]
 
 
-def test_an_unreachable_model_is_not_reported_as_something_to_retry(app, monkeypatch):
-    """The banner a reader actually got from the picker (manual testing of #15).
+def a_not_found(message):
+    """The real `openai.NotFoundError` a 404 from OpenRouter raises.
 
-    A provider **404** is not transient: the model cannot be reached by this account and will
-    not be on the next attempt either, so the generic "Try again" sent a reader to retry
-    something that cannot work. PLAN §2's tiers are distinguished by what the *reader* can do,
-    and here that is switching the model back — which is what the message has to say.
-
-    Raised as the **real** `openai.NotFoundError`, not a look-alike, because the branch keys on
-    the type's name and a hand-rolled stand-in would let the app's spelling of it drift from the
-    SDK's. This is the exception `langchain_openai` propagates from a 404.
+    The real exception rather than a look-alike, because the app branches on the type's **name**
+    and a hand-rolled stand-in would let its spelling drift from the SDK's. `body=None` is what
+    `langchain_openai` propagates when the response is not JSON-decoded by the client.
     """
     import httpx
     from openai import NotFoundError
 
-    def not_found(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
-        raise NotFoundError(
-            "No endpoints found matching your data policy",
-            response=httpx.Response(
-                404, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat")
-            ),
-            body=None,
-        )
+    return NotFoundError(
+        message,
+        response=httpx.Response(
+            404,
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat?key=sk-secret"),
+        ),
+        body=None,
+    )
 
-    monkeypatch.setattr(agent, "answer", not_found)
+
+def picked(app, monkeypatch, exc):
+    """Pick a non-default model, ask a question, and have `answer` raise `exc`."""
+
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
+        raise exc
+
+    monkeypatch.setattr(agent, "answer", boom)
     app.run()
     other = next(slug for slug in CHAT_MODEL_CHOICES if slug != get_settings().chat_model)
     (picker,) = [s for s in app.sidebar.selectbox if "Model" in s.label]
     picker.select(other).run()
-
     app.chat_input[0].set_value("What are Tesla's risks?").run()
+    return other
+
+
+def test_a_data_policy_404_names_the_setting_that_caused_it_and_where_to_change_it(
+    app, monkeypatch
+):
+    """The failure a reader hit twice, with OpenRouter's own diagnosis (manual testing of #15).
+
+    **The message is verbatim from the logged error body of the real failure**, so this test is
+    pinned to what the provider sends rather than to a paraphrase of it. Note the clause the
+    first two rounds of diagnosis read past — *guardrail restrictions*, which is the API key's
+    **allowlist**. That was the real cause: a provisioned key permitting a fixed set of models.
+
+    So the banner names the allowlist first and the data policy second, and tells the reader to
+    ask whoever issued the key rather than to go change a setting that may not be theirs.
+    Getting that order wrong is worse than saying nothing: it reads as the reader's mistake.
+    """
+    other = picked(
+        app,
+        monkeypatch,
+        a_not_found(
+            "Error code: 404 - {'error': {'message': 'No endpoints available matching your "
+            "guardrail restrictions and data policy. Configure: "
+            "https://openrouter.ai/settings/privacy', 'code': 404}}"
+        ),
+    )
 
     assert not app.exception
     banner = app.error[0].value
-    assert other in banner, "the model that could not be reached is named"
-    assert "retrying will not change it" in banner.lower()
-    assert "Try again" not in banner, "the one message this failure must not carry"
-    assert "Configuration" in banner, "and where to change it"
-    # Still not the provider's message: a client error string can carry a request URL and a URL
-    # can carry a key, which is why the generic branch withholds it too.
-    assert "openrouter.ai" not in banner and "data policy" not in banner
-    assert [m["role"] for m in app.session_state.messages] == ["user"]
+    assert other in banner, "the model that was blocked is named"
+    plain = banner.replace("**", "")
+    assert "not available to this API key" in plain, "the likelier cause, stated first"
+    assert "whoever issued the key" in plain, "and who can actually change it"
+    assert plain.index("issued the key") < plain.index("data policy"), (
+        "the allowlist is the likelier cause on a provisioned key and comes first"
+    )
+    assert DATA_POLICY_URL in banner, "the account-level half is still linked"
+    assert "Try again" not in banner
+    # **Still not the provider's message**, which is the rule the branch is careful about: it is
+    # read to choose a sentence and never rendered, so a request URL — and the key one can carry
+    # — cannot reach the page. The URL above is a compiled-in constant, not one from the error.
+    assert "sk-secret" not in banner
+    assert "guardrail restrictions" not in banner
+
+
+def test_an_unrecognised_model_gets_the_other_404_sentence(app, monkeypatch):
+    # The same status code, a different cause, a different fix — which is why the branch reads
+    # the message at all. Nothing here mentions privacy settings, because sending a reader to
+    # that page for a slug OpenRouter has never heard of is the wrong knob.
+    other = picked(
+        app,
+        monkeypatch,
+        a_not_found(
+            "Error code: 404 - {'error': {'message': 'No allowed "
+            "providers are available for the selected model.', 'code': 404}}"
+        ),
+    )
+
+    banner = app.error[0].value
+    assert other in banner
+    assert "does not recognise it" in banner
+    assert "privacy" not in banner.lower(), "the wrong knob for this cause"
+    assert DATA_POLICY_URL not in banner
 
 
 def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):

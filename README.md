@@ -287,14 +287,16 @@ Two to four lines each; the full section for every one is in
 
 **Medium**
 
-- **Multi-model support** — a sidebar picker over **four** models from **three** providers plus an
-  open weight, changing the *answering* model only; the injection classifier and the embeddings are
+- **Multi-model support** — a sidebar picker over **four** models from **four** providers,
+  changing the *answering* model only; the injection classifier and the embeddings are
   fixed, so a switch cannot weaken the gate and cannot make the index unsearchable. Switching keeps
   the conversation, because the checkpointer is keyed on the thread and not on the model.
   The cost knobs price one model, so a conversation answered on another reports its tokens and
-  **no dollar figure**. A model the account cannot reach fails with its own banner, since a 404 is
-  not something retrying fixes. No per-model quality claim: every published number ran on the
-  default. → [3.5](./docs/implementation.md#35-multi-model-support)
+  **no dollar figure**. A model the **key** is not permitted to reach fails with its own banner
+  naming the allowlist, since a 404 is not something retrying fixes — three of the slugs first
+  committed here were refused, and finding out why is the more interesting half of the task. No
+  per-model quality claim: every published number ran on the default.
+  → [3.5](./docs/implementation.md#35-multi-model-support)
 - **Prompt-injection protection** — four layers, each catching what the one before it cannot, and
   each measured at the layer: **20/20** attacks stopped by the *expected* layer, **28/28** benign
   questions allowed, **22/22** answer verdicts correct, **5/5** planted payloads retrieved and
