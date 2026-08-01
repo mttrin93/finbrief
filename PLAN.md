@@ -69,7 +69,7 @@ concrete feature. (P0 = core, P1 = bonus-critical for max points, P2 = stretch.)
 
 | Task | Priority | Implementation |
 |---|---|---|
-| Multi-model support | P1 | Model picker (e.g. `gpt-4o-mini`, `claude-haiku`, one open model) — trivial via OpenRouter model string |
+| Multi-model support | P1 | Model picker over `config.CHAT_MODEL_CHOICES` — a fixed tuple, not free text — changing the **answering** model only. Shipped as four slugs across four providers, each served first-party; the "one open model" this row originally named is **out**, because an open-weight model is third-party-hosted by construction and a restricted key has no endpoint left to route to (ADR-0011's T14 amendment records the three rounds that established it) |
 | Real-time KB/data updates | P1 | Live prices/news via tools; "refresh news into KB" button that ingests latest headlines into a `news` Chroma collection |
 | Prompt-injection protection | P1 | System-prompt hardening, retrieved-content quarantine framing ("data, not instructions"), injection test suite (Sprint 1 lesson patterns) |
 | Token usage & cost display | P1 | LangChain callbacks → per-message and session token/cost meter in sidebar. **Built in part** (T12, #13): the per-**conversation** meter ships, read from T8's logged counts rather than from callbacks (cheaper, and one reader instead of a second instrument). The per-**message** half does **not** — `agent_turn` already carries a turn's own spend, so it is a rendering job on the transcript row, not a new measurement. Open, not cut. |
