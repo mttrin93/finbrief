@@ -1110,6 +1110,19 @@ class ModelSlice:
     #: Empty is the ordinary case twice over: a provider that names nothing, and a provider that
     #: names exactly what was asked for. Only a *disagreement* is worth a reader's attention, so
     #: only a disagreement is kept.
+    #:
+    #: **The comparison is a strict inequality, so a dated snapshot id counts as a disagreement
+    #: — by design, and it is a design choice rather than an oversight** (code review of #15).
+    #: `openai/gpt-4o-mini` answered by `openai/gpt-4o-mini-2024-07-18` is a *different build*
+    #: from the one this repo's measurements ran on, which is the only sense in which any of
+    #: these rows can be said to describe a model at all. Normalising it away would make the
+    #: panel silent about the one routing fact a reader could act on. The cost is a caption that
+    #: stays on screen for as long as a provider keeps doing it, which is the correct volume for
+    #: a fact that keeps being true.
+    #:
+    #: The tests exercise an unambiguous reroute — one vendor's slug answered by another's —
+    #: because an example that is *also* readable as the ordinary case cannot demonstrate which
+    #: of the two the code is detecting.
     rerouted_to: tuple[str, ...] = ()
 
     @property

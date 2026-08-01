@@ -1423,14 +1423,21 @@ def test_a_provider_that_served_a_different_model_is_recorded_against_the_slice(
     The field was emitted, round-tripped by a test, and consumed by nothing — which made
     ADR-0011's "a routing surprise should be visible rather than silent" a claim about a fact no
     surface could show, and a write-only instrument is what T13 (#14) already existed to fix.
+
+    **An unambiguous reroute — one vendor's slug answered by another's** (code review of #15).
+    This used `openai/gpt-4o-mini` answered by `openai/gpt-4o-mini-2024-07-18`, which is also
+    readable as an OpenAI-compatible provider naming the build it served, so the example could
+    not demonstrate which of the two the code detects. A snapshot id *does* count as a
+    disagreement here and `ModelSlice.rerouted_to` says why; the case is just no good as the
+    demonstration of a reroute.
     """
     logger, path = sink
-    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
-    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
+    a_turn(logger, model=PRICED_MODEL, model_reported=OTHER_MODEL)
+    a_turn(logger, model=PRICED_MODEL, model_reported=OTHER_MODEL)
 
     (only,) = by_model(events(path))
 
-    assert only.rerouted_to == ("openai/gpt-4o-mini-2024-07-18",), "de-duplicated across turns"
+    assert only.rerouted_to == (OTHER_MODEL,), "de-duplicated across turns"
 
 
 def test_a_provider_that_agreed_or_said_nothing_records_no_reroute(sink):

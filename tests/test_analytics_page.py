@@ -850,13 +850,17 @@ def test_a_reroute_is_named_on_the_page_and_silence_is_the_default(page, seeded)
     # no surface could show. Both halves asserted, because a caption that always renders is one
     # a reader learns to skip.
     logger, _ = seeded
-    a_turn(logger, model=PRICED_MODEL, model_reported="openai/gpt-4o-mini-2024-07-18")
+    # One vendor's slug answered by another's, which is unambiguously a reroute. A dated
+    # snapshot of the *same* model is one too — `ModelSlice.rerouted_to` argues why — but it is
+    # also readable as the ordinary case, so it cannot demonstrate which the code detects
+    # (code review of #15).
+    a_turn(logger, model=PRICED_MODEL, model_reported=OTHER_MODEL)
 
     page.run()
 
     body = text(page)
     assert REROUTE_CAPTION in body
-    assert "openai/gpt-4o-mini-2024-07-18" in body
+    assert OTHER_MODEL in body
     assert "count tokens against the model asked for" in body, "how to read the rows"
 
 
