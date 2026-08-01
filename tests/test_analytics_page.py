@@ -422,8 +422,10 @@ def test_the_activity_panel_counts_screenings_turns_and_says_why_they_differ(pag
     assert "**2** question(s) screened" in body
     assert "**1** turn(s) answered" in body
     # The panel owes this sentence, because an evaluation run writes turns with no screening and
-    # a reader comparing the two numbers would otherwise read the gap as a lost question.
-    assert "not two views of one number" in body
+    # a reader comparing the two numbers would otherwise read the gap as a lost question. Both
+    # definitions and the mechanism, rather than the conclusion on its own (#14 copy pass).
+    assert "Screened counts questions typed into the app" in body
+    assert "the two need not match" in body
 
 
 def test_the_gate_panel_reports_blocks_by_layer_and_the_latency_target(page, seeded):
@@ -496,14 +498,14 @@ def test_the_bracket_rate_renders_and_says_what_kind_of_claim_it_is(page, seeded
 
     body = text(page)
     assert "cited-marker support: **67%** (2/3)" in body
-    # The panel's own framing, which is the difference between this figure and the one
-    # `docs/verification/evaluation.md` says it could not take. Said in a reader's words now,
-    # with the artifact it defers to named in a comment on the page (#14 copy pass).
-    assert "whatever sessions this log holds" in body
-    assert "not a controlled test" in body
-    # And the three figures glossed, because their labels are the emitter's vocabulary.
+    # The three figures glossed, because their labels are the emitter's vocabulary.
     assert "Answers cite their sources as `[1]`, `[2]`" in body
     assert "Unresolved markers point at nothing" in body
+    # **The "not a controlled test" caveat is the header's, and it is said once.** It was in
+    # this panel, in the retrieval panel and in the header, and a caveat told three times is one
+    # a reader skips. An equality on the count, because a presence check passes on all three
+    # (#14 copy pass).
+    assert body.count("not a controlled test") == 1
 
 
 def test_the_agent_panel_names_the_turns_no_divergence_rate_can_include(page, seeded):
@@ -746,11 +748,11 @@ def test_the_retrieval_panel_points_at_the_measurement_of_record(page, seeded):
 
     body = text(page)
     assert "hybrid +translation" in body
-    # The controlled A/B is `docs/verification/evaluation.md`'s and this is not it — said as one
-    # line about what the figures *are* rather than as a paragraph pointing at the artifact,
-    # which is a comment on the page now (#14 copy pass).
-    assert "Measured over whatever ran against this log" in body
-    assert "not a controlled comparison" in body
+    assert "Every retrieval: p50" in body, "the pool, beside the split of it"
+    # The controlled A/B is `docs/verification/evaluation.md`'s and this is not it. Said once,
+    # in the page header — this panel repeating it was the second of three tellings, and the
+    # artifact behind the claim is a comment on the page (#14 copy pass).
+    assert "not a controlled comparison" not in body
     assert "evaluation.md" not in body, "no artifact filename on a page a user reads"
 
 
@@ -888,7 +890,7 @@ def test_every_aggregate_the_agent_and_tool_panels_compute_has_a_renderer(page, 
         "by_tool": "No tool calls in this log",
         "by_ticker": "No tool calls with a ticker in this log",
         "stale": "served stale: **not measured**",
-        "age_seconds": "Age of the data served, in seconds: **not measured**",
+        "age_seconds": "Age of the data served: **not measured**",
         "refused": "No validation refusals in this log",
         "unavailable": "No unavailable sources in this log",
         "unavailable_by_error": "No unavailable sources by error type in this log",

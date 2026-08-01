@@ -56,9 +56,14 @@ from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 st.set_page_config(page_title="FinBrief · Analytics", page_icon=":material/analytics:")
 
 st.title("Analytics")
+# **The scope of every figure below, said once and here.** It was in three panels — the
+# citation rate, the retrieval split and this line — because each of them wanted to disclaim a
+# controlled measurement, and a caveat repeated three times is one a reader stops reading. It
+# belongs to the page: nothing under it is a trial, and there is no panel this does not cover
+# (#14 copy pass).
 st.caption(
-    "Every figure here is read back out of the structured event log. Nothing on this page is "
-    "measured here."
+    "Every figure here is read back out of the structured event log — whatever has run against "
+    "it, and not a controlled test. Nothing on this page is measured here."
 )
 
 # `load_env()` before anything asks the environment for the sink: Streamlit runs only the
@@ -114,13 +119,9 @@ def figures(spread: Distribution, *, unit: str = "ms") -> str:
     """
     if not spread.measured:
         return "**not measured** — no line here carried one"
-    # `unit=""` puts the unit on the caller's label instead — the tools panel's age, where "s"
-    # three times reads as noise. Empty rather than a second helper, so the two renderings
-    # cannot drift apart in everything else.
-    suffix = f" {unit}" if unit else ""
     return (
-        f"p50 `{spread.p50:,.0f}`{suffix} · p90 `{spread.p90:,.0f}`{suffix} · "
-        f"max `{spread.maximum:,.0f}`{suffix} ({spread.count} sample(s))"
+        f"p50 `{spread.p50:,.0f}` {unit} · p90 `{spread.p90:,.0f}` {unit} · "
+        f"max `{spread.maximum:,.0f}` {unit} ({spread.count} sample(s))"
     )
 
 
@@ -283,10 +284,14 @@ def render_activity(log) -> None:
     # **The two counts legitimately disagree, and saying why is the panel's job.** `input_gate`
     # is the app's front door and nothing else screens; an evaluation run drives `agent.answer`
     # and writes turns with no gate line beside them. Presenting either number as "questions
-    # asked" would be a claim about a population neither of them describes.
+    # asked" would be a claim about a population neither of them describes — but the *reason*
+    # was written as two abstract clauses ("not two views of one number"), which states the
+    # conclusion and leaves the reader to reconstruct it. One sentence, both definitions, and
+    # the mechanism in the middle (#14 copy pass).
     st.caption(
-        "Only questions typed into the chat are screened, so an evaluation run adds answered "
-        "turns with no screening beside them. The two counts are not two views of one number."
+        "Screened counts questions typed into the app and answered counts turns the assistant "
+        "finished, so the two need not match — evaluation runs answer questions without going "
+        "through the app's input."
     )
 
 
@@ -436,12 +441,12 @@ def render_citations(log) -> None:
     # that `citation_markers` is written by `app/Home.py` and by nothing else, so T10's ten live
     # agent turns produced none and `docs/verification/evaluation.md` reports the rate as
     # unmeasured. This surface is where the instrument becomes readable — and the claim is
-    # weaker than the one that artifact wanted, which is why the caption names the population
-    # this rate is over. Which artifact deferred it is a developer's question and stays here.
-    st.caption(
-        "Markers are recorded only for questions asked in the app, so this is measured across "
-        "**whatever sessions this log holds** and not a controlled test."
-    )
+    # weaker than the one that artifact wanted.
+    #
+    # **That disclaimer is the page header's now**, not this panel's: it was here, in the
+    # retrieval panel and in the header, and three tellings of one caveat is a caveat a reader
+    # skips. Nothing on this page is a controlled measurement, so the sentence belongs to the
+    # page (#14 copy pass).
 
 
 # --- Panel 5: tools ---------------------------------------------------------------------
@@ -465,10 +470,14 @@ def render_tools(log) -> None:
         "These are the tickers the **finance tools** were called for, not the companies asked "
         "about."
     )
-    # The unit is on the label rather than on each of the three figures, and the gloss is a
-    # caption: "age of the data served" names the measurement and says nothing about what it is
-    # the age *of*.
-    st.markdown(f"Age of the data served, in seconds: {figures(tools.age_seconds, unit='')}")
+    # **The unit is on the figures and not also on the label** — it was on both — and it stays
+    # **seconds** where the rest of the app says minutes (`prompts.stale_notice`, the sidebar's
+    # freshness line, the TTL itself). Those describe *one* quote's age, where whole minutes are
+    # what a reader wants; this is a distribution whose interesting region is the first minute,
+    # because a fresh fetch is `0` and a cache hit is anything up to the TTL. Rounded to minutes
+    # a 40-second age prints as `1` and a 20-second one as `0`, which is the fabricated zero
+    # this page exists to avoid (#14 copy pass).
+    st.markdown(f"Age of the data served: {figures(tools.age_seconds, unit='s')}")
     st.caption("How old a quote or a headline was at the moment the answer used it.")
     st.markdown("**Refusals, failures and stale fallbacks**")
     # Tool **and** error type, the cross-tab the ticket asked for and the coarse tally is not:
@@ -614,9 +623,9 @@ def render_retrieval(log) -> None:
         )
     # The controlled A/B over the golden set is `docs/verification/evaluation.md`'s, and that is
     # the measurement of record; this is the same split over whatever happened to run. Which
-    # file holds the stronger claim, and why this one is weaker, is a developer's question and
-    # stays in this comment — the reader needs one line saying the figures are not a trial.
-    st.caption("Measured over whatever ran against this log — **not a controlled comparison**.")
+    # file holds the stronger claim, and why this one is weaker, is a developer's question —
+    # and the reader's half of it, that these figures are not a trial, is the page header's
+    # sentence rather than a third copy of one caveat (#14 copy pass).
 
 
 def render_planner(log) -> None:
