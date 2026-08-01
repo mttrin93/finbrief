@@ -675,10 +675,19 @@ That single owner also collapses the near-duplicate the two surfaces had each gr
 **The dashboard splits tokens and turn latency by model**, which is nearly free once the field
 exists and is exactly what this sink needs: append-only across every session, so four models' turns
 land in one pool where a single p50 describes none of them. The rules carry over — a model that
-metered nothing shows words and not zeros, a one-model log gets a sentence rather than a one-row
-table implying the others answered nothing, and the unattributed row (every turn logged before the
-field existed, which is most of an established sink) is named as *not a model and not the configured
-one either*. The rows sum to less than the totals above them, by exactly the planner's share, and
+metered nothing shows a blank cell and not a zero, a one-model log gets a sentence rather than a
+one-row table implying the others answered nothing, and the unattributed row (every turn logged
+before the field existed, which is most of an established sink) is named as such.
+
+**Its first version was a wall of text**, reported from the running app: three statistics and a
+sample count crammed into one `Turn latency` column, printing `p50 \`7,816\` ms` — backticks and
+all — because `figures()` returns markdown for `st.markdown` and a `st.dataframe` cell renders
+none. Split into plain `p50 / p90 / max` numeric columns the table is scannable and sortable, and
+an absent latency is an empty cell rather than a word in a number column. The two explanatory
+captions under it became one, since both answered the same question (*why don't these rows add up?*)
+and two stacked paragraphs of it is what a reader actually complained about. The two caveats that
+stayed are the ones ADR-0011 §4 requires on every total — the unmetered classifier call, and a
+floor named as a floor. The rows sum to less than the totals above them, by exactly the planner's share, and
 the panel says so: `retrieval/retrieve.py` builds the sub-query planner with no override, so a
 `query_translation` line is always on the configured model and belongs to no row. Unsaid, that
 difference reads as an arithmetic bug.

@@ -33,6 +33,7 @@ import io
 import logging
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -724,7 +725,7 @@ def test_a_log_answered_on_another_model_shows_tokens_and_withholds_the_cost(
 
     body = text(page)
     assert "**Cost (estimate)**" not in body, "no figure at a rate that is not this model's"
-    assert f"the configured prices are for `{PRICED_MODEL}`" in body
+    assert f"the configured rates are for `{PRICED_MODEL}`" in body
     assert "1,200" in body, "and the tokens are still reported — they were really spent"
     # Not the unpriced advice: telling this reader to set the two variables they have already
     # set would send them to the wrong knob, which is the distinction `render_cost` orders for.
@@ -749,11 +750,25 @@ def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, see
     # #15). One turn each, so `by_model`'s documented tie-break decides it: label order, and
     # `anthropic/…` precedes `openai/…`.
     assert list(split["Model"]) == [OTHER_MODEL, PRICED_MODEL]
-    assert set(split.columns) == {"Model", "Turns", "Input", "Output", "Turn latency"}
+    # **One column per number** (manual testing of #15). `figures()` returns markdown for
+    # `st.markdown`, and a dataframe cell renders none — so a single `Turn latency` column
+    # printed its backticks literally and ran off the edge of the frame.
+    assert set(split.columns) == {
+        "Model",
+        "Turns",
+        "Input",
+        "Output",
+        "p50 ms",
+        "p90 ms",
+        "max ms",
+    }
     assert len(split) == 2
-    # The planner caveat, which is what stops the rows summing to less than the totals above
-    # from reading as an arithmetic bug.
-    assert "sum to less than the totals above" in text(page)
+    assert not any("`" in str(v) for row in split.values for v in row), "no raw markdown"
+    slow = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert slow["p50 ms"] == 9000 and slow["max ms"] == 9000
+    # The planner caveat, which is what stops the rows totalling less than the figures above
+    # from reading as an arithmetic bug. One caption now, not two stacked paragraphs.
+    assert "rows total less than the figures above" in text(page)
 
 
 def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
@@ -768,7 +783,7 @@ def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
 
     (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
     assert "not recorded" in list(split["Model"])
-    assert "not a model, and not the configured one either" in text(page)
+    assert "`not recorded` is turns from before FinBrief recorded one" in text(page)
 
 
 def test_a_single_model_log_says_so_instead_of_drawing_a_one_row_comparison(page, seeded):
@@ -795,9 +810,9 @@ def test_a_reroute_is_named_on_the_page_and_silence_is_the_default(page, seeded)
     page.run()
 
     body = text(page)
-    assert "served by a different model than requested" in body
+    assert "Served by a different model than requested" in body
     assert "openai/gpt-4o-mini-2024-07-18" in body
-    assert "counted against the model that was asked for" in body, "and how to read the rows"
+    assert "count tokens against the model asked for" in body, "how to read the rows"
 
 
 def test_a_provider_that_agreed_produces_no_reroute_caption(page, seeded):
@@ -837,7 +852,7 @@ def test_a_log_whose_only_metered_line_is_the_planners_does_not_blame_another_mo
     page.run()
 
     body = text(page)
-    assert "records no model" in body
+    assert "recorded no model" in body
     assert "another model" not in body, "nothing answered, so nothing answered elsewhere"
     assert "**Cost (estimate)**" not in body, "and still no figure at the wrong rate"
 
@@ -853,10 +868,13 @@ def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(p
 
     (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
     unmetered = split[split["Model"] == OTHER_MODEL].iloc[0]
-    assert unmetered["Input"] == "not reported"
-    assert unmetered["Output"] == "not reported"
-    assert "0" not in {unmetered["Input"], unmetered["Output"]}
-    assert "p50 `7,000` ms" in unmetered["Turn latency"], "latency measured; tokens were not"
+    # **`NaN`, which Streamlit renders as an empty cell — and emphatically not `0`.** A provider
+    # that reported no usage did not make free calls, so the honest cell is blank. Asserted as
+    # "is not a number" rather than as a word, because these are numeric columns now: pandas
+    # widens `None` among ints to `NaN`, which is the absence surviving into the frame.
+    assert pd.isna(unmetered["Input"]) and pd.isna(unmetered["Output"])
+    assert unmetered["Input"] != 0 and unmetered["Output"] != 0
+    assert unmetered["p50 ms"] == 7000, "latency was measured even though tokens were not"
 
 
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):

@@ -466,23 +466,23 @@ def test_the_reason_given_for_an_unpriced_total_matches_which_state_it_is_in(sin
     named = unpriced_because_of_the_model(
         frozenset({OTHER_MODEL}), PRICED_MODEL, scope="this conversation"
     )
-    assert "was answered on another model" in named
+    assert "ran on another model" in named
 
     nothing = unpriced_because_of_the_model(
         frozenset(), PRICED_MODEL, scope="this conversation"
     )
-    assert "records no model" in nothing
+    assert "recorded no model" in nothing
     assert "another model" not in nothing, "nothing answered, so nothing answered elsewhere"
 
     unrecorded = unpriced_because_of_the_model(
         frozenset({None}), PRICED_MODEL, scope="this log"
     )
-    assert "records no model" in unrecorded
+    assert "recorded no model" in unrecorded
 
     both = unpriced_because_of_the_model(
         frozenset({OTHER_MODEL, None}), PRICED_MODEL, scope="this log"
     )
-    assert "another model" in both and "recording none" in both, "a log can hold both"
+    assert "mixes other models with unattributed turns" in both, "a log can hold both"
 
     # The priced model is named in every one of them, because that is what a reader acts on, and
     # the scope noun is the caller's: the sidebar totals a conversation and the page a file.
@@ -500,7 +500,7 @@ def test_the_wrong_model_sentence_is_reached_by_the_state_the_defect_was_in(sink
     assert spend.measured, "there are tokens, so a figure is being withheld rather than absent"
     assert spend.models == frozenset()
     assert not spend.all_answered_on(PRICED_MODEL), "so the app takes the wrong-model branch"
-    assert "records no model" in unpriced_because_of_the_model(
+    assert "recorded no model" in unpriced_because_of_the_model(
         spend.models, PRICED_MODEL, scope="this conversation"
     )
 

@@ -596,6 +596,13 @@ def render_by_model(log) -> None:
     milliseconds would need two axes to say less. It also keeps every absence printable as a
     word, which is the constraint a chart cannot meet (`Distribution` may be unmeasured, and a
     token field nothing reported is `None` and not `0`).
+
+    **One column per number, and `figures()` is deliberately not used here** (manual testing
+    of #15). That helper returns *markdown* for `st.markdown` — `p50 \\`7,816\\` ms · …` — and a
+    `st.dataframe` cell renders no markdown, so it printed the backticks literally and put
+    three statistics plus a sample count in the widest column on the page, cut off at its edge.
+    Split into plain numeric columns the table becomes scannable and sortable, and Streamlit
+    right-aligns and thousands-separates them for free.
     """
     slices = by_model(log)
     if not slices:
@@ -612,9 +619,11 @@ def render_by_model(log) -> None:
                     {
                         "Model": one.label,
                         "Turns": one.turns,
-                        "Input": _tokens(one.tokens.input.total),
-                        "Output": _tokens(one.tokens.output.total),
-                        "Turn latency": figures(one.latency),
+                        "Input": one.tokens.input.total,
+                        "Output": one.tokens.output.total,
+                        "p50 ms": _ms(one.latency.p50),
+                        "p90 ms": _ms(one.latency.p90),
+                        "max ms": _ms(one.latency.maximum),
                     }
                     for one in slices
                 ]
@@ -622,25 +631,35 @@ def render_by_model(log) -> None:
             hide_index=True,
             width="stretch",
             height="content",
+            # **`None` renders as an empty cell, which is the honest glyph here** and the reason
+            # the token columns are numbers rather than `_tokens()` strings: a field nothing
+            # reported has no value, and blank says that where `0` would be a claim that the
+            # calls were free. The column config is what keeps the empties from reading as a
+            # rendering fault — each header carries the unit, so a blank is visibly "not this".
+            column_config={
+                "Input": st.column_config.NumberColumn("Input", format="localized"),
+                "Output": st.column_config.NumberColumn("Output", format="localized"),
+            },
         )
-        # **Two sentences the table cannot carry, and both are about what is *not* in it.**
+        # **One caption where there were two**, because both answered the same question — *why
+        # don't these rows add up to the totals above?* — and two stacked paragraphs of it was
+        # the wall of text this panel was reported for (manual testing of #15).
         #
-        # The planner's tokens belong to no row: `query_translation` carries no model because
-        # the planner takes no override, so the rows sum to less than the totals above by
-        # exactly the planner's share. Unsaid, that reads as an arithmetic bug in the table.
+        # The claims are unchanged. The planner's tokens belong to no row (`query_translation`
+        # carries no model, since the planner takes no override), so the rows sum to less than
+        # the totals; and an unattributed row is not a fifth model but turns logged before the
+        # field existed, which is most of an established sink. The second half renders only when
+        # such a row is there, because a caveat about a row nobody can see is noise.
+        unattributed = any(one.model is None for one in slices)
         st.caption(
-            "Rows cover answering calls only. The sub-query planner runs on the configured "
-            "model whatever is picked and is logged separately, so these rows sum to less than "
-            "the totals above."
-        )
-        # And an unattributed row is not a fifth model: it is turns from before the field
-        # existed, which is most of an established sink. Named only when there is one, because a
-        # caveat about a row nobody can see is noise.
-        if any(one.model is None for one in slices):
-            st.caption(
-                "`not recorded` is turns logged before the model was recorded on a turn — "
-                "not a model, and not the configured one either."
+            "Answering calls only — the planner is logged separately, so rows total less than "
+            "the figures above."
+            + (
+                " `not recorded` is turns from before FinBrief recorded one."
+                if unattributed
+                else ""
             )
+        )
     # **Outside the branch above, and that was a bug when it was inside it.** A reroute is news
     # whether or not the log holds more than one requested model — arguably *more* so on a
     # single-model log, since there is no table to notice it against. The early return
@@ -654,9 +673,9 @@ def render_by_model(log) -> None:
     rerouted = [one for one in slices if one.rerouted_to]
     if rerouted:
         st.caption(
-            "Some answers were served by a different model than requested — "
+            "Served by a different model than requested — "
             + " · ".join(f"`{one.label}` → {', '.join(one.rerouted_to)}" for one in rerouted)
-            + ". Tokens above are counted against the model that was asked for."
+            + ". Rows count tokens against the model asked for."
         )
 
 
@@ -707,6 +726,17 @@ def render_cost(totals) -> None:
 def _tokens(count: int | None) -> str:
     """`12,431`, or the word for a count nothing reported. Never `0` for an absence."""
     return "not reported" if count is None else f"{count:,}"
+
+
+def _ms(value: float | None) -> int | None:
+    """A latency in whole milliseconds for a table cell, or `None` for an absence.
+
+    Whole milliseconds because a table of `7816.0` beside `12827.0` spends two characters a row
+    on a decimal no reader of a p50 needs, and `None` rather than `0` for the usual reason —
+    a distribution over no samples has no median, and a zero would be a claim that a turn was
+    instant. Streamlit renders `None` as an empty cell.
+    """
+    return None if value is None else round(value)
 
 
 # --- Panels 2 and 3: retrieval latency and the planner's round --------------------------

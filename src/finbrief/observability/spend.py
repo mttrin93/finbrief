@@ -356,14 +356,14 @@ def unpriced_because_of_the_model(
     named = sorted(one for one in models if one is not None)
     unrecorded = None in models or not models
     if named and unrecorded:
-        answered = f"{scope} holds turns answered on another model — and turns recording none"
+        answered = f"{scope} mixes other models with unattributed turns"
     elif named:
-        answered = f"{scope} was answered on another model"
+        answered = f"{scope} ran on another model"
     else:
-        answered = f"{scope} records no model for the turns it measured"
+        answered = f"{scope} recorded no model"
     return (
-        f"Cost is not shown: the configured prices are for `{priced_model}`, and "
-        f"{answered}. The tokens above are measured."
+        f"Not priced — the configured rates are for `{priced_model}`, but {answered}. "
+        f"The tokens above are measured."
     )
 
 
