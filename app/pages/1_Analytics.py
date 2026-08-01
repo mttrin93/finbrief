@@ -43,6 +43,7 @@ from finbrief.observability.analytics import (
     Tally,
     activity,
     agent_behaviour,
+    by_model,
     citations,
     gate_summary,
     open_sink,
@@ -51,7 +52,10 @@ from finbrief.observability.analytics import (
     spend_over_time,
     tool_summary,
 )
-from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
+from finbrief.observability.spend import (
+    UNMETERED_CLASSIFIER_NOTE,
+    unpriced_because_of_the_model,
+)
 
 st.set_page_config(page_title="FinBrief · Analytics", page_icon=":material/analytics:")
 
@@ -87,14 +91,20 @@ def sink_path():
     return resolve_log_file(os.environ)
 
 
-def configured_prices() -> tuple[float | None, float | None, bool]:
-    """The two price knobs, and whether configuration could be read at all.
+def configured_prices() -> tuple[float | None, float | None, str | None]:
+    """The two price knobs and the model they are for, or three `None`s when unreadable.
 
     Three states rather than two, because they call for three different sentences. A price is
     configuration and unset means unpriced (ADR-0011 §3 — there is no rate card in this repo,
     since every model is reached through OpenRouter's routing). But a `Settings` that cannot be
     built at all is a *different* absence, and telling a reader to set a price when the real
     problem is a missing key would send them to the wrong knob.
+
+    The third element carried a `readable` boolean until T14 (#15); it carries the **priced
+    model** now, and `None` still means "configuration could not be read" — the two facts have
+    one source and one failure, so the model *is* the readability signal rather than a second
+    thing to keep in step with it. `Spend.dollars` needs it because the two prices describe one
+    model and a reader may pick another.
 
     Unlike `load_env` above this does not stop the page: the log is readable without an API key,
     and refusing to show yesterday's traffic because today's key is missing would be a page
@@ -103,8 +113,8 @@ def configured_prices() -> tuple[float | None, float | None, bool]:
     try:
         settings = get_settings()
     except ConfigError:
-        return None, None, False
-    return settings.input_cost_per_mtok, settings.output_cost_per_mtok, True
+        return None, None, None
+    return settings.input_cost_per_mtok, settings.output_cost_per_mtok, settings.chat_model
 
 
 # --- Rendering helpers ------------------------------------------------------------------
@@ -571,19 +581,162 @@ def render_spend(log) -> None:
     # copy of it, and two copies of one sentence disagree on the turn one of them is edited.
     # This is the surface that renders it: it totals the whole log (#14 copy pass).
     st.caption(UNMETERED_CLASSIFIER_NOTE)
+    render_by_model(log)
+
+
+def render_by_model(log) -> None:
+    """Per-model tokens and turn latency — the panel the picker makes necessary (T14, #15).
+
+    **Inside the spend panel rather than beside it**, because it is the breakdown *of* the
+    totals above: a reader who has just been told the whole log cannot be priced needs the split
+    in the same glance, not two panels away.
+
+    Rendered as a table and not a chart. Four models over two measures is a comparison read
+    row-by-row, and the two measures have different units — a bar chart of tokens beside
+    milliseconds would need two axes to say less. It also keeps every absence printable as a
+    word, which is the constraint a chart cannot meet (`Distribution` may be unmeasured, and a
+    token field nothing reported is `None` and not `0`).
+
+    **One column per number, and `figures()` is deliberately not used here** (manual testing
+    of #15). That helper returns *markdown* for `st.markdown` — `p50 \\`7,816\\` ms · …` — and a
+    `st.dataframe` cell renders no markdown, so it printed the backticks literally and put
+    three statistics plus a sample count in the widest column on the page, cut off at its edge.
+    Split into plain numeric columns the table becomes scannable and sortable, and Streamlit
+    right-aligns and thousands-separates them for free.
+    """
+    slices = by_model(log)
+    if not slices:
+        absent("answered turn attributed to a model")
+        return
+    if len(slices) == 1 and slices[0].model is not None:
+        # **One model is not a comparison, and a one-row table implies the others answered
+        # nothing.** The figures are already above; what a reader gains here is the label.
+        st.caption(f"Every answered turn in this log ran on `{slices[0].label}`.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Model": one.label,
+                        "Turns": one.turns,
+                        "Input": one.tokens.input.total,
+                        "Output": one.tokens.output.total,
+                        "p50 ms": _ms(one.latency.p50),
+                        "p90 ms": _spread(one.latency, one.latency.p90),
+                        "max ms": _spread(one.latency, one.latency.maximum),
+                    }
+                    for one in slices
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            height="content",
+            # **`None` renders as an empty cell, which is the honest glyph here** and the reason
+            # the token columns are numbers rather than `_tokens()` strings: a field nothing
+            # reported has no value, and blank says that where `0` would be a claim that the
+            # calls were free. The column config is what keeps the empties from reading as a
+            # rendering fault — each header carries the unit, so a blank is visibly "not this".
+            column_config={
+                "Input": st.column_config.NumberColumn("Input", format="localized"),
+                "Output": st.column_config.NumberColumn("Output", format="localized"),
+            },
+        )
+        # **One caption where there were two**, because both answered the same question — *why
+        # don't these rows add up to the totals above?* — and two stacked paragraphs of it was
+        # the wall of text this panel was reported for (manual testing of #15).
+        #
+        # The claims are unchanged. The planner's tokens belong to no row (`query_translation`
+        # carries no model, since the planner takes no override), so the rows sum to less than
+        # the totals; and an unattributed row is not a fifth model but turns logged before the
+        # field existed, which is most of an established sink. The second half renders only when
+        # such a row is there, because a caveat about a row nobody can see is noise.
+        #
+        # **The `not recorded` clause says what those turns ran on, and this is the honest
+        # version of a change asked for as a relabel.** Every one of them really did run on
+        # whatever the default was at the time — here, the model the picker did not yet exist to
+        # change — so folding them into that model's row is *nearly* right, and the
+        # temptation is obvious. It is refused because the arithmetic reads this column:
+        # `all_answered_on` would go true and `Spend.dollars` would print a figure over turns
+        # nobody recorded a model for. Measured on the reported log: $0.1056, where the honest
+        # answer is that it cannot be priced. So the fact goes in the caption, where it informs
+        # a reader, and not in the cell, where it would feed a number.
+        #
+        # It names no slug: the page knows the default *now* and not the default *then*, and a
+        # sink is append-only across every deploy that ever wrote to it.
+        #
+        # **The third clause is the one-sample rule, and it renders on the same terms as the
+        # second** — only when a row it describes is on screen (code review of #15). A row with
+        # fewer than `MIN_SPREAD_SAMPLES` timed turns keeps its p50, which is that turn, and
+        # leaves p90 and max blank rather than repeating it into three columns that look like a
+        # distribution. Said here because an unexplained blank reads as a rendering fault, which
+        # is the same reason the token columns' emptiness is explained above.
+        unattributed = any(one.model is None for one in slices)
+        thin = any(one.latency.count < MIN_SPREAD_SAMPLES for one in slices)
+        st.caption(
+            "Answering calls only — the planner is logged separately, so rows total less than "
+            "the figures above."
+            + (
+                " `not recorded` is turns from before the model was logged: they ran on"
+                " whatever the default was then, which the log does not name."
+                if unattributed
+                else ""
+            )
+            + (
+                " A row with fewer than two timed turns has no spread to report, so its p90"
+                " and max are blank rather than a repeat of its p50."
+                if thin
+                else ""
+            )
+        )
+    # **Outside the branch above, and that was a bug when it was inside it.** A reroute is news
+    # whether or not the log holds more than one requested model — arguably *more* so on a
+    # single-model log, since there is no table to notice it against. The early return
+    # skipped it entirely and the test for it failed on that log (review of #15).
+    #
+    # Rendered **only when a provider disagreed** with the request, which is the whole reason
+    # the reply's own model name is recorded beside the requested one: answers are routed, and
+    # rows attributing tokens to what was *asked for* owe a reader the reroute that served them.
+    # Silent otherwise, because "the provider agreed" and "the provider said nothing" are both
+    # the ordinary case and a caption that always renders is one a reader skips.
+    rerouted = [one for one in slices if one.rerouted_to]
+    if rerouted:
+        st.caption(
+            "Served by a different model than requested — "
+            + " · ".join(f"`{one.label}` → {', '.join(one.rerouted_to)}" for one in rerouted)
+            + ". Rows count tokens against the model asked for."
+        )
 
 
 def render_cost(totals) -> None:
-    """The priced total, or which of the two absences is in the way."""
-    input_price, output_price, readable = configured_prices()
-    if not readable:
+    """The priced total, or which of the three absences is in the way."""
+    input_price, output_price, priced_model = configured_prices()
+    if priced_model is None:
         st.caption(
             "Cost cannot be shown: this page could not read the app's configuration, so it "
             "does not know whether a price is set. The token counts above are unaffected."
         )
         return
-    dollars = totals.dollars(input_per_mtok=input_price, output_per_mtok=output_price)
-    if dollars is None:
+    dollars = totals.dollars(
+        input_per_mtok=input_price,
+        output_per_mtok=output_price,
+        priced_model=priced_model,
+    )
+    if dollars is None and not totals.all_answered_on(priced_model):
+        # **The third absence, and on this page it is the likely one** (T14, #15). This total is
+        # over the *whole sink*, which spans every session and every model anyone picked — and
+        # every `agent_turn` written before T14 carries no model at all, so an established log
+        # lands here rather than in either branch below.
+        #
+        # Ordered ahead of the unpriced branch for the reason `app/Home.py` orders it the same
+        # way: it is the more specific claim, and "set the two variables" would be advice that
+        # does not help. It names no per-model breakdown as a remedy, because none exists — the
+        # per-model panel above splits *tokens*, which is what this repo can measure.
+        #
+        # The sentence is `spend.py`'s, and `scope` is this page's own noun for its pool: the
+        # sidebar totals one conversation and this totals a file, so neither may borrow the
+        # other's word for what it is describing (code review of #15).
+        st.caption(unpriced_because_of_the_model(totals.models, priced_model, scope="this log"))
+    elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through
         # OpenRouter's routing, so there is no rate card in this repo to read one from
         # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.
@@ -601,6 +754,42 @@ def render_cost(totals) -> None:
 def _tokens(count: int | None) -> str:
     """`12,431`, or the word for a count nothing reported. Never `0` for an absence."""
     return "not reported" if count is None else f"{count:,}"
+
+
+def _ms(value: float | None) -> int | None:
+    """A latency in whole milliseconds for a table cell, or `None` for an absence.
+
+    Whole milliseconds because a table of `7816.0` beside `12827.0` spends two characters a row
+    on a decimal no reader of a p50 needs, and `None` rather than `0` for the usual reason —
+    a distribution over no samples has no median, and a zero would be a claim that a turn was
+    instant. Streamlit renders `None` as an empty cell.
+    """
+    return None if value is None else round(value)
+
+
+#: The samples below which a row reports its middle and nothing about its spread (T14, #15).
+#:
+#: Two, because one timed turn *is* its own p50, p90 and maximum — three columns of one number,
+#: which reads as a distribution and is a sample. The issue asked for exactly this ("a split
+#: with one sample says so rather than drawing a distribution") and the first version printed
+#: all three regardless, which is the absence-versus-measurement rule this page is built on
+#: arriving as a triple of measurements that are one.
+#:
+#: An assertion about what a spread *is* rather than a knob, so it sits here like
+#: `MAX_AGENT_STEPS` and not in `config.py` — and `p50` is deliberately not gated by it, since
+#: the median of one sample is that sample and saying so is honest.
+MIN_SPREAD_SAMPLES = 2
+
+
+def _spread(latency, value: float | None) -> int | None:
+    """A p90 or a maximum, or `None` when there are too few samples to have one.
+
+    Same rule and same glyph as `_ms`'s absence: a blank cell says "not this", which is what a
+    reader is owed when the alternative is three columns repeating one turn's latency at each
+    other. The count behind every row is the `Turns` column beside it, and the caption names
+    the rule so a blank is legible rather than a rendering fault.
+    """
+    return _ms(value) if latency.count >= MIN_SPREAD_SAMPLES else None
 
 
 # --- Panels 2 and 3: retrieval latency and the planner's round --------------------------

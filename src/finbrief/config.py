@@ -545,6 +545,134 @@ MAX_QUESTIONS_PER_SESSION = 40
 
 
 # --------------------------------------------------------------------------------------
+# The answering model the reader may pick (T14, #15)
+# --------------------------------------------------------------------------------------
+
+#: The models the sidebar picker offers for **answering**. A fixed set, not free text: a typo
+#: in a text box reaches OpenRouter as a provider error in the middle of a turn, and the whole
+#: value of a picker is that the set is known.
+#:
+#: **Chat only.** `Settings.classifier_model`, `judge_model` and `embedding_model` are not
+#: selectable and each keeps its own field, for the reason those fields already give — three
+#: roles, three prices, and raising one must not raise the others. The embedding model is doubly
+#: excluded: ingest and query must share it (`retrieval/embeddings.py`), so a picker over it
+#: would degrade retrieval to noise with no error at all.
+#:
+#: A module constant rather than a `Settings` field, on `MAX_QUESTIONS_PER_SESSION`'s reasoning
+#: above: this is what the one human-facing door offers, and a deployment wanting a different
+#: set is changing what the app *is* rather than configuring it. What a deployment *can* change
+#: is which model answers by default — `FINBRIEF_CHAT_MODEL`, honoured by `chat_model_options`
+#: below even when it names something absent from here.
+#:
+#: All four are tool-calling models, because the agent binds four tools and a model that cannot
+#: call them answers every question ungrounded.
+#:
+#: **What governs whether a slug answers is the API key's own allowlist, and it took three wrong
+#: guesses to find that out.** The chain is worth writing down, because each guess was
+#: reasonable and each was a claim about an environment this repo cannot see:
+#:
+#: 1. Two slugs were committed **unverified**, behind a comment claiming a check would cost a
+#:    paid call. It would not: `GET /api/v1/models` is public and free. Both were 404s.
+#: 2. `meta-llama/llama-3.3-70b-instruct` existed and 404'd. Read off the logged error as a
+#:    *data-policy* exclusion — every provider serving it is a third-party inference host.
+#: 3. `x-ai/grok-4.3`, picked *because* it is first-party like the three that work, 404'd too.
+#:    Which killed that theory. The reader's key is provisioned with an **allowlist** listing
+#:    Grok 4.5 and no 4.3, and OpenRouter's message says so in the words the first two rounds
+#:    read past: "No endpoints available matching your **guardrail restrictions** and data
+#:    policy." Guardrail restrictions *are* the key's allowlist.
+#:
+#: So the operative rule is that **a slug must be permitted by whatever key is in use** — which
+#: is neither a property of the catalogue nor of the model. On a provisioned key (a course, an
+#: employer, any shared org key) the issuer's dashboard is the authority and the reader may not
+#: control it at all. That is why the failure banner names the allowlist first and does not send
+#: a reader to change a setting that might not be theirs (`app/Home.py`).
+#:
+#: **First-party hosting survives as a tie-breaker, demoted to what it is: a heuristic for the
+#: data-policy half.** A model served only by third-party hosts has no endpoint left when those
+#: are excluded, and an open-weight model is *by construction* in that category — so "include
+#: one open model" (PLAN §6's phrasing, followed uncritically) is in tension with "works on a
+#: restricted key". Each of the four below has a first-party endpoint:
+#:
+#: | slug | tool-capable providers | why it is here |
+#: |---|---|---|
+#: | `openai/gpt-4o-mini` | OpenAI | the default; every committed measurement ran on it |
+#: | `anthropic/claude-haiku-4.5` | Anthropic, Bedrock, Azure, Google | verified answering |
+#: | `google/gemini-2.5-flash` | Google, Google AI Studio | verified answering |
+#: | `minimax/minimax-m2.7` | Minimax *(first-party)* + 8 hosts | a fourth provider, and the one
+#:   candidate on **both** tiers of the observed allowlist |
+#:
+#: `x-ai/grok-4.5` and `deepseek/deepseek-v4-flash` are live, tool-calling, and on that
+#: allowlist's *Advanced* tier only — either is a one-line swap for a key that has it. Neither
+#: is committed, because a picker must not offer an option the likelier tier rejects.
+#:
+#: Checked against the catalogue on **2026-08-01**. Re-checking is one unauthenticated `curl`
+#: whenever this list is edited; no test can watch a live catalogue, let alone somebody else's
+#: allowlist, since the suite is hermetic (CLAUDE.md).
+CHAT_MODEL_CHOICES: tuple[str, ...] = (
+    "openai/gpt-4o-mini",
+    "anthropic/claude-haiku-4.5",
+    "google/gemini-2.5-flash",
+    "minimax/minimax-m2.7",
+)
+
+
+#: The two names behind an OpenRouter **restricted-route 404**: where the *account-level* half
+#: is configured, and the substring in the provider's message that identifies the whole class.
+#: Both from the logged error body of a real failure (T14, #15):
+#:
+#:     No endpoints available matching your guardrail restrictions and data policy.
+#:     Configure: https://openrouter.ai/settings/privacy
+#:
+#: **The marker is "data policy" but the *cause* is usually the other clause**, and conflating
+#: the two is the mistake this constant is named to avoid. "Guardrail restrictions" is the API
+#: key's allowlist — set by whoever issued it — and "data policy" is the account's provider
+#: preferences. One message covers both, so the match is the class and the banner names both
+#: causes with the allowlist first (`app/Home.py`). The URL is only good for the second, which
+#: is why the copy does not present it as *the* fix.
+#:
+#: **Here rather than in `app/Home.py`, which is the only caller**, for two reasons pointing
+#: the same way. This is a fact about whether a *configured* model can be reached, which is this
+#: module's subject and is already argued out beside `CHAT_MODEL_CHOICES`. And `app/` is not
+#: importable — its pages are scripts Streamlit execs — so a constant left there is one a test
+#: can only duplicate, which for a URL is exactly the second copy this repo keeps catching.
+#:
+#: **The URL is compiled in, never taken from the error message.** That is the whole reason the
+#: banner can name a fix: the provider's message is *read* to choose a sentence and never
+#: rendered, because a client error string can carry a request URL and a URL can carry a key
+#: (the rule `app/Home.py`'s generic branch already follows). So the page shows FinBrief's own
+#: words plus this.
+#:
+#: The match is short and lowercased on purpose — two words that appear in OpenRouter's message
+#: for every variant of this refusal, not the sentence around them. A longer match would be a
+#: copy of prose somebody else maintains and would stop matching the first time they reworded
+#: it; the cost of a miss is the *generic* 404 banner rather than a crash, so failing open is
+#: the right direction and a substring is acceptable where an equality would not be.
+DATA_POLICY_URL = "https://openrouter.ai/settings/privacy"
+RESTRICTED_404_MARKER = "data policy"
+
+
+def chat_model_options(configured: str) -> tuple[str, ...]:
+    """The picker's options: the configured model first, then `CHAT_MODEL_CHOICES`.
+
+    **Configured-first, and it is not cosmetic.** `st.selectbox` selects index 0, so leading the
+    list is what makes the widget's default *be* `FINBRIEF_CHAT_MODEL` rather than merely
+    contain it. Any other order means a deployment that set the variable answers on a model
+    nobody chose — the picker silently overriding the one piece of configuration it exists to
+    respect.
+
+    An off-list value is **offered, never dropped**: an operator pointing the app at a model
+    this tuple has not heard of has made a decision, and a picker that omitted it would present
+    a default it does not use. Deduplicated because a repeated option is a
+    `StreamlitDuplicateElementId`-class crash rather than a cosmetic repetition, and it would
+    fire on the *default* configuration — the one case no deployment can avoid.
+
+    Takes the configured string rather than a `Settings`, so it sits above that dataclass and
+    stays callable from a test with no environment at all.
+    """
+    return (configured, *(slug for slug in CHAT_MODEL_CHOICES if slug != configured))
+
+
+# --------------------------------------------------------------------------------------
 # Retrieval strategy switches (ADR-0004, ADR-0005)
 # --------------------------------------------------------------------------------------
 

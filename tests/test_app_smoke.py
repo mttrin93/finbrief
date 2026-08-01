@@ -20,7 +20,9 @@ from streamlit.testing.v1 import AppTest
 from finbrief.agent import agent
 from finbrief.agent.agent import AgentTurn, Search, Step
 from finbrief.config import (
+    CHAT_MODEL_CHOICES,
     CLUSTERS,
+    DATA_POLICY_URL,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
     PEERS,
@@ -106,7 +108,10 @@ def stub_answer(monkeypatch, answer=None, steps=()):
     # `on_step` is accepted and driven, not merely tolerated: T5 made the page pass a callback,
     # and a stub that only absorbed it would leave the progress list untested while looking
     # fine.
-    def fake_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3's other file
+    # `model` is accepted and ignored here on purpose: which model a turn ran on is
+    # `test_app_state.py`'s subject, and this file's is rendering. A stub that *rejected* it
+    # would fail every test in this file for a reason none of them is about.
+    def fake_answer(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         asked.append(question)
         for step in steps:
             if on_step is not None:
@@ -570,7 +575,7 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     # message: a client's error string can carry a request URL, and a request URL can carry an
     # API key — the same reason `log_event` never records one. Until T5 this branch printed
     # `f"The model call failed: {exc}"`, i.e. the message verbatim.
-    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise RuntimeError("upstream refused: https://api.example/v1?key=sk-secret")
 
     monkeypatch.setattr(agent, "answer", boom)
@@ -586,6 +591,124 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     assert [m["role"] for m in app.session_state.messages] == ["user"]
 
 
+def a_not_found(message):
+    """The real `openai.NotFoundError` a 404 from OpenRouter raises.
+
+    The real exception rather than a look-alike, because the app branches on the type's **name**
+    and a hand-rolled stand-in would let its spelling drift from the SDK's. `body=None` is what
+    `langchain_openai` propagates when the response is not JSON-decoded by the client.
+    """
+    import httpx
+    from openai import NotFoundError
+
+    return NotFoundError(
+        message,
+        response=httpx.Response(
+            404,
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat?key=sk-secret"),
+        ),
+        body=None,
+    )
+
+
+def picked(app, monkeypatch, exc):
+    """Pick a non-default model, ask a question, and have `answer` raise `exc`."""
+
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
+        raise exc
+
+    monkeypatch.setattr(agent, "answer", boom)
+    app.run()
+    other = next(slug for slug in CHAT_MODEL_CHOICES if slug != get_settings().chat_model)
+    (picker,) = [s for s in app.sidebar.selectbox if "Model" in s.label]
+    picker.select(other).run()
+    app.chat_input[0].set_value("What are Tesla's risks?").run()
+    return other
+
+
+def test_a_data_policy_404_names_the_setting_that_caused_it_and_where_to_change_it(
+    app, monkeypatch
+):
+    """The failure a reader hit twice, with OpenRouter's own diagnosis (manual testing of #15).
+
+    **The message is verbatim from the logged error body of the real failure**, so this test is
+    pinned to what the provider sends rather than to a paraphrase of it. Note the clause the
+    first two rounds of diagnosis read past — *guardrail restrictions*, which is the API key's
+    **allowlist**. That was the real cause: a provisioned key permitting a fixed set of models.
+
+    So the banner names the allowlist first and the data policy second, and tells the reader to
+    ask whoever issued the key rather than to go change a setting that may not be theirs.
+    Getting that order wrong is worse than saying nothing: it reads as the reader's mistake.
+    """
+    other = picked(
+        app,
+        monkeypatch,
+        a_not_found(
+            "Error code: 404 - {'error': {'message': 'No endpoints available matching your "
+            "guardrail restrictions and data policy. Configure: "
+            "https://openrouter.ai/settings/privacy', 'code': 404}}"
+        ),
+    )
+
+    assert not app.exception
+    banner = app.error[0].value
+    assert other in banner, "the model that was blocked is named"
+    plain = banner.replace("**", "")
+    assert "not available to this API key" in plain, "the likelier cause, stated first"
+    assert "whoever issued the key" in plain, "and who can actually change it"
+    assert plain.index("issued the key") < plain.index("data policy"), (
+        "the allowlist is the likelier cause on a provisioned key and comes first"
+    )
+    assert DATA_POLICY_URL in banner, "the account-level half is still linked"
+    assert "Try again" not in banner
+    # **Still not the provider's message**, which is the rule the branch is careful about: it is
+    # read to choose a sentence and never rendered, so a request URL — and the key one can carry
+    # — cannot reach the page. The URL above is a compiled-in constant, not one from the error.
+    assert "sk-secret" not in banner
+    assert "guardrail restrictions" not in banner
+
+
+def test_a_404_the_message_does_not_explain_states_what_happened_and_no_cause(app, monkeypatch):
+    """The same status code without the marker — and therefore without a diagnosis (#15).
+
+    **The fixture was the finding.** This case used to send *"No allowed providers are available
+    for the selected model."* — a restriction message — and assert the page answered "OpenRouter
+    does not recognise it", enshrining a mapping from a restricted route to a claim that the
+    slug was imaginary. The message here is one that genuinely means an unknown slug, and what
+    is asserted is what the branch can actually establish: nothing was answered, retrying will
+    not help, pick another model.
+
+    No cause is named, because the marker's absence supports none — `RESTRICTED_404_MARKER`'s
+    miss is meant to fail open into a *generic* banner, and a banner naming a cause is not one.
+    """
+    other = picked(
+        app,
+        monkeypatch,
+        a_not_found(
+            "Error code: 404 - {'error': {'message': 'No endpoints found for "
+            "openai/not-a-real-model.', 'code': 404}}"
+        ),
+    )
+
+    banner = app.error[0].value
+    assert other in banner
+    assert "returned no such model for this API key" in banner
+    assert "Retrying will not change that" in banner
+    assert "Pick a different model under **Configuration**" in banner
+    # **The two sentences that went, asserted absent** — because each was a claim this branch
+    # cannot check and each would come back as a plausible edit. "does not recognise it" is a
+    # diagnosis; "the default always works" is false for an off-list `FINBRIEF_CHAT_MODEL` and
+    # for a key whose allowlist excludes the default.
+    assert "does not recognise" not in banner
+    assert "always works" not in banner
+    assert "privacy" not in banner.lower(), "the wrong knob for an unread cause"
+    assert DATA_POLICY_URL not in banner
+    # Still not the provider's message: the branch reads it to choose a sentence and renders
+    # none of it, so the request URL in the error — and any key it carries — stays off the page.
+    assert "sk-secret" not in banner
+    assert "No endpoints found" not in banner
+
+
 def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):
     # The detail is not lost, only moved: the banner is for the reader and the traceback is for
     # whoever debugs it, which is what makes withholding the message from the page affordable.
@@ -594,7 +717,7 @@ def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsy
     # the page calls `configure_logging`, which sets `propagate=False` on the `finbrief` logger
     # and installs its own JSON-lines handler, so `caplog`'s root handler never sees the record.
     # What this asserts is therefore the line an operator actually reads.
-    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise RuntimeError("upstream refused")
 
     monkeypatch.setattr(agent, "answer", boom)
@@ -641,7 +764,7 @@ def test_a_real_turn_tags_every_line_it_emits_with_one_turn_id(
     """
     engine_logger = logging.getLogger("finbrief.rag")
 
-    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_and_emit(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         # Exactly the two events T10 joins on a turn: provenance, and the answer's spend.
         log_event(engine_logger, "retrieval", hits=2, latency_ms=640)
         log_event(engine_logger, "rag_answer", contexts=2, latency_ms=910)
@@ -688,7 +811,7 @@ def test_a_second_question_gets_its_own_turn_id(app, monkeypatch, capsys, tmp_pa
     # identifier exists for — two searches in one step belong together, two turns do not.
     engine_logger = logging.getLogger("finbrief.rag")
 
-    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_and_emit(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         log_event(engine_logger, "retrieval", hits=2)
         return a_turn()
 
@@ -724,7 +847,7 @@ def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
 
     from finbrief.agent.agent import MAX_AGENT_STEPS
 
-    def out_of_steps(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def out_of_steps(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise GraphRecursionError(f"Recursion limit of {MAX_AGENT_STEPS} reached")
 
     monkeypatch.setattr(agent, "answer", out_of_steps)
@@ -1949,8 +2072,15 @@ def metered(app, monkeypatch, **usage):
     """
     engine_logger = logging.getLogger("finbrief.agent.agent")
 
-    def answer_and_meter(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
-        log_event(engine_logger, "agent_turn", thread_id=thread_id, searches=1, **usage)
+    def answer_and_meter(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
+        # **`model` is logged rather than ignored, unlike the other stubs in this file**,
+        # because the meter reads it: since T14 (#15) a total is only priced when every turn ran
+        # on the configured model, so a stub that dropped it would make every cost assertion
+        # below test the unattributed branch while looking like it tested pricing. What flows
+        # through here is the app's own picker value (`chosen_model()`), which is the point.
+        log_event(
+            engine_logger, "agent_turn", thread_id=thread_id, searches=1, model=model, **usage
+        )
         return a_turn()
 
     monkeypatch.setattr(agent, "answer", answer_and_meter)
@@ -2064,6 +2194,47 @@ def test_a_cost_is_shown_only_when_a_price_is_configured(app, monkeypatch, tmp_p
     app.run()
 
     assert "$0.7500" in panel_text(spend_panel(app))
+
+
+def test_a_conversation_on_a_picked_model_reports_tokens_and_no_dollar_figure(
+    app, monkeypatch, tmp_path
+):
+    """T14's pricing rule in the sidebar (#15), with the prices *set*.
+
+    The failure this replaces is invisible by construction: the two knobs describe one model, so
+    a Haiku turn multiplied by the gpt-4o-mini rate renders a plausible figure and nothing on
+    screen distinguishes it from a right one. The tokens are real and stay; the figure goes.
+
+    Driven through the picker rather than by seeding the log, so what is under test is the whole
+    path — widget to cache key to `answer()`'s argument to the log line the meter reads back.
+    """
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "0.15")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "0.60")
+    get_settings.cache_clear()
+    metered(
+        app,
+        monkeypatch,
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        input_tokens_calls=1,
+        output_tokens_calls=1,
+        calls=1,
+    )
+    app.run()
+    other = next(slug for slug in CHAT_MODEL_CHOICES if slug != get_settings().chat_model)
+    (picker,) = [s for s in app.sidebar.selectbox if "Model" in s.label]
+    picker.select(other).run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    panel = panel_text(spend_panel(app))
+    assert "1,000,000" in panel, "the tokens were really spent and are reported"
+    assert "$" not in panel, "and no figure at a rate that is not this model's"
+    assert f"rates are configured for `{get_settings().chat_model}` only" in panel
+    # Not the set-a-price advice: these are set, and sending this reader to that knob would be
+    # advice that cannot help. `fill_spend_meter` orders the two branches for exactly this.
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" not in panel
 
 
 def row_shape(row) -> tuple[str, ...]:
@@ -2273,7 +2444,7 @@ def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp
     monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
     planner = logging.getLogger("finbrief.retrieval.query_translation")
 
-    def answer_unmetered(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_unmetered(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         log_event(
             planner,
             "query_translation",
@@ -2345,7 +2516,7 @@ def test_the_meter_is_read_before_the_turn_as_well_as_after(app, monkeypatch, tm
         order.append("meter")
         return real(log, thread_id=thread_id)
 
-    def recording_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def recording_answer(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         order.append("turn")
         return a_turn()
 
@@ -2381,7 +2552,7 @@ def in_flight(app, monkeypatch):
     planner = logging.getLogger("finbrief.retrieval.query_translation")
     retriever = logging.getLogger("finbrief.retrieval.retrieve")
 
-    def answer_without_finishing(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def answer_without_finishing(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         log_event(
             planner, "query_translation", max_sub_queries=3, sub_queries=2, input_tokens=25
         )

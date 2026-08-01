@@ -334,7 +334,9 @@ uv run pytest
 
 ## 2.6 User interface
 
-Streamlit chat, one page. What is on it, and where each surface is documented:
+Streamlit chat on one page — the app's second page is the analytics dashboard
+([3.19](#319-advanced-analytics-dashboard)), which reads the event log and is not part of asking a
+question. What is on the chat page, and where each surface is documented:
 
 | surface | what it shows | detail |
 |---|---|---|
@@ -346,6 +348,7 @@ Streamlit chat, one page. What is on it, and where each surface is documented:
 | progress indicators | an `st.status` block naming each step as the agent runs it | |
 | marker note | any `[n]` that resolves to no panel entry, named rather than stripped | [3.3](#33-source-citations) |
 | sidebar | Conversation · How to use FinBrief · Token spend · Grounding scope · Configuration · Universe — four of them collapsed panels | [3.1](#31-conversation-history--export), [3.4](#34-interactive-help--guide), [3.9](#39-token-usage--cost-display) |
+| **model picker** | inside *Configuration*, which is where the answering model was already stated — so the panel that told a reader what answers is the one that changes it. The only control in the sidebar besides *Start over* and the example buttons | [3.5](#35-multi-model-support) |
 | export buttons | the conversation as JSON or CSV | [3.11](#311-conversation-export-in-various-formats) |
 
 **Retrieved text renders through `st.text`, not Markdown**, because a filer's own `$178,353` is a
@@ -425,7 +428,7 @@ and Hard. The numbers `3.1`…`3.21` below are a **local convention of this repo
 list in the order I recorded it, and are used only as stable subsection anchors. [the README's Part 3](../README.md#32-all-21-with-status) is the full 21-row table, named rather than numbered, so
 nothing here depends on the numbering being anyone else's.
 
-Fourteen are built: **Easy 4/4 · Medium 6/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
+Fifteen are built: **Easy 4/4 · Medium 7/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
 
 ## Easy
 
@@ -546,6 +549,194 @@ bypassed `screen()` would be a second door into the agent.
 the gate — a second door for a convenience.
 
 ## Medium
+
+### 3.5 Multi-model support
+
+A sidebar picker over four OpenRouter models, changing the **answering** model only.
+`config.CHAT_MODEL_CHOICES` is a fixed tuple, not free text: a mistyped slug reaches OpenRouter as
+a provider error in the middle of a turn, and the value of a picker is that the set is known. Four
+slugs across four providers, each serving its own model **first-party**, because a set of four
+OpenAI models would demonstrate nothing about swapping — tool-calling dialects differ by provider,
+and that is the difference a picker exposes.
+
+**What governs reachability is the API key's allowlist, and finding that out took three wrong
+guesses.** Each was reasonable and each was a claim about an environment the repo cannot see:
+
+1. Two slugs shipped **unverified**, behind a comment saying a check would cost a paid call. It
+   would not — `GET /api/v1/models` is public and free — and both were 404s.
+2. `meta-llama/llama-3.3-70b-instruct` existed and 404'd. Read off the logged error as a
+   *data-policy* exclusion, since every provider serving it is a third-party inference host.
+3. `x-ai/grok-4.3`, chosen *because* it is first-party like the three that work, 404'd too —
+   which killed that theory. The key was provisioned with an **allowlist** naming Grok 4.5 and no
+   4.3, and OpenRouter's message had said so all along in the clause both earlier rounds read
+   past: *"No endpoints available matching your **guardrail restrictions** and data policy."*
+   Guardrail restrictions are the key's allowlist.
+
+So the operative rule is that a slug must be **permitted by whatever key is in use** — a property
+of neither the catalogue nor the model. On a provisioned key (a course, an employer, any shared org
+key) the issuer's dashboard is the authority and the reader may not control it at all, which is why
+the banner names the allowlist first and does not send anyone to change a setting that might not be
+theirs.
+
+**First-party hosting survives as a tie-breaker rather than the rule**, covering the data-policy
+half: a model served only by third-party hosts has no endpoint left once those are excluded, and an
+open-weight model is in that category *by construction*. So "include one open model" — PLAN §6's
+phrasing, followed uncritically — is in tension with "works on a restricted key", and a picker
+whose fourth option most keys reject has three options and a trap.
+
+| slug | tool-capable providers | status |
+|---|---|---|
+| `openai/gpt-4o-mini` | OpenAI | the default; every committed measurement ran on it |
+| `anthropic/claude-haiku-4.5` | Anthropic, Bedrock, Azure, Google | verified answering |
+| `google/gemini-2.5-flash` | Google, Google AI Studio | verified answering |
+| `minimax/minimax-m2.7` | Minimax *(first-party)* + 8 hosts | fourth provider; the one candidate on **both** tiers of the observed allowlist |
+| *removed* — `meta-llama/llama-3.3-70b-instruct` | 13 third-party hosts | not on the allowlist |
+| *removed* — `x-ai/grok-4.3` | xAI | not on the allowlist (which lists 4.5) |
+
+`x-ai/grok-4.5` and `deepseek/deepseek-v4-flash` are live, tool-calling and on that allowlist's
+*Advanced* tier only — either is a one-line swap for a key that has it.
+
+Like the T12 items this **adds no integration**. `llm.build_chat_model` has taken a `model=`
+override since T3, OpenRouter is one base URL for every upstream, and ADR-0008's decision text
+already reserved the session-state slot ("UI toggles (model, strategy)"). What was built is a
+widget, one cache key, one log field, and the rules that follow from a log where four models
+answered.
+
+**What is *not* selectable, and each for its own reason.** `classifier_model` and `judge_model`
+keep their own fields because three roles are three prices and raising one must not raise the
+others; the classifier's exclusion also means a switch cannot weaken ADR-0006's gate, which is half
+of PLAN §6's open question dissolving rather than being answered. `embedding_model` is excluded
+twice over: ingest and query must share it, so a picker there would degrade retrieval to noise
+**with no error at all**.
+
+**The mechanism was measured before anything was built**, because the picker touches the one thing
+ADR-0008's two-session guarantee rests on. `@st.cache_resource` keys on its arguments, so
+`shared_agent(model)` yields one agent *per model* and replaces nothing — the entry for the previous
+model stays live for the sessions still on it. Isolation is unchanged, and the reason is that it was
+never carried by there being one agent: it comes from the per-session `uuid4` thread id. The cost is
+that the process now opens up to four SQLite connections where it opened one, which ADR-0008's
+amendment records along with what contention would look like.
+
+**Which is also why a conversation survives a switch.** Every `build_agent` resolves
+`build_checkpointer` to the same `checkpoint_db`, and the checkpointer is keyed on `thread_id` and
+not on the model — so a second agent reading the same file under the same thread is handed the
+first's history. Asserted at the seam rather than assumed, and asserted on what the second model
+was **shown** (`ScriptedChatModel.prompts`) rather than on the returned state accumulating: a
+follow-up whose prompt lacks the earlier turn has no conversation to resolve *and its debt?*
+against, however well it answers.
+
+**The isolation requirement as first specified was a check that cannot fail**, and this is the
+clearest instance of that bug class in the repo because the fix is a *second* test rather than a
+better assertion. Drop the model from the cached builder and every session silently answers on
+`FINBRIEF_CHAT_MODEL` — while still holding two distinct thread ids, still sending each turn to its
+own thread. An isolation test passes before and after. So `test_app_state.py` carries two tests and
+says which is which: the property (two sessions on two models stay separate, marked as *not* the
+detector) and the detector (the picked model reaches `build_agent`, as an **equality** on the built
+models). Two mutations were applied — the slug accepted and discarded, then the parameter removed
+entirely — and the detector failed on both while the property test passed on both.
+
+**Two fields record which model answered, because they can disagree.** `agent_turn` carries `model`
+— what the picker requested, the key the spend panel and the dashboard aggregate on — and
+`model_reported`, what the reply's own metadata said. OpenRouter routes by availability, so a
+routing surprise should be visible rather than silent. Both default to `None` and never to the
+configured slug: `answer()` is handed a *built* agent and cannot see which model is inside it, so
+filling it in would be a guess rendered indistinguishable from a reading. A slug is configuration
+and not user content, so neither field needs an exception to the logging rules.
+
+The second field shipped **write-only** and the review caught it: emitted, round-tripped by a test,
+read by nothing — which made "visible rather than silent" a claim about a fact no surface could
+show, one ticket after [3.19](#319-advanced-analytics-dashboard) existed partly to fix the same
+thing in `citation_markers`. The per-model panel names a reroute now, and only when the provider
+disagreed with the request: agreement and silence are both the ordinary case, and a caption that
+always renders is one a reader skips.
+
+**The cost meter gives something up, and that is the most interesting part of the ticket.** The two
+price knobs are a single pair describing one model, and no per-model rate card ships — ADR-0011
+refused one because OpenRouter fronts many upstreams, so a price in this repo is a figure nobody
+measured going stale in the one panel whose subject is spend. Four models make a Haiku turn priced
+at the gpt-4o-mini rate reachable: wrong, and **wrong invisibly**, since the tokens are real and the
+arithmetic is sound. So a conversation is priced only when every metered turn ran on the priced
+model, and otherwise reports its tokens with the reason. It is `Tokens.partial`'s shape — a third
+absence beside "no price configured" and "nothing reported the tokens" — and `priced_model` is a
+**required** keyword, because an optional check defaults to not checking and the wrong figure would
+have survived in whichever caller went unupdated.
+
+**The sentence that replaces the figure is a function of the state, and the first version was
+wrong about one.** `models` is built from answering lines only, so a conversation whose one metered
+line is the *planner's* — a turn in flight, or one that raised after the planner's round — arrives
+with an empty set, and the literal the sidebar rendered said "answered on another model" about a
+conversation where nothing had answered at all. An absence reported as a measurement of something
+else, inside the sentence added to prevent a wrong number. Three states now, one owner
+(`spend.unpriced_because_of_the_model`), and the caller supplies its own noun for its pool — the
+sidebar totals a conversation and the dashboard a file, so neither may borrow the other's word.
+That single owner also collapses the near-duplicate the two surfaces had each grown, which is
+`UNMETERED_CLASSIFIER_NOTE`'s lesson arriving one ticket later.
+
+**The dashboard splits tokens and turn latency by model**, which is nearly free once the field
+exists and is exactly what this sink needs: append-only across every session, so four models' turns
+land in one pool where a single p50 describes none of them. The rules carry over — a model that
+metered nothing shows a blank cell and not a zero, a one-model log gets a sentence rather than a
+one-row table implying the others answered nothing, and the unattributed row (every turn logged
+before the field existed, which is most of an established sink) is named as such.
+
+**That row was asked to be relabelled as the default model, and the refusal is the interesting
+part.** On this project the request is very nearly right: those turns really did run on
+`FINBRIEF_CHAT_MODEL`, because the picker did not yet exist to change it. It is refused because the
+arithmetic reads that column — `all_answered_on` would go true, and `Spend.dollars` would print a
+figure over turns nobody recorded a model for. Measured on the reported log: **$0.1056**, where the
+honest answer is that it cannot be priced. So the fact is stated in the caption instead ("they ran
+on whatever the default was then, which the log does not name"), where it informs a reader without
+feeding a number, and it names no slug — the page knows the default *now*, not the default *then*,
+and a sink outlives every deploy that wrote to it.
+
+**Its first version was a wall of text**, reported from the running app: three statistics and a
+sample count crammed into one `Turn latency` column, printing `p50 \`7,816\` ms` — backticks and
+all — because `figures()` returns markdown for `st.markdown` and a `st.dataframe` cell renders
+none. Split into plain `p50 / p90 / max` numeric columns the table is scannable and sortable, and
+an absent latency is an empty cell rather than a word in a number column. The two explanatory
+captions under it became one, since both answered the same question (*why don't these rows add up?*)
+and two stacked paragraphs of it is what a reader actually complained about. The two caveats that
+stayed are the ones ADR-0011 §4 requires on every total — the unmetered classifier call, and a
+floor named as a floor. The rows sum to less than the totals above them, by exactly the planner's share, and
+the panel says so: `retrieval/retrieve.py` builds the sub-query planner with no override, so a
+`query_translation` line is always on the configured model and belongs to no row. Unsaid, that
+difference reads as an arithmetic bug.
+
+**A row with one timed turn reports its middle and no spread**, which the first version did not do.
+One sample *is* its own p50, p90 and maximum, so printing all three renders a sample as a
+distribution — three columns of one number, indistinguishable by eye from a model whose latency
+really was that flat. The median of one sample is that sample and stays; p90 and max blank, and a
+third caption clause explains the blank on the same terms as the other two, only when a row it
+describes is on screen. It is the same absence-versus-measurement rule as the empty token cells one
+paragraph up, arriving as a triple of measurements that are one.
+
+**No per-model quality claim, and this is a scoping decision rather than an omission.** PLAN §6's
+open question — do the per-model-tuned tool-calling prompts break on a swap? — is answered by
+bounding it: all four slugs are tool-calling models, and a model that fans out badly is slower
+rather than wrong, since `MAX_AGENT_STEPS` bounds the loop either way. What does **not** ship is a
+per-model tool-calling eval. T10's ran on the default and that remains the measured configuration;
+every figure in `docs/verification/evaluation.md` is a claim about `openai/gpt-4o-mini` and about
+nothing else. A per-model number would mean the harness run four times over, which is four times
+the spend for a Tier-2 widget.
+
+**And `FINBRIEF_CHAT_MODEL` stays the default.** The options are the configured model first, then
+the tuple, deduplicated — so an operator who points the app at a model the tuple has not heard of
+has it honoured rather than overridden. Configured-first is not cosmetic: `st.selectbox` selects
+index 0, so leading the list is what makes the widget's default *be* the setting rather than merely
+contain it.
+
+**Existing in the catalogue is not being reachable, and the failure says which.** OpenRouter
+returns 404 both for a slug it does not know **and** for one no permitted provider serves — so a
+verified slug can 404 for one key and answer for another, and no test here can tell. Those need
+different fixes, and the provider names which in the response body, so the banner reads the message
+to choose a sentence. A restricted-route 404 names the key's allowlist first and the account's data
+policy second; an unknown slug says so and points at the picker. Neither says "try again", because
+a 404 is not transient — PLAN §2's tiers are distinguished by what the reader can *do*, and waiting
+is on neither list. A test pins all four known-bad strings so a plausible edit cannot restore them.
+
+The message is **read and never rendered**, which is what keeps the existing rule intact: a client
+error string can carry a request URL and a URL can carry an API key, so what reaches the page is
+FinBrief's own words plus one compiled-in constant (`config.OPENROUTER_PRIVACY_URL`).
 
 ### 3.7 Prompt-injection protection
 
@@ -675,6 +866,16 @@ every model through OpenRouter, which fronts many upstreams and routes by availa
 price of a call is not something this codebase can assert. A hardcoded figure would be a number
 nobody measured, going stale silently, in the one panel whose entire subject is spend. Two knobs
 rather than one because input and output are priced differently everywhere.
+
+**And they price one model, so there is a third absence** ([3.5](#35-multi-model-support)). Since
+the sidebar lets a reader switch the answering model, a conversation answered on something other
+than the priced one reports its tokens and **no dollar figure** — the same shape as the partial
+rule above, and for a sharper version of the reason: a Haiku turn multiplied by the gpt-4o-mini
+rate is not an incomplete figure but a **wrong** one, and wrong invisibly, since the tokens behind
+it are real and the arithmetic is sound. Three ways to be unpriceable, three sentences: no price
+configured, no tokens reported, or not every metered turn on the priced model. Per-model pricing
+was declined on the paragraph above's own argument — four rate cards are four numbers nobody
+measured.
 
 Measured spend from the last evaluation run, for scale
 ([`evaluation.md`](verification/evaluation.md)):
@@ -1092,6 +1293,7 @@ to the wrong knob.
 | The agent | `agent_turn`, `citation_markers` | divergence is the *complement* of `verbatim`, and it is measured rather than enforced (ADR-0003) — a resolved pronoun is a permitted rewrite, so the panel calls it behaviour rather than faults |
 | Tools | `tool_call`, `tool_refused`, `tool_unavailable`, `stale_fallback` | "tickers the finance tools were called for", not "tickers asked about" — a filings-only question names no ticker in a log that carries no user content |
 | Spend | `agent_turn`, `query_translation` | each field against its own denominator, and the unmetered gate classifier named **unconditionally** |
+| By model | `agent_turn.model` | tokens and turn latency per answering model ([3.5](#35-multi-model-support)) — the rows sum to *less* than the totals above by the planner's share, since the planner runs on the configured model and its line belongs to no row; and the unattributed row is named as neither a model nor the default |
 | Retrieval | `retrieval` | split by `strategy` × `translation`, over whatever ran rather than over a trial |
 | The planner | `query_translation` | the planner's own round and **not** the full cost of translating a query, which is ADR-0005's clause and is recorded as missed in `evaluation.md` |
 

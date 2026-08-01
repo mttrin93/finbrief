@@ -33,9 +33,11 @@ import io
 import logging
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from finbrief.config import Settings
 from finbrief.observability.logging_setup import configure_logging, log_event, turn
 from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 
@@ -295,6 +297,39 @@ def a_screening(logger, **fields):
     log_event(logger, "input_gate", **{**defaults, **fields})
 
 
+#: The model the page's `configured_prices()` will name, read from `Settings` rather than typed:
+#: the `page` fixture sets no `FINBRIEF_CHAT_MODEL`, so this is the default it resolves to, and
+#: a literal here would silently stop matching the day that default changes (T14, #15).
+PRICED_MODEL = Settings.from_env({"OPENROUTER_API_KEY": "test-key"}).chat_model
+OTHER_MODEL = "anthropic/claude-3.5-haiku"
+
+#: The reroute caption's opening words, in the case the page renders them, shared by the test
+#: that requires it and the test that forbids it (code review of #15).
+#:
+#: **One constant because the negative half could not fail.** It asserted
+#: `"served by a different model" not in text(page)` — lowercase, against a caption that begins
+#: `"Served by …"` and a `text()` that folds nothing — so the substring was absent from every
+#: page this suite can render, whatever the code did. Measured: making the caption render
+#: unconditionally left this file and `test_app_smoke.py` entirely green, which is the reroute
+#: contract's silent half having no guard at all.
+#:
+#: Not the whole sentence, because the tail names models and the two halves seed different
+#: ones; the opening clause is what distinguishes "a reroute is on screen" from "it is not".
+REROUTE_CAPTION = "Served by a different model than requested"
+
+#: The per-model caption's second clause, likewise shared by the test requiring it and the test
+#: forbidding it (code review of #15).
+#:
+#: `render_by_model` appends it only when a `not recorded` row is on screen — "a caveat about a
+#: row nobody can see is noise" — and **only the presence half was checked**. Measured: pinning
+#: `unattributed = True` so the clause renders on every log left the whole page suite green,
+#: while `= False` was caught. The same asymmetry as `REROUTE_CAPTION` above, in the same panel.
+UNATTRIBUTED_CAVEAT = "`not recorded` is turns from before the model was logged"
+
+#: The one-sample clause, shared by both halves for the reason the two above are (T14, #15).
+THIN_SAMPLE_CAVEAT = "A row with fewer than two timed turns has no spread to report"
+
+
 def a_turn(logger, **fields):
     defaults = {
         "thread_id": "abc",
@@ -309,6 +344,9 @@ def a_turn(logger, **fields):
         "answer_chars": 800,
         "latency_ms": 4200,
         "calls": 1,
+        # The priced model by default, so every test written before T14 (#15) still describes a
+        # priceable log. The tests about the pricing rule name their own model.
+        "model": PRICED_MODEL,
         "input_tokens": 1200,
         "input_tokens_calls": 1,
         "output_tokens": 340,
@@ -694,6 +732,277 @@ def test_a_priced_spend_shows_the_cost(page, seeded, monkeypatch):
     assert "**Cost (estimate)**" in text(page)
 
 
+def test_a_log_answered_on_another_model_shows_tokens_and_withholds_the_cost(
+    page, seeded, monkeypatch
+):
+    """T14's pricing rule at the surface (#15) — prices configured, and still no figure.
+
+    The distinguishing case: with a rate card set *and* another model in the log, the old page
+    would have multiplied one model's tokens by another's rate and printed a dollar figure that
+    looked exactly like a right one. The tokens are measured and stay on screen; the figure does
+    not.
+    """
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "1.0")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "2.0")
+    logger, _ = seeded
+    a_turn(logger, model=OTHER_MODEL)
+
+    page.run()
+
+    body = text(page)
+    assert "**Cost (estimate)**" not in body, "no figure at a rate that is not this model's"
+    assert f"rates are configured for `{PRICED_MODEL}` only" in body
+    assert "1,200" in body, "and the tokens are still reported — they were really spent"
+    # Not the unpriced advice: telling this reader to set the two variables they have already
+    # set would send them to the wrong knob, which is the distinction `render_cost` orders for.
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" not in body
+
+
+def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, seeded):
+    # The panel the picker makes necessary: two models in one sink, and a single p50 over both
+    # describes neither. Asserted through the typed `dataframe` accessor, whose count is checked
+    # — `app.get(...)` on an element type `AppTest` has no wrapper for returns `[]` rather than
+    # raising, and would be a vacuous assertion (CLAUDE.md).
+    logger, _ = seeded
+    # Two turns each, because one would make both rows single-sample and blank their spread —
+    # `MIN_SPREAD_SAMPLES`, which is a different subject from this test's (columns and order).
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
+
+    page.run()
+
+    tables = [frame.value for frame in page.dataframe]
+    (split,) = [frame for frame in tables if "Model" in frame.columns]
+    # **An equality on the order, not a disjunction over both orders** — which is what this line
+    # was, and a disjunction over every possible order is a check that cannot fail (review of
+    # #15). One turn each, so `by_model`'s documented tie-break decides it: label order, and
+    # `anthropic/…` precedes `openai/…`.
+    assert list(split["Model"]) == [OTHER_MODEL, PRICED_MODEL]
+    # **One column per number** (manual testing of #15). `figures()` returns markdown for
+    # `st.markdown`, and a dataframe cell renders none — so a single `Turn latency` column
+    # printed its backticks literally and ran off the edge of the frame.
+    assert set(split.columns) == {
+        "Model",
+        "Turns",
+        "Input",
+        "Output",
+        "p50 ms",
+        "p90 ms",
+        "max ms",
+    }
+    assert len(split) == 2
+    assert not any("`" in str(v) for row in split.values for v in row), "no raw markdown"
+    slow = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert slow["p50 ms"] == 9000 and slow["max ms"] == 9000
+    # The planner caveat, which is what stops the rows totalling less than the figures above
+    # from reading as an arithmetic bug. One caption now, not two stacked paragraphs.
+    assert UNATTRIBUTED_CAVEAT not in text(page), "no such row here, so no caveat about one"
+    assert THIN_SAMPLE_CAVEAT not in text(page), "nor about a spread every row has"
+    assert "rows total less than the figures above" in text(page)
+
+
+def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
+    # Most of an established sink is turns written before the field existed. They get a row, and
+    # the row says what it is — folding them into the configured model would move real tokens
+    # onto a model nothing recorded.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+    log_event(logger, "agent_turn", calls=1, input_tokens=500, latency_ms=1000)
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    assert "not recorded" in list(split["Model"])
+    body = text(page)
+    assert UNATTRIBUTED_CAVEAT in body
+    # **The caption says what those turns ran on; the cell does not.** Relabelling the row as
+    # the configured model was asked for and refused: `all_answered_on` reads this column, so it
+    # would have turned a withheld cost into a printed one over turns nobody attributed —
+    # measured at $0.1056 on the reported log. The fact informs a reader here instead.
+    assert "they ran on whatever the default was then" in body
+    assert "which the log does not name" in body, "and the page does not invent the slug"
+    (split,) = [f.value for f in page.dataframe if "Model" in f.value.columns]
+    # **Two rows, not one merged row** — the assertion the relabel would have broken. Folding
+    # the unattributed turns into the configured model's row feeds `all_answered_on`, and a
+    # withheld cost would have become a printed one.
+    assert sorted(split["Model"]) == sorted([PRICED_MODEL, "not recorded"])
+    assert len(split) == 2
+
+
+def test_a_single_model_log_says_so_instead_of_drawing_a_one_row_comparison(page, seeded):
+    # A one-row table is not a comparison, and it implies the other models answered nothing
+    # rather than that they never ran. The figures are already above; the label is the addition.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+
+    page.run()
+
+    body = text(page)
+    assert f"Every answered turn in this log ran on `{PRICED_MODEL}`" in body
+    assert not [f for f in page.dataframe if "Model" in f.value.columns], "no table for one row"
+
+
+def test_a_reroute_is_named_on_the_page_and_silence_is_the_default(page, seeded):
+    # `model_reported`'s reader (review of #15): the field was emitted, round-tripped and read
+    # by nothing, so "a routing surprise should be visible rather than silent" described a fact
+    # no surface could show. Both halves asserted, because a caption that always renders is one
+    # a reader learns to skip.
+    logger, _ = seeded
+    # One vendor's slug answered by another's, which is unambiguously a reroute. A dated
+    # snapshot of the *same* model is one too — `ModelSlice.rerouted_to` argues why — but it is
+    # also readable as the ordinary case, so it cannot demonstrate which the code detects
+    # (code review of #15).
+    a_turn(logger, model=PRICED_MODEL, model_reported=OTHER_MODEL)
+
+    page.run()
+
+    body = text(page)
+    assert REROUTE_CAPTION in body
+    assert OTHER_MODEL in body
+    assert "count tokens against the model asked for" in body, "how to read the rows"
+
+
+def test_a_provider_that_agreed_produces_no_reroute_caption(page, seeded):
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, model_reported=PRICED_MODEL)
+    a_turn(logger, model=OTHER_MODEL)  # reported nothing at all
+
+    page.run()
+
+    assert REROUTE_CAPTION not in text(page)
+
+
+def test_a_log_whose_only_metered_line_is_the_planners_does_not_blame_another_model(
+    page, seeded, monkeypatch
+):
+    """The wrong-reason defect at the surface (review of #15).
+
+    `models` is built from answering lines only, so a turn that raised after the planner's round
+    leaves metered tokens and no attribution — and the literal this replaced said *"answered on
+    another model"* about a log where nothing had answered. The sentence is a function of the
+    state now, and this is the state that had no case.
+    """
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "1.0")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "2.0")
+    logger, _ = seeded
+    with turn("abc:aaaa"):
+        log_event(
+            logger,
+            "query_translation",
+            max_sub_queries=3,
+            sub_queries=2,
+            latency_ms=900,
+            input_tokens=600,
+            input_tokens_calls=1,
+        )
+
+    page.run()
+
+    body = text(page)
+    assert "recorded no model" in body
+    assert "another model" not in body, "nothing answered, so nothing answered elsewhere"
+    assert "**Cost (estimate)**" not in body, "and still no figure at the wrong rate"
+    # **And the per-model panel says the same thing in its own words rather than vanishing**
+    # (code review of #15). `by_model` returns nothing over a log with no answering line, and
+    # the early return that prints this was reachable, rendered on exactly this fixture, and
+    # asserted nowhere — deleting the call left the suite green. It is the five-states rule
+    # ADR-0011 makes this page carry: a panel with nothing to show says so.
+    assert "No answered turn attributed to a model in this log" in body
+
+
+def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(page, seeded):
+    # `observability/tokens.py`'s rule at the newest surface: a provider that reported no usage
+    # did not make free calls, so the cell reads as an absence and never as `0`.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+    log_event(logger, "agent_turn", model=OTHER_MODEL, searches=1, latency_ms=7000)
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    unmetered = split[split["Model"] == OTHER_MODEL].iloc[0]
+    # **`NaN`, which Streamlit renders as an empty cell — and emphatically not `0`.** A provider
+    # that reported no usage did not make free calls, so the honest cell is blank. Asserted as
+    # "is not a number" rather than as a word, because these are numeric columns now: pandas
+    # widens `None` among ints to `NaN`, which is the absence surviving into the frame.
+    assert pd.isna(unmetered["Input"]) and pd.isna(unmetered["Output"])
+    assert unmetered["Input"] != 0 and unmetered["Output"] != 0
+    assert unmetered["p50 ms"] == 7000, "latency was measured even though tokens were not"
+
+
+def test_a_model_whose_turns_reported_no_latency_shows_a_blank_and_not_an_instant_turn(
+    page, seeded
+):
+    """The same rule on the other axis, which had no test at all (code review of #15).
+
+    `_ms` returns `None` rather than `0` for an unmeasured distribution, and its docstring says
+    why — "a zero would be a claim that a turn was instant". Nothing held it: mutating it to
+    `return 0 if value is None else round(value)` left the whole page suite green.
+
+    The state is reachable without contrivance. A turn that recorded its model and no
+    `latency_ms` gives a slice with tokens and an empty `Distribution`, so all three latency
+    cells would have printed `0` — three fabricated zeros in the panel this module's own
+    docstring forbids them in.
+    """
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=4000)
+    log_event(logger, "agent_turn", model=OTHER_MODEL, calls=1, input_tokens=500)  # no latency
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    untimed = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert all(pd.isna(untimed[column]) for column in ("p50 ms", "p90 ms", "max ms"))
+    assert untimed["Input"] == 500, "its tokens were measured even though its latency was not"
+
+
+def test_a_row_with_one_timed_turn_reports_its_middle_and_no_spread(page, seeded):
+    """The issue's one-sample rule (#15), which the first version did not implement.
+
+    > a split with one sample says so rather than drawing a distribution
+
+    One timed turn *is* its own p50, p90 and maximum, so printing all three renders a sample as
+    a distribution — three columns of one number, indistinguishable by eye from a model whose
+    latency really was that flat. The median of one sample is that sample and stays; the spread
+    goes, because there is none.
+
+    The caption is asserted with it: an unexplained blank reads as a rendering fault, which is
+    the same reason the empty token cells are explained.
+    """
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=5000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=7000)  # the only turn on this model
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    lonely = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert lonely["p50 ms"] == 7000, "the median of one sample is that sample"
+    assert pd.isna(lonely["p90 ms"]) and pd.isna(lonely["max ms"]), "and it has no spread"
+    # The row that does have two samples keeps all three, or the rule has removed a measurement.
+    two = split[split["Model"] == PRICED_MODEL].iloc[0]
+    assert (two["p50 ms"], two["p90 ms"], two["max ms"]) == (3000, 5000, 5000)
+    assert THIN_SAMPLE_CAVEAT in text(page)
+
+
+def test_a_table_whose_rows_all_have_a_spread_does_not_explain_a_missing_one(page, seeded):
+    # The negative half, on the same terms as the other two clauses in this caption: a caveat
+    # about a blank nobody can see is noise, and a caption that always renders is one a reader
+    # learns to skip.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=5000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=2000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
+
+    page.run()
+
+    assert THIN_SAMPLE_CAVEAT not in text(page)
+
+
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
     logger, _ = seeded
     a_session(logger)
@@ -947,9 +1256,13 @@ def test_the_derived_home_key_list_is_the_one_home_actually_uses():
         "messages",
         "sink_offset",
         "questions_asked",
-        # And the two reached by subscript through a module constant.
+        # And the three reached by subscript through a module constant. `chat_model` joined them
+        # in T14 (#15) — the model picker's widget key, which is the "UI toggles (model,
+        # strategy)" slot ADR-0008 reserves. That this equality had to be edited is the parser
+        # working: a new key `Home.py` owns is a new key this page must not write.
         "question",
         "pending_question",
+        "chat_model",
     }
 
 

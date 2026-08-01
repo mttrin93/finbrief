@@ -159,11 +159,33 @@ class Spend:
     unfinished: int
     input: Tokens
     output: Tokens
+    #: The models this conversation's **answering** turns ran on — one `agent_turn`'s `model`
+    #: field per turn, and `None` among them for a turn that recorded none (T14, #15).
+    #:
+    #: A set rather than a single value, because one conversation can hold several: the
+    #: checkpointer is keyed on `thread_id` and not on the model, so switching the picker
+    #: mid-conversation keeps the history and adds a second model to the same thread.
+    #:
+    #: **`query_translation` lines are deliberately not in here.** The planner builds its own
+    #: model with `build_chat_model(settings)` and takes no override
+    #: (`retrieval/retrieve.py`), so its line is always on the configured model and carries no
+    #: `model` field at all — reading those absences in would make every translated turn
+    #: unattributed for a reason that does not exist.
+    #:
+    #: **No default.** Every construction is `conversation_spend`'s and passes one, and a
+    #: default here would be the empty set — which is the value that makes a total
+    #: *unpriceable*. A silently-defaulted field that withholds a figure is the same hazard
+    #: `dollars` takes `priced_model` as a required keyword to avoid (code review of #15).
+    models: frozenset[str | None]
 
     @property
     def measured(self) -> bool:
         """Whether any call in this conversation reported any count."""
         return self.input.measured or self.output.measured
+
+    def all_answered_on(self, model: str) -> bool:
+        """Whether every answering turn here ran on `model`, and something said so."""
+        return answered_only_on(self.models, model)
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -190,29 +212,48 @@ class Spend:
         )
 
     def dollars(
-        self, *, input_per_mtok: float | None, output_per_mtok: float | None
+        self,
+        *,
+        input_per_mtok: float | None,
+        output_per_mtok: float | None,
+        priced_model: str,
     ) -> float | None:
         """The cost of this spend at the configured prices, or `None` when it cannot be priced.
 
-        `None` for either of two reasons, and the caller says which: no price is configured (the
-        default — see `config.Settings.input_cost_per_mtok`), or nothing reported the tokens a
-        price would multiply. Both are absences and neither is `$0.00`, which on a spend panel
-        would read as "this conversation was free".
+        `None` for **three** reasons now, and the caller says which: no price is configured (the
+        default — see `config.Settings.input_cost_per_mtok`), nothing reported the tokens a
+        price would multiply, or the turns did not all run on `priced_model`. All three are
+        absences and none is `$0.00`, which on a spend panel would read as "this conversation
+        was free".
+
+        **The third is T14's (#15), and it is the same shape as `Tokens.partial`.** The two
+        price knobs are a single pair configured for one model, and no per-model rate card
+        ships — ADR-0011 refused one because OpenRouter fronts many upstreams and routes by
+        availability, so a price in this repo is a figure nobody measured going stale in the one
+        panel about spend. Four selectable models make that stronger, not weaker. What they also
+        make reachable is a turn on Haiku multiplied by the gpt-4o-mini rate, and **a wrong
+        dollar figure is worse than no dollar figure** — especially here, where the wrongness is
+        invisible because the tokens behind it are real.
+
+        `priced_model` is a **required** keyword rather than an optional check. An optional one
+        defaults to not checking, which is how the wrong figure would survive in every caller
+        that had not been updated — and the two callers here are the two surfaces that render
+        spend.
 
         A **partial** total is still priced, because the tokens in it were really spent; what
         the caller owes beside the figure is the fact that it is a floor rather than a total,
         which is `partial` above.
+
+        The arithmetic and the model gate are `priced_dollars` below, shared with
+        `analytics.TokenTotals.dollars` rather than copied into it.
         """
-        prices = (
-            (self.input.total, input_per_mtok),
-            (self.output.total, output_per_mtok),
+        return priced_dollars(
+            self.input.total,
+            self.output.total,
+            input_per_mtok=input_per_mtok,
+            output_per_mtok=output_per_mtok,
+            one_model=self.all_answered_on(priced_model),
         )
-        priced = [
-            tokens * price / 1_000_000
-            for tokens, price in prices
-            if tokens is not None and price is not None
-        ]
-        return sum(priced) if priced else None
 
 
 def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
@@ -263,7 +304,109 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         unfinished=len(started - completed),
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
+        # Answering lines only — `COMPLETED_EVENT` and not `TOKEN_EVENTS`. See `Spend.models`
+        # for why the planner's line is excluded rather than read as an absence.
+        models=frozenset(event.field("model") for event in ours(COMPLETED_EVENT)),
     )
+
+
+def priced_dollars(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    input_per_mtok: float | None,
+    output_per_mtok: float | None,
+    one_model: bool,
+) -> float | None:
+    """Tokens times rates, or `None` for any of the three ways a total cannot be priced.
+
+    **The one definition, shared by import** (code review of #15). `Spend.dollars` and
+    `analytics.TokenTotals.dollars` were byte-identical, and T14 extended the duplicate rather
+    than removing it: the model gate was added to both bodies and the required `priced_model`
+    keyword migrated twice. `answered_only_on` was hoisted out of the same two methods on the
+    review round before this one and the eight lines beside it were left — which is the
+    duplication this module's own docstring had just finished arguing against. **The licence
+    covers a module, not a line.**
+
+    The gate arrives as `one_model` rather than as the model and the pool, because the two
+    callers hold different pools (`Spend.models` over a conversation, `TokenTotals.models` over
+    a whole sink) and both already resolve them through `answered_only_on`. Passing the verdict
+    keeps this function about arithmetic and leaves each caller owning the population it
+    describes.
+
+    `None` and never `0.0`: an unpriced total, an unmetered one and one whose turns did not all
+    run on the priced model are three absences, and `$0.00` on a spend panel reads as "this was
+    free". A **partial** total is still priced — those tokens were really spent — and what the
+    caller owes beside the figure is that it is a floor, which is `Tokens.partial`.
+    """
+    if not one_model:
+        return None
+    prices = ((input_tokens, input_per_mtok), (output_tokens, output_per_mtok))
+    priced = [
+        tokens * price / 1_000_000
+        for tokens, price in prices
+        if tokens is not None and price is not None
+    ]
+    return sum(priced) if priced else None
+
+
+def answered_only_on(models: frozenset[str | None], model: str) -> bool:
+    """Whether `models` says every answering turn ran on `model`, and something said so.
+
+    **The one definition, shared by import rather than copied** (T14, #15).
+    `observability/analytics.py` calls this the way it already calls `calls_behind` — the
+    duplications in that module (`Rate`, `p50`, `PLANNER_DISABLED_CAP`) exist because the app
+    may not import `evaluation/`, and **nothing forbids importing this module**: it is the same
+    package. A second copy here was in fact written first, with a docstring claiming the import
+    was forbidden — a claim the same file's own import block falsified, which is the
+    claim-in-a-comment-cannot-fail family exactly (code review of #15).
+
+    An **equality** against a one-element set, which is what makes each of the three ways to
+    fail fail: a second model in the pool, a turn that recorded no model at all, and no
+    answering line yet. The last two are absences and this returns `False` for them, because
+    "nothing attributed this" is not "this ran on the priced model" — the distinction the whole
+    module is built around.
+    """
+    return models == frozenset({model})
+
+
+def unpriced_because_of_the_model(
+    models: frozenset[str | None], priced_model: str, *, scope: str
+) -> str:
+    """Why a measured total carries no dollar figure, when the reason is *which model ran*.
+
+    **One definition of a sentence two surfaces render**, on the precedent
+    `UNMETERED_CLASSIFIER_NOTE` sets: the sidebar and the analytics page both had a copy, and
+    two copies of one sentence disagree on the turn one is edited (code review of #15).
+
+    **Three states, because "another model answered" is false in one of them** — and it is
+    reachable, which is what makes this a function rather than a constant. `models` is built
+    from answering lines only, so a conversation whose one metered line is the *planner's* (a
+    turn in flight, or one that raised after the planner's round — what `Spend.unfinished`
+    counts) arrives here with an **empty** set. The first version said "answered on another
+    model" about a turn where nothing had answered at all: an absence reported as a measurement
+    of something else, which is the failure this module exists against.
+
+    `scope` is the caller's noun for its own pool — "this conversation" for one thread, "this
+    log" for a whole sink — because the two surfaces total different things and neither may
+    borrow the other's word for it.
+
+    **The priced model stays named; a trailing "the tokens above are measured" went.** Asked
+    whether the slug could come out too — it is on screen twice on the analytics page, whose
+    table lists every model — the answer is no. It is the one *actionable* token here, naming
+    the row a reader could price, and on the sidebar, which has no table, it is the only mention
+    at all. The reassurance did go: both surfaces render the token counts immediately above this
+    line, so a sentence insisting they are real answered a question the numbers had answered.
+    """
+    named = sorted(one for one in models if one is not None)
+    unrecorded = None in models or not models
+    if named and unrecorded:
+        answered = f"{scope} mixes other models with unattributed turns"
+    elif named:
+        answered = f"{scope} ran on another model"
+    else:
+        answered = f"{scope} recorded no model"
+    return f"Not priced: rates are configured for `{priced_model}` only, but {answered}."
 
 
 def calls_behind(event: Event) -> tuple[int, bool]:

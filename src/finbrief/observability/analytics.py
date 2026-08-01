@@ -24,12 +24,24 @@ denominator has no percentage, and a `Tally` reports the lines that carried noth
 values it counted. `within_budget` is `bool | None` for the same reason: `False` reads as
 "measured and missed", which is a different claim from "not measured".
 
-**Three constants and one function are shared or bound rather than copied**, and each is named
-where it sits: `calls_behind` is imported from `spend.py` (one definition of what a line costs),
-`PLANNER_DISABLED_CAP` is a third copy of ADR-0004 §6's cap bound by test to the other two, and
-`Rate`/`p50` are bound by test to `evaluation/deferrals.Rate` and `evaluation/latency.p50` —
-which cannot be imported, because `evaluation/` is the harness and the app must not depend on
-it.
+**What is shared, what is bound, and the test for telling which is which.** `spend.py` is the
+same package, so anything it owns is *imported*: `calls_behind` (one definition of what a line
+costs), `Tokens`, `COMPLETED_EVENT`, and since T14 `answered_only_on` and `priced_dollars` (one
+definition of when a pool is one model, and one of what its tokens cost). Only what genuinely
+cannot be imported is duplicated-and-bound: `Rate` and `p50` against `evaluation/deferrals.Rate`
+and `evaluation/latency.p50`, plus `PLANNER_DISABLED_CAP` as a third copy of ADR-0004 §6's cap —
+because `evaluation/` is the harness and the app must not depend on it.
+
+That distinction is easy to get wrong in the direction of copying, and the #15 review caught it
+twice, one round apart, in the same two methods. First `all_answered_on`, which shipped as a
+local reimplementation whose docstring said "this page may not import the sidebar's scoping" —
+while the import block four lines above pulled `calls_behind` out of exactly that module. **The
+test is whether an import would fail, not whether a sentence says it would.** Then the eight
+lines *beside* it: `TokenTotals.dollars` and `Spend.dollars` were byte-identical, the fix for
+the first defect added the model gate to both bodies rather than removing one, and the required
+`priced_model` keyword migrated twice. Hoisting one function out of two and leaving the rest is
+the shape worth naming — **the licence covers a module, not a line**, so the copy left behind is
+as unlicensed as the one just removed.
 
 **A binding is a behavioural equality, not an identity check on a name.** There was an alias
 here — `_calls_behind = calls_behind`, existing only so a test could assert the two were the
@@ -67,7 +79,15 @@ from finbrief.config import (
     TRANSLATION_LATENCY_BUDGET_MS,
 )
 from finbrief.observability.events import Event, EventLog, read_events
-from finbrief.observability.spend import TOKEN_EVENTS, TOKEN_FIELDS, Tokens, calls_behind
+from finbrief.observability.spend import (
+    COMPLETED_EVENT,
+    TOKEN_EVENTS,
+    TOKEN_FIELDS,
+    Tokens,
+    answered_only_on,
+    calls_behind,
+    priced_dollars,
+)
 
 #: The `max_sub_queries` at which the planner makes **no chat round at all** (ADR-0004 §6: the
 #: cap removes the `model.invoke`, it does not truncate its output).
@@ -895,10 +915,30 @@ class TokenTotals:
     floored: int
     input: Tokens
     output: Tokens
+    #: The models the **answering** lines in this population ran on, `None` among them for a
+    #: line that recorded none — `spend.Spend.models`' rule (T14, #15).
+    #: `query_translation` lines are excluded there and here: the planner takes no model
+    #: override, so its line is always the configured model and carries no field to read.
+    #:
+    #: No default, for the reason `Spend.models` gives: the empty set is what makes a total
+    #: unpriceable, and a field that withholds a figure may not arrive by omission.
+    models: frozenset[str | None]
 
     @property
     def measured(self) -> bool:
         return self.input.measured or self.output.measured
+
+    def all_answered_on(self, model: str) -> bool:
+        """Whether every answering line here ran on `model`.
+
+        **`spend.answered_only_on`, imported rather than copied.** The duplications in this
+        module (`Rate`, `p50`, `PLANNER_DISABLED_CAP`) exist because the app may not import
+        `evaluation/`; `spend.py` is the same package and is already imported here for
+        `calls_behind`, so there is nothing to work around. The first version *was* a copy, with
+        a docstring asserting the import was forbidden — which this file's own import block
+        contradicted three lines up (code review of #15).
+        """
+        return answered_only_on(self.models, model)
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -922,23 +962,36 @@ class TokenTotals:
         )
 
     def dollars(
-        self, *, input_per_mtok: float | None, output_per_mtok: float | None
+        self,
+        *,
+        input_per_mtok: float | None,
+        output_per_mtok: float | None,
+        priced_model: str,
     ) -> float | None:
         """The cost at the configured prices, or `None` when it cannot be priced.
 
         Unpriced is the default and it is an absence, not `$0.00`: there is no rate card in
         this repo because every model is reached through OpenRouter's routing (ADR-0011 §3).
+
+        Since T14 (#15) there is a third way to be unpriceable, and on this page it is the
+        common one: the two knobs describe one model, this total spans a whole sink, and a
+        Haiku turn multiplied by the gpt-4o-mini rate is a wrong figure in the one panel about
+        spend. `spend.Spend.dollars` carries the full argument.
+
+        **`spend.priced_dollars`, imported rather than copied** — this body was byte-identical
+        to `Spend.dollars`', and T14 extended the copy instead of removing it: the model gate
+        went into both and the required `priced_model` keyword migrated twice (code review of
+        #15). It is the licence rule this module's docstring states, applied one line further
+        down than last round: `spend.py` is the same package, so an import is available, so the
+        copy was never licensed.
         """
-        prices = (
-            (self.input.total, input_per_mtok),
-            (self.output.total, output_per_mtok),
+        return priced_dollars(
+            self.input.total,
+            self.output.total,
+            input_per_mtok=input_per_mtok,
+            output_per_mtok=output_per_mtok,
+            one_model=self.all_answered_on(priced_model),
         )
-        priced = [
-            tokens * price / 1_000_000
-            for tokens, price in prices
-            if tokens is not None and price is not None
-        ]
-        return sum(priced) if priced else None
 
 
 def token_totals(log: EventLog, events: Iterable[Event] | None = None) -> TokenTotals:
@@ -967,6 +1020,12 @@ def token_totals(log: EventLog, events: Iterable[Event] | None = None) -> TokenT
         floored=floored,
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
+        # Answering lines only, out of whatever population the caller narrowed to — see
+        # `TokenTotals.models`. Selected by event name rather than by "has a `model` field", so
+        # a turn that recorded none is an absence in the set instead of vanishing from it.
+        models=frozenset(
+            event.field("model") for event in lines if event.event == COMPLETED_EVENT
+        ),
     )
 
 
@@ -1018,6 +1077,112 @@ def spend_over_time(log: EventLog) -> SpendOverTime:
                 )
             )
     return SpendOverTime(by_day=tuple(rows), totals=token_totals(log))
+
+
+# --- The per-model split (T14, #15) -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSlice:
+    """One answering model's turns: how many, what they spent, how long they took.
+
+    `model` is `None` for turns that recorded no model — lines written before T14, or by a
+    caller that named none. Those get a slice of their own rather than being folded into the
+    configured model's (which would move real tokens onto a model nothing recorded) or dropped
+    (which would make the slices quietly sum to less than the total beside them).
+
+    Tokens are this model's **answering** lines only. The planner's `query_translation` line
+    carries no model, belongs to no slice, and is therefore in the whole-log total and in none
+    of these — which is why the panel says so. Attributing it to the picked model would be
+    wrong twice over: the planner runs on the configured model whatever the picker says
+    (`retrieval/retrieve.py` builds it with no override), and a turn can be translated without
+    the two lines agreeing about anything else.
+    """
+
+    model: str | None
+    turns: int
+    tokens: TokenTotals
+    latency: Distribution
+    #: What the *provider* said answered these turns (`agent_turn.model_reported`), when it said
+    #: anything and when it said something other than `model` — so a reader can see OpenRouter
+    #: having routed elsewhere (T14, #15).
+    #:
+    #: **This exists because the field it reads was otherwise write-only** (code review of #15).
+    #: `model_reported` was emitted, round-tripped by a test, and consumed by nothing, which
+    #: makes "a routing surprise should be visible rather than silent" a claim about a fact
+    #: nobody could see — and a write-only instrument is precisely what T13 (#14) existed to
+    #: fix in the one other place it happened.
+    #:
+    #: Empty is the ordinary case twice over: a provider that names nothing, and a provider that
+    #: names exactly what was asked for. Only a *disagreement* is worth a reader's attention, so
+    #: only a disagreement is kept.
+    #:
+    #: **The comparison is a strict inequality, so a dated snapshot id counts as a disagreement
+    #: — by design, and it is a design choice rather than an oversight** (code review of #15).
+    #: `openai/gpt-4o-mini` answered by `openai/gpt-4o-mini-2024-07-18` is a *different build*
+    #: from the one this repo's measurements ran on, which is the only sense in which any of
+    #: these rows can be said to describe a model at all. Normalising it away would make the
+    #: panel silent about the one routing fact a reader could act on. The cost is a caption that
+    #: stays on screen for as long as a provider keeps doing it, which is the correct volume for
+    #: a fact that keeps being true.
+    #:
+    #: The tests exercise an unambiguous reroute — one vendor's slug answered by another's —
+    #: because an example that is *also* readable as the ordinary case cannot demonstrate which
+    #: of the two the code is detecting.
+    rerouted_to: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        """How this slice is named on screen — the display fallback included.
+
+        **The fallback string lives here rather than in the page, and that is a departure worth
+        naming**: UI copy is normally the page's. It is here because it is the *name of an
+        absence in this dataclass's own key*, which the page and the tests must spell the same
+        way — the one-sentence version of why `prompts.py` owns the strings it does. An earlier
+        docstring claimed the opposite while returning this literal (code review of #15).
+        """
+        return self.model if self.model is not None else "not recorded"
+
+
+def by_model(log: EventLog) -> tuple[ModelSlice, ...]:
+    """Answering turns grouped by the model that answered, busiest slice first.
+
+    Four selectable models writing into one append-only sink is what makes this worth a panel:
+    a single latency p50 over a log where two models answered describes neither of them, and a
+    token total over the same log cannot be priced at all (`TokenTotals.dollars`).
+
+    Ordered by turn count and then by label, so the ordering is total: a tie broken by
+    dictionary order would reshuffle the panel between reruns of the same file. `None` sorts
+    with the empty string, which puts the unattributed slice first among equals — visible
+    rather than buried, which is the point of giving it a slice.
+    `test_a_tie_on_turn_count_is_broken_by_label_and_the_unattributed_slice_leads` is what makes
+    that sentence checkable; without it the tie-break was a claim with no test (review of #15).
+    """
+    buckets: dict[str | None, list[Event]] = {}
+    for event in log.of(COMPLETED_EVENT):
+        buckets.setdefault(event.field("model"), []).append(event)
+    slices = [
+        ModelSlice(
+            model=model,
+            turns=len(turns),
+            tokens=token_totals(log, turns),
+            latency=distribution(turns, "latency_ms", label="turn"),
+            # Only what disagrees with the request — see `ModelSlice.rerouted_to`. Sorted for a
+            # stable rendering, and de-duplicated because a hundred turns on one reroute is one
+            # fact about this slice and not a hundred.
+            rerouted_to=tuple(
+                sorted(
+                    {
+                        reported
+                        for event in turns
+                        if (reported := event.field("model_reported")) and reported != model
+                    }
+                )
+            ),
+        )
+        for model, turns in buckets.items()
+    ]
+    return tuple(sorted(slices, key=lambda s: (-s.turns, s.model or "")))
 
 
 # --- Panels 2 and 3: retrieval latency and the planner's round --------------------------

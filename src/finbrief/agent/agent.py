@@ -321,9 +321,18 @@ def answer(
     *,
     thread_id: str,
     agent: CompiledStateGraph,
+    model: str | None = None,
     on_step: Callable[[Step], None] | None = None,
 ) -> AgentTurn:
     """Answer one turn of the conversation `thread_id`, with what grounded it.
+
+    `model` is the slug the caller *asked* to answer on — the app's picker (T14, #15) — and is
+    logged so a turn's tokens can be attributed to the model that spent them. It is a label for
+    the record and changes nothing about the call: the model is already inside `agent`, which is
+    built once per model under the app's `@st.cache_resource`, and this function cannot see
+    which one. That is also why it defaults to `None` rather than to `settings.chat_model`: a
+    caller that names none is *unattributed*, and filling in the configured slug would be a
+    guess rendered indistinguishable from a reading.
 
     Only the new question is passed in. The rest of the conversation comes from the
     checkpointer, which is the whole point of ADR-0008: a caller that passed history would be
@@ -414,6 +423,18 @@ def answer(
         question_chars=len(question),
         answer_chars=len(turn.text),
         latency_ms=round((time.perf_counter() - started) * 1000),
+        # **Which model answered, in two fields, because the two can disagree** (T14, #15).
+        # `model` is what the picker requested and is the key the spend panel and the analytics
+        # page aggregate on — always known to the caller, and `None` when no caller named one.
+        # `model_reported` is what the *reply* said, which OpenRouter is under no obligation to
+        # make the same thing: it fronts many upstreams and routes by availability, so a routing
+        # surprise should be visible rather than silent. Folding them together would mean either
+        # losing the request or reporting the request as a measurement of what ran.
+        #
+        # Both are configuration rather than user content — a slug names a product, not a person
+        # or a question — so they need no exception to `logging_setup`'s rules.
+        model=model,
+        model_reported=_reported_model(this_turn),
         # The turn's spend (#10's AC-1), summed across the loop's *own* calls: a tool-using
         # turn is several paid completions and no single reply is its cost. Scoped to
         # `_this_turn` for the same reason the cards and searches are — the checkpointer
@@ -452,6 +473,26 @@ def _report_steps(
                 continue
             reported.add(identifier)
             on_step(Step.of(call))
+
+
+def _reported_model(messages: list[AnyMessage]) -> str | None:
+    """What the provider said answered this turn, or `None` if it said nothing.
+
+    Read off the **last** `AIMessage` of the turn, which is the one that produced the answer:
+    a tool-using turn has several, and the earlier ones are the calls. `response_metadata` is
+    where `ChatOpenAI` puts the `model` field of an OpenAI-compatible reply, so this is
+    OpenRouter's own word rather than ours.
+
+    Absent is `None` and never the requested slug. Every scripted model in the suite reports
+    nothing, and so does any provider that omits the field — treating that as confirmation
+    that the requested model ran is precisely the fabricated-measurement failure
+    `observability/tokens.py` exists to forbid.
+    """
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            reported = (message.response_metadata or {}).get("model_name")
+            return str(reported) if reported else None
+    return None
 
 
 def _is_verbatim(question: str, query: str) -> bool:

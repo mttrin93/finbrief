@@ -73,6 +73,59 @@ conversation" is an accepted consequence, so the sidebar says so — a user who 
 a lost conversation as a bug, and a reviewer cannot tell an accepted consequence from an
 oversight. `test_the_page_states_that_a_refresh_starts_a_new_conversation` binds it.
 
+---
+
+## Amendment (ticket T14, issue #15) — one cached agent becomes one per model
+
+The decision above stands, and the model picker it already anticipated ("UI toggles (model,
+strategy)") is now built. Two things it did not say, one of them a real change to the third
+bullet.
+
+**1. `model` is a cache key, and isolation does not come from there.** `shared_agent(model)` is
+still `@st.cache_resource`d, which keys on the arguments — so it yields **one agent per model a
+reader has picked** and replaces nothing: the entry for the previous model stays live for the
+sessions still on it. **Measured before it was built**, because this is the mechanism the
+two-session guarantee sits on and a *replacement* would have handed one session another's agent
+mid-turn:
+
+```
+builds   : ['openai/gpt-4o-mini', 'anthropic/claude-3.5-haiku']   # two, not three
+a1 is a3 : True    # the first survives after the second is built
+a1 is b1 : False   # distinct instances
+```
+
+Isolation is therefore **unchanged**, and the reason is the fourth bullet above rather than the
+third: it was carried by the per-session `uuid4` `thread_id` all along and never by there being
+one agent.
+
+**That is also why the isolation test cannot be the regression guard for the picker**, and the
+point is worth stating because it is this repo's recurring bug class. Drop `model` from the
+cached builder and every session silently answers on `FINBRIEF_CHAT_MODEL` — while still holding
+two distinct thread ids, still sending each turn to its own. An isolation test passes before and
+after. So `test_app_state.py` carries **two** tests: one for the property (two sessions on two
+models stay separate) and one that detects the mutation (the picked model reaches `build_agent`,
+as an equality on the built models). Both mutations were applied and the second failed on both
+while the first passed on both — measured, not reasoned about.
+
+**2. The process now opens up to four SQLite connections where it opened one.** Every
+`build_agent` resolves `build_checkpointer(settings)` to the same `checkpoint_db`, so one cache
+entry per model is one `sqlite3.connect` per model picked. This is a genuine change to "Agent +
+checkpointer are built once", and it is accepted rather than worked around — because it is the
+same fact that makes a **conversation survive a model switch**: the file and the `thread_id` are
+what a conversation is, so a second agent reading the same file under the same thread is handed
+the first's history. Measured, at the seam (`test_agent.py`), asserting that the second model was
+*shown* the earlier turn and not merely that the state accumulated.
+
+What contention looks like if it ever bites: two sessions on two models writing concurrently now
+contend across connections where they previously serialised behind one `SqliteSaver` lock.
+`sqlite3.connect`'s default 5-second busy timeout absorbs the overlap — a checkpoint write is
+milliseconds — and past it a turn raises `database is locked` from inside `answer()`, which
+`app/Home.py`'s generic error branch renders. Nothing corrupts: SQLite's own file locking is what
+is being relied on, which is the same promise `check_same_thread=False` already leans on. If it
+does bite, the fix is one shared checkpointer injected into every `build_agent` rather than one
+resolved per build — deliberately **not** done pre-emptively, because it trades a measured
+non-problem for a second cached singleton on a path that already has six.
+
 **Also true, and outside the decision as written.** The `thread_id` is logged with every turn
 (`agent_query`, `agent_turn`): it is a conversation identifier, not user content, and grouping
 turns by conversation is what lets T10 (#11) report per-conversation behaviour. `session_state`

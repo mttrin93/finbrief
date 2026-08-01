@@ -536,18 +536,27 @@ work that adds no optional task.
 Ordered by GenAI/RAG skill signal, deployment excepted on portfolio grounds (ADR-0010).
 Each item built only when fully understood; anything not defensible is cut before submission.
 
-> **Everything ticked so far is in the tail (6), and ADR-0010's order above is unchanged.** Those
-> five items were picked by cost and demo value against a fixed deadline — each of them on
-> substrate Tier-1 had already built — and **not** by re-ranking the skill-signal ordering, which
-> stands as ADR-0010 wrote it. Said explicitly because the ticks would otherwise read as a
+> **Six items ticked: five in the tail (6) and one numbered (4). ADR-0010's order above is
+> unchanged.** All six were picked by cost and demo value against a fixed deadline — each of them
+> on substrate Tier-1 had already built — and **not** by re-ranking the skill-signal ordering,
+> which stands as ADR-0010 wrote it. Said explicitly because the ticks would otherwise read as a
 > priority list whose bottom is finished and whose top is not, which is the opposite of what the
 > ordering claims. The pattern in what got done is worth naming rather than leaving as a
-> coincidence: four of the five *read* an instrument Tier-1 had already built and shipped no new
-> measurement of their own, which is exactly why they cost an hour each.
+> coincidence: four of the five tail items *read* an instrument Tier-1 had already built and
+> shipped no new measurement of their own, which is exactly why they cost an hour each.
+>
+> *This paragraph read "everything ticked so far is in the tail (6)" and counted five until T14
+> (#15), which is a numbered item — so the sentence became false on the commit that made it
+> wrong.* Recorded rather than quietly rewritten, because it is the same defect ADR-0001's T12
+> amendment corrected in its own list: a document whose job is to say what is built has to get the
+> arithmetic of its own list right. Multi-model also breaks the pattern in the last sentence, and
+> that is the more interesting half: it **changed** an existing measurement rather than only
+> reading one — the cost meter can no longer price a conversation answered on a model the two
+> price knobs are not for (ADR-0011's T14 amendment).
 
 1. **Deploy + live URL** (Streamlit Community Cloud) + demo GIF — portfolio reach gates the
    value of everything else. **Not built, and still the highest-value remaining item**: it gates
-   the value of every item below it, including the five already ticked in the tail.
+   the value of every item below it, including the six already ticked.
 2. **Re-ranking** — cross-encoder (`ms-marco-MiniLM-L-6-v2`) re-scoring the RRF-fused top-N
    to top-k. Constrained third A/B axis (shipped default ± rerank only), per-bucket in the
    existing harness. Pre-registered: precision lift on `semantic`, ~neutral on
@@ -556,9 +565,40 @@ Each item built only when fully understood; anything not defensible is cut befor
 3. **MCP client** (remote public server + security review), then **own tools as FastMCP server**.
    - ⚠ Open Q (ask first): is tools-as-MCP-server a genuine protocol *port*, or duplicated
      finance logic behind a second interface? Must reuse one implementation.
-4. **Multi-model** support (model picker via OpenRouter).
-   - ⚠ Open Q (ask first): the injection classifier + agent/tool-calling prompts are tuned
-     per-model — does swapping models silently break tool-calling? Needs a per-model check.
+4. ✅ **done** (`t14-multi-model`, #15) — **Multi-model** support (model picker via OpenRouter).
+   **The first *numbered* Phase-8 item to be built**, and the only one so far: the five ticks in
+   the tail below are tail items, which is why ADR-0001's T12 amendment is careful to say the
+   numbered items "were never reversed". This one is, and the reversal is recorded there.
+   A sidebar picker over four slugs in `config.CHAT_MODEL_CHOICES` — four providers, each serving
+   its own model first-party; the open-weight option this line originally named is out, for the
+   reason ADR-0011's T14 amendment records — changing the **answering** model only;
+   `classifier_model`, `judge_model` and `embedding_model` keep their own fields and are not
+   selectable.
+   - Like the tail items it **reads substrate Tier-1 already built** rather than adding an
+     integration: `llm.build_chat_model` has taken a `model=` override since T3, and ADR-0008's
+     decision text already reserved the session-state slot ("UI toggles (model, strategy)").
+     What was built is a widget, one cache key, one log field and the rules that follow.
+   - **The open Q is answered by scoping, not by a measurement**, and the halves separate. The
+     **classifier is not selectable**, so ADR-0006 layer 3 is untouched and no gate claim depends
+     on which model answers. Tool-calling on the *answering* model is a real per-model difference,
+     bounded rather than cleared: all four slugs are tool-calling models and a model that fans out
+     badly is slower rather than wrong (`MAX_AGENT_STEPS` bounds the loop). **No per-model
+     tool-calling eval ships** — T10's ran on the default and that stays the measured
+     configuration, since a per-model number means the harness run four times.
+   - **It changes an existing measurement, which none of the tail items did**, and the change is a
+     subtraction: the cost meter's two knobs price one model, so a conversation answered on
+     another reports tokens and **no dollar figure**. ADR-0011's refusal to ship a rate card is
+     what forces it and its T14 amendment records the rule. A wrong dollar figure is worse than
+     no dollar figure, and this one would have been invisible.
+   - **Two consequences recorded in ADR-0008** rather than left in the code: the cache key yields
+     one agent *per model* and replaces nothing (measured before building, because the two-session
+     isolation guarantee sits on that), and the process therefore opens up to four SQLite
+     connections where it opened one — which is the same fact that makes a conversation survive a
+     switch.
+   - The isolation requirement as first written **specified a check that cannot fail**: dropping
+     the cache key leaves two sessions holding two thread ids, so an isolation test passes either
+     way. `test_app_state.py` carries the property test *and* a separate mutation-detector, and
+     both mutations were applied to confirm which one fails.
 5. **Real-time KB refresh** (ingest latest headlines/filings into Chroma on demand).
    - ⚠ Open Q (ask first): does live ingest stay idempotent (accession/id dedup) AND hold
      the ADR-0007 section-detection gate, without racing the cached retriever / agent state?
@@ -599,6 +639,7 @@ Each item built only when fully understood; anything not defensible is cut befor
        Seven panels: activity, the gate (blocks by layer and rule, the latency budget with the
        pre-registered figure it revised named beneath it, the three fail-open paths), the
        agent's behaviour, tools, token spend, retrieval latency and the planner's round.
+       *Seven as T13 shipped it; item 4 above added a per-model split inside the spend panel.*
      - **What it makes readable that nothing did.** T5's square-bracket adherence rate is
        reported as *unmeasured* in `docs/verification/evaluation.md` because `citation_markers`
        is emitted by the app and by nothing else, so T10's ten live agent turns produced none of

@@ -248,6 +248,63 @@ def test_an_event_read_from_a_line_written_before_a_field_existed(tmp_path):
     assert event.field("provenance", default=()) == ()
 
 
+def test_the_model_that_answered_survives_the_round_trip_in_both_fields(sink):
+    """T14 (#15) — the picker's record, through the one emitter and the one reader.
+
+    A model slug is configuration and not user content, so it needs no exception to the
+    no-user-content rule; what it does need is the same round trip every other field gets,
+    because a field the emitter writes and the reader drops reads back as `None` and `None`
+    attributes a turn's tokens to nobody.
+
+    Both fields, because they can differ: `model` is what was requested, `model_reported` what
+    the reply said. A test asserting only the first would pass on an implementation that never
+    wrote the second.
+    """
+    logger, path = sink
+    log_event(
+        logger,
+        "agent_turn",
+        model="anthropic/claude-3.5-haiku",
+        model_reported="anthropic/claude-3-5-haiku-20241022",
+        input_tokens=1_204,
+        output_tokens=317,
+    )
+
+    (event,) = read_events(path).of("agent_turn")
+    assert event.field("model") == "anthropic/claude-3.5-haiku"
+    assert event.field("model_reported") == "anthropic/claude-3-5-haiku-20241022"
+
+
+def test_a_turn_logged_before_the_model_field_existed_reads_as_unattributed(tmp_path):
+    # Every line already in a developer's sink was written before T14, and the analytics page
+    # reads the whole file. An older turn is *unattributed* — not a turn on the default model,
+    # which is a claim nothing recorded.
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"ts": "2026-07-29T10:00:00.000+00:00", "level": "INFO", "logger": "finbrief",'
+        ' "event": "agent_turn", "fields": {"searches": 1, "input_tokens": 900}}\n',
+        encoding="utf-8",
+    )
+
+    (event,) = read_events(path).of("agent_turn")
+    assert event.field("model") is None
+    assert "model" not in event.fields
+    assert event.field("input_tokens") == 900, "and the rest of the line still reads"
+
+
+def test_a_turn_that_named_no_model_records_the_absence_rather_than_omitting_it(sink):
+    # `answer()` writes `model=None` when no caller named one, which the emitter serialises as a
+    # JSON `null`. Distinguishable from the line above only by `"model" in fields` — and both
+    # read back as `None`, which is the point: the two absences mean the same thing to a reader
+    # and neither may become a default.
+    logger, path = sink
+    log_event(logger, "agent_turn", model=None, model_reported=None, input_tokens=900)
+
+    (event,) = read_events(path).of("agent_turn")
+    assert event.field("model") is None
+    assert event.fields["model"] is None
+
+
 def test_the_reader_does_not_reformat_what_it_read(sink):
     """Whatever the emitter serialised is what the reader hands back, verbatim."""
     logger, path = sink

@@ -22,10 +22,13 @@ import pytest
 
 from finbrief.config import (
     ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY,
+    CHAT_MODEL_CHOICES,
     CLUSTERS,
     PEERS,
     QUOTE_TTL_SECONDS,
     UNIVERSE,
+    Settings,
+    chat_model_options,
 )
 from finbrief.ingestion.model import Section
 from finbrief.prompts import (
@@ -34,6 +37,7 @@ from finbrief.prompts import (
     GROUNDING_SCOPE_DETAILS,
     GROUNDING_SCOPE_VERIFY,
     LIVE_DATA_SCOPE,
+    MODEL_PICKER_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
     UNIVERSE_ROWS,
@@ -631,7 +635,18 @@ _COULD_NOT_FAIL_HEADER = "| where | it asserted | what it had established |"
 _ROW_MULTIPLICITY = re.compile(r"\((twice|three times)\)")
 
 #: Spelled out, because the prose spells them out and a binding may not quietly accept digits.
-_NUMBER_WORDS = {16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen"}
+_NUMBER_WORDS = {
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+    25: "twenty-five",
+    26: "twenty-six",
+    27: "twenty-seven",
+    30: "thirty",
+    31: "thirty-one",
+}
 
 
 def _could_not_fail_rows() -> list[str]:
@@ -649,13 +664,17 @@ def test_the_table_of_checks_that_could_not_fail_counts_itself():
     the section's whole argument, since the claim is that the instances look unrelated until
     they are listed, and a table that miscounts itself is that section's own bug class.
 
-    Derived from the table rather than asserted against a constant: a nineteenth instance
-    arrives as a row, and this is what makes the three sentences follow it.
+    Derived from the table rather than asserted against a constant: a new instance arrives as a
+    row, and this is what makes the three sentences follow it.
+
+    **It has now done its job twice.** T14 (#15) added eight rows, and this equality is what
+    stopped the author leaving `eighteen` behind in three places — including on the one commit
+    whose whole subject was that a count in prose is the figure that rots first.
     """
     rows = _could_not_fail_rows()
     instances = sum(2 if _ROW_MULTIPLICITY.search(row) else 1 for row in rows)
 
-    assert (len(rows), instances) == (17, 18), (
+    assert (len(rows), instances) == (30, 31), (
         f"the table now holds {len(rows)} row(s) and {instances} instance(s). Update the "
         f"sentence above it and the README's two references to it, then update this equality "
         f"— it is here so a new row cannot leave three stale counts behind."
@@ -668,6 +687,37 @@ def test_the_table_of_checks_that_could_not_fail_counts_itself():
         "the README names the table twice — in the document map and in Part 5 — and both "
         "namings carry the instance count"
     )
+
+
+def test_the_limitations_file_counts_itself_and_the_readme_agrees():
+    """The same binding as the table above, added because its absence let a wrong count through.
+
+    `limitations.md` opens "All twenty" and the README says it twice — the document map and
+    Part 5's heading. Nothing checked any of the three against the table, so on the commit that
+    added two rows the author wrote **nineteen** in all three and the suite stayed green. The
+    neighbouring binding caught the identical slip in `findings.md` on that same commit, which
+    is the argument for this one: two files make the same kind of claim, one could not fail.
+
+    Derived from the rows, not from a constant, so a twenty-first limitation updates the prose
+    rather than this test — and `_NUMBER_WORDS` forces the spelled-out form the prose uses.
+    """
+    rows = [
+        line
+        for line in LIMITATIONS.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| ") and not line.startswith("| limitation")
+    ]
+
+    assert len(rows) in _NUMBER_WORDS, (
+        f"{len(rows)} limitations, which has no spelled-out form here — add it to _NUMBER_WORDS"
+    )
+    count = _NUMBER_WORDS[len(rows)]
+    assert f"All {count}." in prose(LIMITATIONS), (
+        f"limitations.md holds {len(rows)} rows and must open by saying so"
+    )
+    # Two namings in the README, counted rather than merely present: it is the *pair* that goes
+    # stale, and a subset check would pass with one of them left behind.
+    assert prose(README).count(f"all {count} limitations") == 1
+    assert prose(README).count(f"All {count}, each with the mechanism") == 1
 
 
 def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():
@@ -1222,3 +1272,61 @@ def test_no_test_imports_through_the_tests_package():
         f"{offenders} import through the `tests.` package. Spell it `from fakes import …`: "
         f"the prefixed form needs the repo root on sys.path, which CI does not provide."
     )
+
+
+def test_the_model_pickers_scope_claim_is_bound_to_the_two_fields_it_is_about():
+    """`MODEL_PICKER_SCOPE` asserts a security property; this is what makes it checkable (#15).
+
+    It shipped as a `help=` literal on the widget in `app/Home.py` — on-screen copy claiming
+    that switching models "cannot weaken the gate", with no owner in `prompts.py` and nothing
+    tying it to `security/classifier.py`. That is a claim in prose about code, which is this
+    repo's recurring failure mode and exactly what this module exists to stop.
+
+    **The mechanical fact is which *field* each module reads, not which string it resolves to**,
+    and getting that wrong was the first version of this test: it asserted the picker's options
+    exclude `settings.classifier_model`, which fails on the shipped default — the gate and the
+    agent are both configured to `openai/gpt-4o-mini`, and they are the same string precisely
+    because they are two independently-settable fields that happen to agree.
+
+    So what is asserted is the read path. `security/classifier.py` names `classifier_model` and
+    `retrieval/embeddings.py` names `embedding_model`; neither reads `chat_model`, which is the
+    only field the picker is about — and `Settings` is frozen, so nothing on the page can point
+    either of them somewhere else at runtime. The picker's value reaches `llm.build_chat_model`
+    as an argument and touches configuration nowhere.
+    """
+    readers = {
+        "security/classifier.py": ("classifier_model", "ADR-0006 layer 3"),
+        "retrieval/embeddings.py": ("embedding_model", "the one embeddings constructor"),
+    }
+    for path, (field, what) in readers.items():
+        source = (ROOT / "src" / "finbrief" / path).read_text(encoding="utf-8")
+        assert f"model=settings.{field}" in source, (
+            f"{path} must build {what} from `Settings.{field}`, which is what makes "
+            f"{MODEL_PICKER_SCOPE!r} true"
+        )
+        assert "settings.chat_model" not in source, (
+            f"{path} reads the field the picker changes, so switching models would reach "
+            f"{what} — the one thing the picker's help text promises it cannot"
+        )
+    # Frozen, so the claim cannot be defeated at runtime either: a page that could assign
+    # `settings.classifier_model` would make the read path above true and the sentence false.
+    assert Settings.__dataclass_params__.frozen
+
+    # And the picker offers exactly `chat_model` plus the fixed tuple — no path by which a
+    # selection becomes any other field's value. Checked over an off-list configured model too,
+    # since that is the case `chat_model_options` exists to honour.
+    for configured in (
+        Settings.from_env({"OPENROUTER_API_KEY": "sk-test"}).chat_model,
+        "some/off-list-model",
+    ):
+        assert set(chat_model_options(configured)) == {configured, *CHAT_MODEL_CHOICES}
+
+
+def test_the_pickers_help_text_is_the_owned_string_and_not_a_second_copy():
+    # `prompts.py` owns copy that makes a scope claim, and the page reads it — the rule
+    # `SEARCH_FILINGS_DESCRIPTION` already follows. A literal in `app/Home.py` would be a second
+    # copy of a security claim, which is the drift this file is full of tests against.
+    page = (ROOT / "app" / "Home.py").read_text(encoding="utf-8")
+
+    assert "help=MODEL_PICKER_SCOPE" in page
+    assert "cannot weaken the gate" not in page, "the sentence itself belongs to prompts.py"

@@ -39,13 +39,16 @@ from langgraph.errors import GraphRecursionError
 from finbrief.agent.agent import Search, Step, answer, build_agent
 from finbrief.config import (
     CLUSTERS,
+    DATA_POLICY_URL,
     HISTORY_PERIOD_LABEL,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
     PEERS,
+    RESTRICTED_404_MARKER,
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
+    chat_model_options,
     get_settings,
     resolve_log_file,
     thinnest_cluster_filer,
@@ -60,6 +63,7 @@ from finbrief.export import (
 )
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.ingestion.edgar import filing_index_url
+from finbrief.llm import build_chat_model
 from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
@@ -69,7 +73,11 @@ from finbrief.observability.logging_setup import configure_logging, log_event
 # died with `'AgentTurn' object is not callable`, which `test_app_state` caught and a reader
 # would not have.
 from finbrief.observability.logging_setup import turn as log_turn
-from finbrief.observability.spend import Spend, conversation_spend
+from finbrief.observability.spend import (
+    Spend,
+    conversation_spend,
+    unpriced_because_of_the_model,
+)
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -79,6 +87,7 @@ from finbrief.prompts import (
     GROUNDING_SCOPE_VERIFY,
     INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
+    MODEL_PICKER_SCOPE,
     UNIVERSE_ROWS,
 )
 from finbrief.retrieval.hybrid import Retriever
@@ -134,19 +143,32 @@ except ConfigError as exc:
 
 
 @st.cache_resource
-def shared_agent():
-    """The one agent and the one checkpointer this process has (ADR-0008).
+def shared_agent(model: str):
+    """The one agent per answering model this process has (ADR-0008, amended by T14).
 
     Cached across reruns *and* across sessions, which is the whole design: a checkpointer
     built per rerun remembers nothing, and one built per session would put every user's
     conversation in its own file for no benefit. Isolation comes from `thread_id` instead.
+
+    **`model` is a cache key, not a switch.** `@st.cache_resource` keys on the arguments, so
+    this yields one agent per model a reader has picked and *replaces* nothing — the entry for
+    the previous model stays live for the sessions still using it. Measured before it was built
+    (#15), because this is the mechanism ADR-0008's two-session guarantee sits on and a
+    replacement would have handed one session another's agent mid-turn.
+
+    Two consequences, both recorded in ADR-0008's T14 amendment. Isolation is **unchanged**: it
+    was never carried by there being one agent, only by the per-session `thread_id`. And the
+    process now opens one SQLite connection per model picked rather than exactly one, because
+    every `build_agent` resolves `build_checkpointer` to the same `checkpoint_db` — which is
+    also precisely why a conversation survives a switch, since the file and the `thread_id` are
+    what a conversation is.
 
     Not wrapped in the configuration banner's `try`: this runs after `get_settings()` has
     already succeeded, so the failures left here (an unwritable checkpoint path, say) are not
     configuration problems a banner could explain, and hiding them would mean a chat input
     that silently cannot answer.
     """
-    return build_agent()
+    return build_agent(model=build_chat_model(settings, model=model))
 
 
 # One id per session, minted before the first message so every turn in this browser tab lands
@@ -212,6 +234,29 @@ if "messages" not in st.session_state:
 #: disagree — which here would fail *open*, back into the blank panel this exists to fix.
 QUESTION_KEY = "question"
 PENDING_QUESTION_KEY = "pending_question"
+
+#: The model picker's widget key, and therefore where the chosen slug lives (T14, #15).
+#:
+#: A widget key rather than a hand-managed `session_state` entry, because Streamlit restores a
+#: keyed widget's value across reruns by itself — which is exactly the "UI toggles (model,
+#: strategy)" slot ADR-0008 already reserves in `session_state`, and nothing more. The picker is
+#: rendered in the sidebar and read ~1,400 lines below at the `answer()` call, so the key is
+#: named here for `QUESTION_KEY`'s reason: a key spelled twice is a lookup that returns `None`
+#: the day the copies disagree, and here that would silently answer on the configured model
+#: while the sidebar showed another.
+CHAT_MODEL_KEY = "chat_model"
+
+
+def chosen_model() -> str:
+    """The model this turn will answer on — the picker's value, or the configured default.
+
+    The fallback is for the ordering rather than for a missing case: on the very first run the
+    widget has not been created yet when the initialisers above execute, and `Settings` is the
+    honest answer at that point because it is what the widget is about to select (its options
+    lead with it). Every run after the first reads the reader's own choice.
+    """
+    return st.session_state.get(CHAT_MODEL_KEY) or settings.chat_model
+
 
 #: The label the progress box ends on, and the one a replayed row puts back.
 #:
@@ -422,8 +467,31 @@ def render_spend_meter(*, answering: bool = False) -> None:
     dollars = spend.dollars(
         input_per_mtok=settings.input_cost_per_mtok,
         output_per_mtok=settings.output_cost_per_mtok,
+        # The prices are a single pair, configured for the model `Settings` names — see
+        # `Spend.dollars`. A conversation answered on anything else is reported in tokens and
+        # not in dollars, which is the branch below.
+        priced_model=settings.chat_model,
     )
-    if dollars is None:
+    if dollars is None and not spend.all_answered_on(settings.chat_model):
+        # **The picker's cost consequence, stated where the figure would have been** (T14, #15).
+        # Ordered before the unpriced branch because it is the more specific claim: with prices
+        # configured *and* another model answering, "set the two variables" is advice that would
+        # not help, and with no prices configured this reader has the same two things to do
+        # either way.
+        #
+        # **The sentence is `spend.py`'s and it is a function of the state**, not a literal
+        # here. This branch is reachable with an *empty* model set — a turn in flight, or one
+        # that raised after the planner's round, leaves a metered `query_translation` line and
+        # no `agent_turn` — and the literal this replaced said "answered on another model" about
+        # a conversation where nothing had answered (code review of #15). It also had a
+        # near-copy on the analytics page, which is the duplication `UNMETERED_CLASSIFIER_NOTE`
+        # exists to have already taught us about.
+        st.caption(
+            unpriced_because_of_the_model(
+                spend.models, settings.chat_model, scope="this conversation"
+            )
+        )
+    elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through
         # OpenRouter's routing, so there is no rate card in this repo to read one from
         # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.
@@ -601,6 +669,30 @@ with st.sidebar:
         st.caption(GROUNDING_SCOPE_VERIFY)
 
     with st.expander(":material/tune: Configuration"):
+        # **The model is a choice now, and this is where it was already stated** (T14, #15). The
+        # line it replaces read `**Model** \`{settings.chat_model}\``, so the panel that told a
+        # reader what was answering is the panel that lets them change it — rather than a
+        # sixth panel, or a control floating above the prose ADR-0008 §4 requires stay first.
+        #
+        # A `selectbox` over `config.chat_model_options`, never a text input: a mistyped slug
+        # reaches OpenRouter as a provider error in the middle of a turn, and the options are
+        # derived rather than listed here so a hardcoded copy cannot drift from `config`.
+        # `FINBRIEF_CHAT_MODEL` leads the list, which is what makes it the default selection.
+        st.selectbox(
+            "Model",
+            options=chat_model_options(settings.chat_model),
+            key=CHAT_MODEL_KEY,
+            # **`prompts.MODEL_PICKER_SCOPE`, not a literal here** (code review of #15). This
+            # help text asserts that layer 3 and the embeddings are outside the picker, which
+            # is a scope claim — the thing `prompts.py` owns and binds, on the precedent that
+            # made `SEARCH_FILINGS_DESCRIPTION` its rather than the tool module's.
+            help=MODEL_PICKER_SCOPE,
+        )
+        # Switching is free of the conversation, and a reader is owed that sentence: the memory
+        # is the checkpointer's and it is keyed on this session's thread, not on the model, so a
+        # switch mid-conversation carries the history across (asserted in `test_agent.py` and
+        # `test_app_state.py`, not assumed).
+        st.caption("Switching keeps this conversation — the new model sees what came before.")
         # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
         # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
         # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so
@@ -608,7 +700,6 @@ with st.sidebar:
         # honest is that `agent.build_agent` reads these same two settings (nothing here
         # restates them).
         st.markdown(
-            f"**Model** `{settings.chat_model}`  \n"
             f"**Strategy** `{settings.retrieval_strategy}"
             f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
             f"**Top-k** `{settings.retrieval_k}`"
@@ -1557,6 +1648,16 @@ def answer_turn(prompt: str) -> None:
             )
             return
 
+        # **One read of the picker, above the `try` that reports its failures** (T14, #15). The
+        # agent is fetched for this model and the same slug is logged onto `agent_turn`; reading
+        # `chosen_model()` twice would be two reads of one widget in one run — identical today,
+        # and the shape that lets a logged attribution disagree with the model that answered the
+        # moment anything between them touches `session_state`.
+        #
+        # It sits *outside* the `try` because the handler below names it: assigned inside, a
+        # failure before the assignment would raise `NameError` from within an error handler,
+        # which is the one place a defensive read is worth the line.
+        model = chosen_model()
         with st.chat_message("assistant"):
             try:
                 # A `status` rather than a spinner, because with four tools the wait has *parts*
@@ -1576,7 +1677,8 @@ def answer_turn(prompt: str) -> None:
                     reply = answer(
                         prompt,
                         thread_id=st.session_state.thread_id,
-                        agent=shared_agent(),
+                        agent=shared_agent(model),
+                        model=model,
                         on_step=note,
                     )
                     status.update(label=TURN_COMPLETE, state="complete", expanded=False)
@@ -1618,6 +1720,77 @@ def answer_turn(prompt: str) -> None:
                     error_type=type(exc).__name__,
                 )
                 status.update(label="Failed", state="error", expanded=False)
+                # **"Try again" is wrong for one of these, and it is the one the picker made
+                # reachable** (manual testing of #15). A provider 404 is not transient: the
+                # model cannot be reached by this account and will not be on the next attempt
+                # either, so the generic message sent a reader to retry what cannot work.
+                # PLAN §2's tiers are distinguished by what the *reader* can do, which is the
+                # whole reason the branch above exists — and here what they can do is switch the
+                # model back, not wait.
+                #
+                # Keyed on `NotFoundError`'s **name**, because the type belongs to the `openai`
+                # SDK and this module does not import it: a UI-copy branch is not worth a
+                # dependency on a client library's exception hierarchy, and the name is what the
+                # log line already records.
+                #
+                # OpenRouter returns 404 for two different things needing two different fixes,
+                # and **it says which in the response body** — so listing both possibilities and
+                # letting the reader guess was leaving a fix on the floor. The first version did
+                # exactly that, and the reader came back to ask (manual testing of #15).
+                #
+                # The **message is read to choose a branch and never rendered**, which is the
+                # distinction that keeps the existing rule intact: a client error string can
+                # carry a request URL and a URL can carry an API key, so what reaches the page
+                # is this module's own words plus one constant. `DATA_POLICY_URL` is that
+                # constant — OpenRouter's settings page, not a URL taken from the error.
+                if type(exc).__name__ == "NotFoundError":
+                    if RESTRICTED_404_MARKER in str(exc).lower():
+                        # The measured case, and it is **not about the model being wrong**:
+                        # OpenRouter had no endpoint it was allowed to route to. Two things
+                        # cause that and the sentence names the likelier one first — the **key's
+                        # own allowlist** (a course, an employer, any shared org key restricts
+                        # which models it may reach) and then the account's data policy.
+                        #
+                        # **Order matters because the reader may not own either setting**, which
+                        # is what the first version got wrong: it said "your privacy settings"
+                        # and linked them, on a key whose allowlist was somebody else's
+                        # (`config.CHAT_MODEL_CHOICES` records how that was found out). Telling
+                        # a reader to go change a control they do not have is worse than telling
+                        # them nothing, because it reads as their mistake.
+                        st.error(
+                            f"`{model}` is not available to this API key, so nothing was "
+                            "answered — FinBrief asked and OpenRouter had no provider it was "
+                            "allowed to use. Either the key is restricted to a set of models "
+                            "that excludes it (check with whoever issued the key), or the "
+                            f"account's data policy rules them out ({DATA_POLICY_URL}). "
+                            "Pick a different model under **Configuration**; retrying this "
+                            "one will not help.",
+                            icon=":material/policy:",
+                        )
+                        return
+                    # **The observation, not a cause** (code review of #15). This is the branch
+                    # for every 404 whose body lacked two words, so it has established that
+                    # OpenRouter returned nothing for this slug on this key and *nothing else*
+                    # — and the sentence it carried said "OpenRouter does not recognise it",
+                    # which is a diagnosis the marker's absence cannot support. A restricted
+                    # route phrased any other way lands here and got told the slug was
+                    # imaginary. `config.RESTRICTED_404_MARKER` already argues that a miss
+                    # should fail open into a generic banner; a banner that names a cause is
+                    # not generic, which is the half that was missing.
+                    #
+                    # **"the default always works if a key is set" went for the same reason,
+                    # and it was the worse of the two**: false whenever `FINBRIEF_CHAT_MODEL`
+                    # names an off-list model — the deployment `chat_model_options` exists to
+                    # honour — and false again on a key whose allowlist excludes the default.
+                    # `config.CHAT_MODEL_CHOICES` spends forty lines establishing that
+                    # reachability is not knowable from in here, and this guaranteed it.
+                    st.error(
+                        f"`{model}` could not be reached, so nothing was answered — OpenRouter "
+                        "returned no such model for this API key. Retrying will not change "
+                        "that. Pick a different model under **Configuration**.",
+                        icon=":material/swap_horiz:",
+                    )
+                    return
                 st.error(
                     f"FinBrief could not answer that ({type(exc).__name__}). Try again — and "
                     f"if it keeps happening, the server log has the detail.",
