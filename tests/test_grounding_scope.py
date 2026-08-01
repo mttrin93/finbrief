@@ -644,6 +644,8 @@ _NUMBER_WORDS = {
     25: "twenty-five",
     26: "twenty-six",
     27: "twenty-seven",
+    30: "thirty",
+    31: "thirty-one",
 }
 
 
@@ -672,7 +674,7 @@ def test_the_table_of_checks_that_could_not_fail_counts_itself():
     rows = _could_not_fail_rows()
     instances = sum(2 if _ROW_MULTIPLICITY.search(row) else 1 for row in rows)
 
-    assert (len(rows), instances) == (25, 26), (
+    assert (len(rows), instances) == (30, 31), (
         f"the table now holds {len(rows)} row(s) and {instances} instance(s). Update the "
         f"sentence above it and the README's two references to it, then update this equality "
         f"— it is here so a new row cannot leave three stale counts behind."

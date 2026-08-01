@@ -102,7 +102,7 @@ pre-registered decision.
 
 ## 3. The recurring theme: a claim the thing making it could not check
 
-The same defect, **twenty-six** times in twenty-five places — tiktoken's warm cache did it twice —
+The same defect, **thirty-one** times in thirty places — tiktoken's warm cache did it twice —
 across ingestion, retrieval, security, evaluation, instrumentation, the UI and process. They look
 unrelated apart, which is why they are listed together.
 
@@ -133,6 +133,11 @@ unrelated apart, which is why they are listed together.
 | `model_reported` | that a routing surprise is "visible rather than silent" | nothing: emitted, round-tripped by a test, and read by no surface |
 | the sidebar's unpriced caption | that another model answered | nothing on a planner-only conversation, where nothing had answered at all |
 | the first-party criterion | that a first-party model is reachable | nothing: `x-ai/grok-4.3` is first-party and was refused — the API key's allowlist governs |
+| the reroute caption's silence test | that no reroute renders when the provider agreed | nothing: it matched `"served by …"` against a caption reading `"Served by …"`, so making the caption render on *every* log left 164 tests green |
+| the `not recorded` caveat's conditional | that it renders only when such a row is on screen | nothing: pinning it to always render broke no test — only the presence half was checked |
+| `_ms`'s "a zero would be a claim that a turn was instant" | that no fabricated zero reaches the table | nothing: returning `0` for an unmeasured latency left the suite green, and a turn with a model and no `latency_ms` reaches it |
+| the second 404 banner | "OpenRouter does not recognise it" | nothing: it is the branch for every 404 whose body lacked two words, and its own test fed it a *restriction* message |
+| the picker's `help=` | that switching cannot weaken the gate | nothing: a literal on a widget, with no owner in `prompts.py` and nothing binding it to `security/classifier.py` |
 
 **The generalisation: a guard is code, and inherits every failure mode of the code it guards.**
 Four of these sat *inside published measurements*, one sat inside the mechanism built to prevent
@@ -140,16 +145,27 @@ the others, and two were kept hidden by ordinary good practice — the **cache**
 path was never exercised, and the **retry** self-healed it so it failed somewhere different every
 time.
 
-**The last eight arrived together, on the smallest ticket in the project, and that is the finding.**
-Multi-model support (#15) is a widget, one cache key and one log field — no new instrument and no
-new measurement — and it produced eight instances, nearly half the previous total. Three were found
-by code review; **five were found by a person using the app**, none of them by the 1,710-test suite.
-Three of those five were successive wrong diagnoses of *one* symptom, each written into a comment as
+**The last thirteen arrived together, on the smallest ticket in the project, and that is the
+finding.** Multi-model support (#15) is a widget, one cache key and one log field — no new
+instrument and no new measurement — and it produced **thirteen** instances, more than the entire
+previous total from eleven Tier-1 tickets. Eight were found by code review; **five were found by a
+person using the app**, none of them by the 1,710-test suite. Three of those five were successive
+wrong diagnoses of *one* symptom, each written into a comment as
 established before the next attempt disproved it: a slug list unverified because checking "costs a
 paid call" (it is free), then a data-policy theory, then a first-party theory that its own
 replacement refuted. The pattern is not carelessness in a hard place — it is what happens when code
 makes claims about an environment it cannot observe, and the honest fix each time was to narrow the
 claim rather than to strengthen the check. Which is the fourth rule this section now carries:
+
+**And the second review round found five more in the fixes for the first**, which is the part worth
+keeping. Every one was found by **mutating the code and re-running**, not by reading it: three
+captions and a table cell whose *negative* half nothing held — the caption that must stay silent,
+the caveat that must not render, the zero that must not be printed — plus a banner asserting a
+cause it had not read and a widget's help text asserting a security property with no owner. The
+asymmetry is the lesson and it is mechanical: **a conditional surface needs a test on each branch,
+and the branch that renders is the one that gets written.** A test that only ever sees the panel
+populated cannot distinguish "renders when it should" from "renders always". Three of these five
+sat one line from a test that caught their opposite.
 
 - **A claim about something outside the process is a hypothesis, and belongs written as one.** The
   model list is dated, says what its check does *not* establish, and names the account setting no

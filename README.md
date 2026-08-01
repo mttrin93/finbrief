@@ -44,7 +44,7 @@ A ten-minute read. Each section that has a longer version links to it.
 **The five documents.** This README is the tour. [`docs/demo.md`](./docs/demo.md) is the
 five-step walkthrough, with the two preconditions a first take needs. [`docs/implementation.md`](./docs/implementation.md)
 is how each requirement and each optional task is built. [`docs/findings.md`](./docs/findings.md) is
-what the project found out, including the twenty-six-instance table of checks that could not fail.
+what the project found out, including the thirty-one-instance table of checks that could not fail.
 [`docs/limitations.md`](./docs/limitations.md) is all twenty limitations with their mechanisms.
 Under those, [`docs/verification/`](./docs/verification/) is generated evidence and
 [`docs/adr/`](./docs/adr/) is the design record: consult an artifact for any number that matters
@@ -434,7 +434,7 @@ near-unanimous effects.
 **And the first version of that determination was a tautology** — a comparator that tested a delta
 of means against the arms' own range, which *is* the largest delta those values permit, so all 18
 comparisons were verdicts from an instrument incapable of returning any other. That, the
-determinism result, the twenty-six-instance table of checks that could not fail, and what
+determinism result, the thirty-one-instance table of checks that could not fail, and what
 "a prompt is an instrument, not a control" cost in measured compliance are all in
 [`docs/findings.md`](./docs/findings.md).
 

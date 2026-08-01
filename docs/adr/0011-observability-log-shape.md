@@ -606,3 +606,63 @@ reader to change a control they do not have is worse than saying nothing: it rea
 **Three rounds, one lesson.** Each guess was a claim about an environment the repo cannot observe,
 and each was stated in a comment as though it were established. The instrument is what closed it
 every time — `chat_turn_failed`'s `exc_info`, read out of the sink.
+
+### The second code-review round, and what it found in the first round's fixes
+
+Five more, all in code written to fix the four above, and **all found by mutating the code and
+re-running rather than by reading it**. That method is the record: each of the five sat beside a
+test that looked like its guard.
+
+**1. Three surfaces whose *negative* half nothing held.** The reroute caption is silent when the
+provider agreed or said nothing, the `not recorded` caveat renders only when such a row exists,
+and `_ms` prints a blank rather than a zero for an unmeasured latency. Each claim is in a
+docstring or a comment; each was measured false as a *guard*:
+
+| the claim | the mutation | what the suite did |
+|---|---|---|
+| the reroute caption is silent unless a provider disagreed | render it on every log | 164 tests green — the assertion read `"served by …"` against a caption reading `"Served by …"` |
+| the caveat renders only when a `not recorded` row is on screen | render it always | whole page suite green |
+| an unmeasured latency is blank, because "a zero would be a claim that a turn was instant" | return `0` | whole page suite green |
+
+The generalisation is mechanical and belongs here rather than in three separate comments: **a
+conditional surface needs a test on each branch, and the branch that renders is the one that gets
+written.** A test that only ever sees the panel populated cannot distinguish "renders when it
+should" from "renders always". The fix in all three cases is one shared constant read by the test
+that requires the string and the test that forbids it, which is what makes the pair impossible to
+write in only one direction.
+
+**2. The one-sample rule the ticket asked for was not built.** The issue's own words — *"a split
+with one sample says so rather than drawing a distribution"* — and the table printed p50, p90 and
+max for every row regardless. One timed turn is its own p50, p90 and maximum, so the panel rendered
+a sample as a distribution in three columns. `Distribution.count` existed and no surface read it.
+This one was found by reading the spec against the code rather than by mutation, and it is the
+reason a spec walk is worth doing beside a code review: nothing was *wrong*, so nothing could fail.
+
+**3. A banner asserting a cause it had not read.** The 404 branch reads the provider's message for
+`RESTRICTED_404_MARKER` and, on a miss, said *"OpenRouter does not recognise it"* — a diagnosis the
+marker's *absence* cannot support, since that branch fires for every 404 phrased any other way. Its
+own test fed it a **restriction** message and asserted the unknown-slug sentence, so the mapping was
+enshrined rather than merely possible. §RESTRICTED_404_MARKER already argued that a miss should
+fail open into a generic banner; what was missing is that **a banner naming a cause is not
+generic**. It states the observation now. The sentence beside it — "the default always works if a
+key is set" — went too, and was the worse of the two: false for an off-list `FINBRIEF_CHAT_MODEL`
+and false again on a key whose allowlist excludes the default, which is precisely what the three
+rounds above established cannot be known from in here. A fix for a claim-about-the-environment
+defect shipped with a new claim about the environment.
+
+**4. A gate claim with no owner.** The picker's `help=` told a reader that "switching here cannot
+weaken the gate" — an ADR-0006 property, on screen, as a literal in `app/Home.py`. It is
+`prompts.MODEL_PICKER_SCOPE` now, on the precedent that made `SEARCH_FILINGS_DESCRIPTION`
+`prompts.py`'s: **a description is a prompt when it makes a scope claim**, and a widget's help text
+is that same thing pointed at a reader instead of a model. The binding took two attempts and the
+first is instructive — it asserted the picker's options exclude `settings.classifier_model` and
+failed on the shipped default, because the gate and the agent are configured to the *same string*
+precisely by being two independently-settable fields that agree. What makes the sentence true is
+the **read path**: `security/classifier.py` names `classifier_model`, `retrieval/embeddings.py`
+names `embedding_model`, neither reads `chat_model`, and `Settings` is frozen.
+
+**5. The pricing body was hoisted a line too late.** `answered_only_on` came out of
+`Spend.dollars` and `TokenTotals.dollars` in the first round; the eight identical lines beside it
+stayed, so the model gate was added to both bodies and the required `priced_model` keyword migrated
+twice. **The licence covers a module, not a line** — `spend.py` is the same package, so an import
+was available for all of it, and a copy left behind is as unlicensed as the one just removed.

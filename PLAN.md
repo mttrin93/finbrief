@@ -569,9 +569,11 @@ Each item built only when fully understood; anything not defensible is cut befor
    **The first *numbered* Phase-8 item to be built**, and the only one so far: the five ticks in
    the tail below are tail items, which is why ADR-0001's T12 amendment is careful to say the
    numbered items "were never reversed". This one is, and the reversal is recorded there.
-   A sidebar picker over four slugs in `config.CHAT_MODEL_CHOICES` — three providers plus an open
-   weight — changing the **answering** model only; `classifier_model`, `judge_model` and
-   `embedding_model` keep their own fields and are not selectable.
+   A sidebar picker over four slugs in `config.CHAT_MODEL_CHOICES` — four providers, each serving
+   its own model first-party; the open-weight option this line originally named is out, for the
+   reason ADR-0011's T14 amendment records — changing the **answering** model only;
+   `classifier_model`, `judge_model` and `embedding_model` keep their own fields and are not
+   selectable.
    - Like the tail items it **reads substrate Tier-1 already built** rather than adding an
      integration: `llm.build_chat_model` has taken a `model=` override since T3, and ADR-0008's
      decision text already reserved the session-state slot ("UI toggles (model, strategy)").

@@ -702,6 +702,14 @@ the panel says so: `retrieval/retrieve.py` builds the sub-query planner with no 
 `query_translation` line is always on the configured model and belongs to no row. Unsaid, that
 difference reads as an arithmetic bug.
 
+**A row with one timed turn reports its middle and no spread**, which the first version did not do.
+One sample *is* its own p50, p90 and maximum, so printing all three renders a sample as a
+distribution — three columns of one number, indistinguishable by eye from a model whose latency
+really was that flat. The median of one sample is that sample and stays; p90 and max blank, and a
+third caption clause explains the blank on the same terms as the other two, only when a row it
+describes is on screen. It is the same absence-versus-measurement rule as the empty token cells one
+paragraph up, arriving as a triple of measurements that are one.
+
 **No per-model quality claim, and this is a scoping decision rather than an omission.** PLAN §6's
 open question — do the per-model-tuned tool-calling prompts break on a swap? — is answered by
 bounding it: all four slugs are tool-calling models, and a model that fans out badly is slower
