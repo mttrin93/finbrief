@@ -13,9 +13,10 @@ the whole
 per-turn spend joins them on `turn_id`, and that is what this does. The gate's classifier is the
 one paid call in the system that is **not** metered, on purpose and recorded in ADR-0011: it
 returns a bare `Verdict`, so metering it means changing that return type for the cheapest call
-there is. The meter therefore reports what it can measure and this module says which call it
-cannot, because a total presented as "the conversation" while missing a known call is the
-narrowing failure this repo keeps finding.
+there is. The meter therefore reports what it can measure and this module owns the sentence
+saying which call it cannot (`UNMETERED_CLASSIFIER_NOTE`, rendered by the analytics page),
+because a total presented as "the conversation" while missing a known call is the narrowing
+failure this repo keeps finding.
 
 **Scoped to the conversation by `turn_id`, and that is why no offset is needed here.** The
 sink is append-only across every run and app session that names it, so a statistic over the
@@ -47,6 +48,18 @@ from finbrief.observability.events import Event, EventLog
 
 #: The two events that carry a token count and belong to a chat round.
 TOKEN_EVENTS = ("agent_turn", "query_translation")
+
+#: The caveat every surface rendering these totals is describing — **one string, because it was
+#: two.** `app/Home.py`'s sidebar meter and `app/pages/1_Analytics.py` carried the same sentence
+#: typed out twice, which is the drift this repo keeps catching: the copies disagree on the turn
+#: one of them is edited, and the one on screen is whichever page the reader opened.
+#:
+#: The claim itself is ADR-0011 §4's — the gate's classifier is a paid call that never enters
+#: `calls`, so no value of `Spend.partial` is evidence about it and a *complete* total is still
+#: missing one call per turn. It is rendered on the analytics page, which is the surface that
+#: totals a whole log; the sidebar shows one conversation's figures and does not repeat it
+#: (#14 copy pass).
+UNMETERED_CLASSIFIER_NOTE = "One call per turn isn't metered, so these figures are incomplete."
 
 #: The token fields `tokens.usage_fields` writes. `total_tokens` is deliberately not among them
 #: — it is `input + output` and a third number is a third thing that can disagree.

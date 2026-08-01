@@ -51,13 +51,14 @@ from finbrief.observability.analytics import (
     spend_over_time,
     tool_summary,
 )
+from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 
 st.set_page_config(page_title="FinBrief · Analytics", page_icon=":material/analytics:")
 
 st.title("Analytics")
 st.caption(
-    "Every figure here is read back out of the structured event log — the same lines the "
-    "evaluation harness reads. Nothing on this page is measured here."
+    "Every figure here is read back out of the structured event log. Nothing on this page is "
+    "measured here."
 )
 
 # `load_env()` before anything asks the environment for the sink: Streamlit runs only the
@@ -113,9 +114,13 @@ def figures(spread: Distribution, *, unit: str = "ms") -> str:
     """
     if not spread.measured:
         return "**not measured** — no line here carried one"
+    # `unit=""` puts the unit on the caller's label instead — the tools panel's age, where "s"
+    # three times reads as noise. Empty rather than a second helper, so the two renderings
+    # cannot drift apart in everything else.
+    suffix = f" {unit}" if unit else ""
     return (
-        f"p50 `{spread.p50:,.0f}` {unit} · p90 `{spread.p90:,.0f}` {unit} · "
-        f"max `{spread.maximum:,.0f}` {unit} ({spread.count} sample(s))"
+        f"p50 `{spread.p50:,.0f}`{suffix} · p90 `{spread.p90:,.0f}`{suffix} · "
+        f"max `{spread.maximum:,.0f}`{suffix} ({spread.count} sample(s))"
     )
 
 
@@ -182,15 +187,17 @@ def render_header(sink: Sink) -> bool:
             "fills in as you use FinBrief.",
             icon=":material/toggle_off:",
         )
+        # The consequence of switching it on is the reader's business; ADR-0011 is where the
+        # decision behind it is recorded, and the citation stays in this comment.
         st.caption(
-            "Off by default on purpose (ADR-0011): enabling the sink also means keeping a "
-            "blocked question's normalised text on disk, so it has to be a decision."
+            "It is off by default because enabling it also keeps a blocked question's "
+            "normalised text on disk."
         )
         return False
     if sink.state is SinkState.MISSING:
         st.warning(
             f"`FINBRIEF_LOG_FILE` names `{sink.path}`, and **nothing has written to it yet**. "
-            f"The sink is opened by the app and by the scripts, not by this page — ask a "
+            f"The log is written by the app and by the scripts, not by this page — ask a "
             f"question on the FinBrief page and come back.",
             icon=":material/hourglass_empty:",
         )
@@ -208,11 +215,8 @@ def render_header(sink: Sink) -> bool:
             f"something other than this logger.",
             icon=":material/error:",
         )
-        st.caption(
-            "Its own state rather than folded into the not-yet-written one, because that "
-            "sentence would send you to the wrong knob: nothing here is waiting on a question "
-            "being asked."
-        )
+        # Its own state rather than folded into the not-yet-written one, because that sentence
+        # would send a reader to the wrong knob: nothing here is waiting on a question.
         return False
     if sink.state is SinkState.EMPTY:
         st.warning(
@@ -224,10 +228,9 @@ def render_header(sink: Sink) -> bool:
             ),
             icon=":material/description:",
         )
-        st.caption(
-            "An empty file and a file of unreadable lines are different problems, which is why "
-            "the count is here rather than folded into one sentence."
-        )
+        # The malformed count is inside the sentence above rather than in a caption beneath it:
+        # an empty file and a file of unreadable lines are different problems, and the number is
+        # what tells them apart.
         return False
 
     st.markdown(f"Reading `{sink.path}`")
@@ -282,9 +285,8 @@ def render_activity(log) -> None:
     # and writes turns with no gate line beside them. Presenting either number as "questions
     # asked" would be a claim about a population neither of them describes.
     st.caption(
-        "Screenings come from the app's chat input only, so an evaluation run contributes "
-        "answered turns with no screening beside them. The two counts are not two views of one "
-        "number."
+        "Only questions typed into the chat are screened, so an evaluation run adds answered "
+        "turns with no screening beside them. The two counts are not two views of one number."
     )
 
 
@@ -298,18 +300,27 @@ def render_gate(log) -> None:
         absent("screenings")
     else:
         st.markdown(rate_line(gate.blocked))
+        # **What the rate counts, because 0% otherwise reads as "nothing is guarding this".**
+        # The gate (ADR-0006, layers 1–3) is about injection and nothing else; the
+        # investment-advice refusal is a different control at a different point — `app/Home.py`
+        # applies it to the answer — and a reader who takes a low block rate for an unguarded
+        # app has been misled by an honest number.
+        st.caption(
+            "A block is an injection attempt — instruction override or prompt extraction. "
+            "Questions asking for investment advice are not blocked here: they pass the gate "
+            "and are refused when the answer is written."
+        )
         st.markdown(rate_line(gate.classifier_ran))
         st.markdown(f"Gate latency: {figures(gate.latency)}")
-        # **Both budgets, because one of them was revised.** ADR-0006's T7 amendment moved the
-        # target from 800 ms to 1 s, and `security/report.py` prints both for the reason the
-        # constant survives at all: a revised pre-registration shown alone reads as one that
-        # always held.
-        st.markdown(
-            budget_verdict(gate.latency, gate.budget_ms, name="Budget")
-            + "  \n"
-            + budget_verdict(
-                gate.latency, gate.preregistered_budget_ms, name="Pre-registered (revised)"
-            )
+        # **One target on screen, the earlier figure in the caption under it.** ADR-0006's T7
+        # amendment revised the pre-registered 800 ms up to 1 s, and `security/report.py` prints
+        # both as full verdicts so a reviewer cannot mistake a revised pre-registration for one
+        # that always held. That fact is owed here too, but not as a second budget line: two
+        # verdicts read as two live budgets, and the one that is met reads as the revision.
+        st.markdown(budget_verdict(gate.latency, gate.budget_ms, name="Budget"))
+        st.caption(
+            f"Revised upward from an original `{gate.preregistered_budget_ms:,.0f}` ms "
+            f"pre-registration."
         )
         st.markdown("**Blocks by layer**")
         tally_chart(gate.by_layer, what="blocked screenings")
@@ -323,18 +334,20 @@ def render_gate(log) -> None:
 
     st.markdown("**Layers that failed open**")
     tally_chart(gate.fail_open, what="fail-open events")
-    st.caption(
-        "A fail-open is a control that did not run, not one that let something through: the "
-        "classifier returns `undecided` on a provider failure, and the validator is skipped "
-        "when its Guard raises. Counted separately from the verdicts for that reason."
-    )
-    # The one field on these lines this page will not render, said out loud so that its absence
-    # reads as a decision rather than as an oversight.
-    st.caption(
-        "A blocked question's normalised text is on its log line, bounded three ways by "
-        "ADR-0006, and is deliberately not shown here: it is kept for an audit with a grep, "
-        "and a dashboard is a wider surface than that bound was argued for."
-    )
+    if gate.fail_open.measured:
+        # Only where there is something to define. The ordinary log has none of these, and the
+        # definition standing over "No fail-open events in this log" is a paragraph explaining
+        # a term the reader has just been told did not occur.
+        st.caption(
+            "A fail-open is a control that did not run, not one that let something through: "
+            "the classifier answers `undecided` when its provider fails, and the output "
+            "check is skipped when it cannot run."
+        )
+    # **The one field on these lines this page will not render.** A blocked question's
+    # normalised text is on its log line — ADR-0006's one bounded exception to no-user-content,
+    # kept for an auditor with a grep — and a dashboard is a wider surface than that bound was
+    # argued for. The omission used to be stated on screen; it is an auditor's concern and not a
+    # reader's, so the record of it lives here (#14 copy pass).
 
 
 # --- Panel 6: the agent's behaviour, and the bracket rate -------------------------------
@@ -359,22 +372,22 @@ def render_agent(log) -> None:
     )
     # ADR-0003 §1 asks the model to pass the question verbatim and §2 of its T4 amendment
     # records that the rule is *measured, not enforced* — the alternative that would enforce it
-    # (overwriting the model's `query`) breaks every follow-up. So a divergence here is not
-    # necessarily a defect: a resolved pronoun is the one rewrite the description permits.
+    # (overwriting the model's `query`) breaks every follow-up. So a divergence is not
+    # necessarily a defect: a follow-up resolving *its margins* into a company name is the one
+    # rewrite the description permits. That is why the caption calls this behaviour rather than
+    # faults; which ADR settled it is a developer's question and stays in this comment.
     st.caption(
-        "Divergence is a search whose query differed from the question as typed. It is "
-        "measured rather than enforced (ADR-0003), and a follow-up that resolves *its "
-        "margins* into a "
-        "company name is a permitted rewrite — so this is a description of behaviour, not a "
-        "count of faults."
+        "Divergence is a search whose query differed from the question as typed — a "
+        "description of behaviour, not a count of faults."
     )
     if behaviour.divergence_absent:
         # Named rather than folded in, because folding it in was the bug: a turn missing either
         # half of the pair reported every search as divergent, which is an absence rendered as
         # the worst possible measurement.
         st.caption(
-            f"{behaviour.divergence_absent} of {behaviour.turns} turn(s) carried no verbatim "
-            f"count and are in no part of that rate — absent, not divergent."
+            f"{behaviour.divergence_absent} of {behaviour.turns} turn(s) did not record "
+            f"whether their searches matched the question, and are in no part of that rate — "
+            f"absent, not divergent."
         )
     st.markdown(f"Turn latency: {figures(behaviour.turn_latency)}")
     # **Both were aggregated and rendered nowhere** (code review of #14), and "searches per
@@ -402,24 +415,32 @@ def render_citations(log) -> None:
             f"**{cited.unresolved:,}** unresolved · **{cited.non_numeric:,}** non-numeric "
             f"marker(s)"
         )
+        # The three lines above name themselves in the vocabulary of the emitter, so the panel
+        # owes a reader the translation: what a marker is, what it means for one to resolve, and
+        # what the two failure counts look like in an answer.
+        st.caption(
+            "Answers cite their sources as `[1]`, `[2]`. Support is the share of those markers "
+            "that point at a source listed with the answer, and clean turns are answers where "
+            "every marker did. Unresolved markers point at nothing; non-numeric ones — "
+            "`[Yahoo Finance]` — look like citations but name no source."
+        )
         if cited.absent:
             # The rate this page exists for, so the gap in it is said out loud. A line missing
             # either half of the fraction used to read as 0% support — an absence rendered as
             # the worst measurement available, in the one figure the page was built to publish.
             st.caption(
                 f"{cited.absent} of {cited.turns} record(s) carried no marker counts and are "
-                f"in no part of the support rate — absent, not unsupported."
+                f"in no part of that rate — absent, not unsupported."
             )
     # **Why this panel exists, and what its number is worth.** ADR-0011's amendment establishes
     # that `citation_markers` is written by `app/Home.py` and by nothing else, so T10's ten live
     # agent turns produced none and `docs/verification/evaluation.md` reports the rate as
     # unmeasured. This surface is where the instrument becomes readable — and the claim is
-    # weaker than the one that artifact wanted, which is worth stating where the number is.
+    # weaker than the one that artifact wanted, which is why the caption names the population
+    # this rate is over. Which artifact deferred it is a developer's question and stays here.
     st.caption(
-        "This is the T5 deferral `docs/verification/evaluation.md` reports as unmeasured: the "
-        "instrument only fires on an app turn, so the harness never produced a line. What this "
-        "shows is **observational over whatever sessions this log holds** — not the controlled "
-        "measurement over a stratified set that the artifact asked for."
+        "Markers are recorded only for questions asked in the app, so this is measured across "
+        "**whatever sessions this log holds** and not a controlled test."
     )
 
 
@@ -438,30 +459,41 @@ def render_tools(log) -> None:
     st.markdown("**Calls by ticker**")
     tally_chart(tools.by_ticker, what="tool calls with a ticker")
     # The narrower claim, because it is the true one: a filings-only question puts a length in
-    # the log and no ticker, by the rule that keeps user content out of these lines.
+    # the log and no ticker, by the rule that keeps user content out of these lines. The second
+    # sentence this caption carried explained that logging rule, which is a developer's fact.
     st.caption(
         "These are the tickers the **finance tools** were called for, not the companies asked "
-        "about. A question answered from the filings alone names no ticker in the log — the "
-        "lines carry counts and lengths, never the question."
+        "about."
     )
-    # The explicit field, printed rather than left as the input to a rate that cannot be
-    # computed — see the caption below. It was aggregated and rendered nowhere.
-    st.markdown(f"Age of the data served: {figures(tools.age_seconds, unit='s')}")
+    # The unit is on the label rather than on each of the three figures, and the gloss is a
+    # caption: "age of the data served" names the measurement and says nothing about what it is
+    # the age *of*.
+    st.markdown(f"Age of the data served, in seconds: {figures(tools.age_seconds, unit='')}")
+    st.caption("How old a quote or a headline was at the moment the answer used it.")
     st.markdown("**Refusals, failures and stale fallbacks**")
-    tally_chart(tools.refused, what="validation refusals")
-    tally_chart(tools.unavailable, what="unavailable sources")
-    # Tool **and** error type, the cross-tab the ticket asked for and the tally above is not:
+    # Tool **and** error type, the cross-tab the ticket asked for and the coarse tally is not:
     # "`get_recent_news` failed 40 times" and "…40 times on `HTTPError`" are different findings,
     # and only the second distinguishes a source that is down from a ticker that will not parse.
     # Both are drawn, because the coarser count is what a reader looks at first.
-    tally_chart(tools.unavailable_by_error, what="unavailable sources by error type")
-    tally_chart(tools.stale_fallbacks, what="stale fallbacks")
-    st.caption(
-        "There is no cache hit rate here on purpose: `age_seconds` is rounded to whole seconds "
-        "at the emitter, so a hit 400 ms after a fetch is indistinguishable from a miss. The "
-        "stale rate, the age above and the fallback count are explicit fields, so they are "
-        "what is reported."
+    failures = (
+        (tools.refused, "validation refusals"),
+        (tools.unavailable, "unavailable sources"),
+        (tools.unavailable_by_error, "unavailable sources by error type"),
+        (tools.stale_fallbacks, "stale fallbacks"),
     )
+    if not any(counted.measured for counted, _ in failures):
+        # **One sentence for four absences.** Four consecutive "Nothing is charted" lines say
+        # the same thing four times over, and the reader who needs them named one by one is the
+        # reader of a panel where some of the four *are* populated — which is the branch below.
+        absent("refusals, failures or stale fallbacks")
+    else:
+        for counted, what in failures:
+            tally_chart(counted, what=what)
+    # **There is no cache hit rate here on purpose**, and the reason is a developer's: the age
+    # of the served data is rounded to whole seconds where it is recorded, so a hit 400 ms
+    # after a fetch is indistinguishable from a miss and a rate derived from it would be wrong
+    # invisibly — the check-that-cannot-fail class CLAUDE.md names. The stale rate, the age
+    # above and the fallback count are recorded explicitly, so they are what the panel reports.
 
 
 # --- Panel 7: token spend over time -----------------------------------------------------
@@ -485,7 +517,7 @@ def render_spend(log) -> None:
         if totals.calls:
             st.caption(
                 f"No usage reported in this log, across `{calls}` model call(s). Not zero "
-                f"tokens — a provider that reports no usage block did not make a free call."
+                f"tokens — a provider that reported no usage did not make a free call."
             )
         else:
             st.caption(
@@ -510,20 +542,22 @@ def render_spend(log) -> None:
         )
         render_cost(totals)
         if totals.partial:
-            st.warning(
-                f"Partial: {totals.input.reported_calls} of {totals.calls} call(s) reported "
-                f"input tokens and {totals.output.reported_calls} reported output tokens, so "
-                f"the figures above are a floor.",
-                icon=":material/data_alert:",
+            # A caption and not a `st.warning`: nothing here needs attention, the figures above
+            # are simply a floor — and a yellow box beside a number reads as a fault in the
+            # number rather than as a qualifier on it (#14 copy pass).
+            st.caption(
+                f"A floor: {totals.input.reported_calls} of {totals.calls} call(s) reported "
+                f"input tokens and {totals.output.reported_calls} reported output."
             )
     # **Unconditional, and that is the whole point of where it sits.** ADR-0011 §4's correction:
     # the classifier never enters `calls`, so no value of `partial` is evidence about it. A
     # complete total is still missing one paid call per turn, and a caveat that only appeared
     # when something *else* was missing was a claim the surface did not make.
-    st.caption(
-        "The input gate's classifier is never metered, so one paid call per turn is missing "
-        "from these figures by design."
-    )
+    #
+    # **The string is `spend.py`'s, not this file's** — `app/Home.py`'s sidebar carried a second
+    # copy of it, and two copies of one sentence disagree on the turn one of them is edited.
+    # This is the surface that renders it: it totals the whole log (#14 copy pass).
+    st.caption(UNMETERED_CLASSIFIER_NOTE)
 
 
 def render_cost(totals) -> None:
@@ -537,13 +571,18 @@ def render_cost(totals) -> None:
         return
     dollars = totals.dollars(input_per_mtok=input_price, output_per_mtok=output_price)
     if dollars is None:
+        # No price is assumed rather than guessed at: every model here is reached through
+        # OpenRouter's routing, so there is no rate card in this repo to read one from
+        # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.
         st.caption(
             "Cost is not priced: set `FINBRIEF_INPUT_COST_PER_MTOK` and "
-            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card. No price is "
-            "assumed, because this app reaches every model through OpenRouter's routing."
+            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card."
         )
     else:
-        st.markdown(f"**Cost** `${dollars:.4f}`")
+        # An estimate and labelled one: the tokens are measured, the two prices are read from
+        # `.env`, and the product is only as good as the rate a reader typed in. The same label
+        # as `app/Home.py`'s sidebar, for the same reason.
+        st.markdown(f"**Cost (estimate)** `${dollars:.4f}`")
 
 
 def _tokens(count: int | None) -> str:
@@ -568,17 +607,16 @@ def render_retrieval(log) -> None:
     # `latency_ms` was reported hides one absence behind another. A log of untimed retrievals is
     # exactly where a reader wants to know how many were unattributable.
     if pools.unattributed:
+        # Named rather than dropped: a smaller pool nobody chose is a narrower denominator.
         st.caption(
-            f"{pools.unattributed} retrieval line(s) carried no strategy or no translation "
-            f"flag and are in the overall figure but in no arm — named rather than dropped, "
-            f"because "
-            f"a smaller pool nobody chose is a narrower denominator."
+            f"{pools.unattributed} retrieval line(s) did not record which settings they ran "
+            f"under, so they count towards the overall figure and towards no single setting."
         )
-    st.caption(
-        "The A/B measurement of record is `docs/verification/evaluation.md`, over the golden "
-        "set. This is the same split over **live traffic** — whatever ran against this sink — "
-        "which is a weaker claim about a different population."
-    )
+    # The controlled A/B over the golden set is `docs/verification/evaluation.md`'s, and that is
+    # the measurement of record; this is the same split over whatever happened to run. Which
+    # file holds the stronger claim, and why this one is weaker, is a developer's question and
+    # stays in this comment — the reader needs one line saying the figures are not a trial.
+    st.caption("Measured over whatever ran against this log — **not a controlled comparison**.")
 
 
 def render_planner(log) -> None:
@@ -586,33 +624,32 @@ def render_planner(log) -> None:
     planner = planner_cost(log)
     st.markdown(f"Planner round: {figures(planner.latency)}")
     st.markdown(budget_verdict(planner.latency, planner.budget_ms, name="Budget"))
-    # **The panel says which term this is**, because the clause is a sum and half of it is a
-    # different measurement. `evaluation/latency.TranslationCost` composes both and reports the
-    # clause as missed; a page showing the first term under the budget's own name would let a
-    # reader take a met budget from a number that is not what the budget is about.
-    st.caption(
-        "ADR-0005's clause is *≤1.5 s p50 added by translation*, which is this chat round "
-        "**plus** the extra retrieval rounds the added variants cost. This is the first term "
-        "alone; the composed figure is in `docs/verification/evaluation.md`, where the clause "
-        "is recorded as missed."
-    )
-    if planner.unmetered_lines or planner.disabled_lines:
-        st.caption(
-            f"Excluded and counted: {planner.unmetered_lines} line(s) reported no tokens, so "
-            f"no model was called, and {planner.disabled_lines} had the planner disabled by "
-            f"configuration."
-        )
-    # **Its own sentence, because it is its own measurement.** This was a clause of the
-    # exclusion
-    # caption, so a log with nothing excluded — the ordinary case — never said how many planners
-    # ran and refused, which is a real fact about planner behaviour suppressed by the absence of
-    # two unrelated counts (code review of #14).
+    # **Which term of the budget this is, in one clause.** ADR-0005's clause is a sum — the
+    # planner's round *plus* the extra retrieval rounds its variants cost — and
+    # `evaluation/latency.TranslationCost` composes both, where
+    # `docs/verification/evaluation.md` reports it as missed. A reader of this page needs to
+    # know the timing above is not the whole cost of translating a question; the composition,
+    # the artifact and the recorded verdict are a developer's business (#14 copy pass).
+    st.caption("This is the planner's own round, not the full cost of translating a query.")
+    # **Three counts, one line, and each clause only when it happened.** These were three
+    # captions under two numbers, which is more explanation than measurement. They are still
+    # three separate facts and none may be inferred from another: `unmetered_lines` called no
+    # model at all, `disabled_lines` had the planner switched off by configuration, and
+    # `refusals_kept` ran a full chat round that returned nothing — kept in the figures for that
+    # reason, because dropping them biases the p50 upward. A clause carrying "and 0 had the
+    # planner disabled" would be a count of nothing dressed as a finding (#14 copy pass).
+    noted = []
+    if planner.unmetered_lines:
+        noted.append(f"{planner.unmetered_lines} question(s) needed no planning")
+    if planner.disabled_lines:
+        noted.append(f"the planner was switched off for {planner.disabled_lines}")
     if planner.refusals_kept:
-        st.caption(
-            f"{planner.refusals_kept} planner round(s) ran and returned no sub-query, and are "
-            f"**kept** in the figures above — a refusal still paid for a full chat round, and "
-            f"dropping them would bias the p50 upward."
+        noted.append(
+            f"{planner.refusals_kept} planning round(s) returned nothing but still cost a call "
+            f"and are included"
         )
+    if noted:
+        st.caption(f"{'; '.join(noted)}.")
 
 
 # --- The page ---------------------------------------------------------------------------
@@ -620,17 +657,21 @@ def render_planner(log) -> None:
 sink = open_sink(sink_path())
 if render_header(sink):
     log = sink.readable
+    # **Titled in a reader's words, not the codebase's** (#14 copy pass). "The input gate",
+    # "retrieval latency" and "query translation" are the names of the modules behind these
+    # panels; what a reader is looking for is what was screened, how long a search took and how
+    # long rewriting a question took. The module names stay in the `render_*` docstrings.
     with st.expander(":material/timeline: Activity over time", expanded=True):
         render_activity(log)
-    with st.expander(":material/security: The input gate", expanded=True):
+    with st.expander(":material/security: Questions screened for attacks", expanded=True):
         render_gate(log)
-    with st.expander(":material/smart_toy: The agent's behaviour", expanded=True):
+    with st.expander(":material/smart_toy: What the assistant did", expanded=True):
         render_agent(log)
-    with st.expander(":material/build: Finance tools"):
+    with st.expander(":material/build: Market-data tools"):
         render_tools(log)
     with st.expander(":material/toll: Token spend"):
         render_spend(log)
-    with st.expander(":material/search: Retrieval latency"):
+    with st.expander(":material/search: How long searching the filings took"):
         render_retrieval(log)
-    with st.expander(":material/alt_route: Query translation"):
+    with st.expander(":material/alt_route: How long rewriting the question took"):
         render_planner(log)

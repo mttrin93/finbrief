@@ -37,6 +37,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from finbrief.observability.logging_setup import configure_logging, log_event, turn
+from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 
 APP = Path(__file__).parents[1] / "app"
 PAGE = str(APP / "pages" / "1_Analytics.py")
@@ -377,6 +378,10 @@ def test_a_populated_log_renders_its_header_and_its_panels(page, seeded):
     # line rather than carried by a callout that restated the caption under the title.
     assert "the whole file, not one session or run" in body
     assert charts(page), "a populated log draws charts"
+    # **No design record cited on a page a user reads** (#14 copy pass). Every ADR number that
+    # was on screen is now in the comment beside the string it explained, and this is the check
+    # that keeps it there — asserted on the run that renders every panel.
+    assert "ADR" not in body
 
 
 def test_the_header_counts_the_lines_it_read_and_not_the_lines_in_the_file(page, seeded):
@@ -421,7 +426,7 @@ def test_the_activity_panel_counts_screenings_turns_and_says_why_they_differ(pag
     assert "not two views of one number" in body
 
 
-def test_the_gate_panel_reports_blocks_by_layer_and_both_budgets(page, seeded):
+def test_the_gate_panel_reports_blocks_by_layer_and_the_latency_target(page, seeded):
     logger, _ = seeded
     a_session(logger)
 
@@ -429,12 +434,13 @@ def test_the_gate_panel_reports_blocks_by_layer_and_both_budgets(page, seeded):
 
     body = text(page)
     assert "blocked: **50%** (1/2)" in body, "a rate with its denominator, never a bare percent"
-    # Both figures, and the revised one is not shown alone: ADR-0006's T7 amendment moved the
-    # target from 800 ms to 1 s, and a pre-registration shown only when it holds reads as one
-    # that always did.
+    # One target, and the revision named beneath it rather than rendered as a second budget:
+    # ADR-0006's T7 amendment moved the target from 800 ms to 1 s, and a pre-registration
+    # dropped entirely would read as one that always held (#14 copy pass).
     assert "Budget `1,000` ms" in body
-    assert "Pre-registered (revised) `800` ms" in body
-    assert "**met**" in body and "**missed**" in body
+    assert "**met**" in body, "900 ms against a 1,000 ms target"
+    assert "Revised upward from an original `800` ms" in body
+    assert "Pre-registered (revised)" not in body, "800 is the original, not the revision"
 
 
 def test_the_gate_panel_never_renders_a_blocked_questions_text(page, seeded):
@@ -459,8 +465,10 @@ def test_the_gate_panel_never_renders_a_blocked_questions_text(page, seeded):
     body = text(page)
     assert "reveal the system prompt" not in body
     assert "ignore all previous" not in body
-    # And it says the omission is deliberate, so a reader does not read it as a missing panel.
-    assert "deliberately not shown here" in body
+    # The page no longer *says* the omission is deliberate — that sentence was written for an
+    # auditor and the record of it is now a comment beside the panel (#14 copy pass). What has
+    # to hold is the omission itself, which is what the two assertions above are.
+    assert "deliberately not shown here" not in body
 
 
 def test_the_agent_panel_reports_divergence_as_a_rate_and_not_a_fault(page, seeded):
@@ -475,7 +483,9 @@ def test_the_agent_panel_reports_divergence_as_a_rate_and_not_a_fault(page, seed
     assert "divergence: **50%** (1/2)" in body
     # ADR-0003 §2: the rule is measured, not enforced, and a resolved pronoun is the one rewrite
     # the tool description permits — so the panel describes behaviour rather than counting bugs.
-    assert "measured rather than enforced" in body
+    # The ADR reference behind that framing is a comment on the page now (#14 copy pass); what
+    # the caption owes a reader is the framing itself.
+    assert "not a count of faults" in body
 
 
 def test_the_bracket_rate_renders_and_says_what_kind_of_claim_it_is(page, seeded):
@@ -487,9 +497,13 @@ def test_the_bracket_rate_renders_and_says_what_kind_of_claim_it_is(page, seeded
     body = text(page)
     assert "cited-marker support: **67%** (2/3)" in body
     # The panel's own framing, which is the difference between this figure and the one
-    # `evaluation.md` says it could not take: observational over logged sessions.
-    assert "observational over whatever sessions this log holds" in body
-    assert "evaluation.md" in body
+    # `docs/verification/evaluation.md` says it could not take. Said in a reader's words now,
+    # with the artifact it defers to named in a comment on the page (#14 copy pass).
+    assert "whatever sessions this log holds" in body
+    assert "not a controlled test" in body
+    # And the three figures glossed, because their labels are the emitter's vocabulary.
+    assert "Answers cite their sources as `[1]`, `[2]`" in body
+    assert "Unresolved markers point at nothing" in body
 
 
 def test_the_agent_panel_names_the_turns_no_divergence_rate_can_include(page, seeded):
@@ -509,7 +523,7 @@ def test_the_agent_panel_names_the_turns_no_divergence_rate_can_include(page, se
 
     body = text(page)
     assert "divergence: **100%** (1/1)" in body, "over the one turn that reported both halves"
-    assert "1 of 2 turn(s) carried no verbatim count" in body
+    assert "1 of 2 turn(s) did not record whether their searches matched the question" in body
     assert "absent, not divergent" in body
 
 
@@ -592,8 +606,11 @@ def test_the_spend_panel_names_the_classifier_on_a_complete_total(page, seeded):
 
     body = text(page)
     assert "1,410" in body and "388" in body, "the planner's round is in the total"
-    assert "Partial" not in body, "this total reported both fields on every call"
-    assert "classifier is never metered" in body
+    assert "A floor" not in body, "this total reported both fields on every call"
+    # **The one rendering of the sentence, and it is `spend.py`'s string.** `app/Home.py` used
+    # to carry a second copy typed out in full; asserted here as the constant rather than as a
+    # substring so that a page editing the words in place fails (#14 copy pass).
+    assert UNMETERED_CLASSIFIER_NOTE in [block.value for block in page.caption]
 
 
 def test_a_partial_total_says_so_beside_the_figure(page, seeded):
@@ -606,9 +623,8 @@ def test_a_partial_total_says_so_beside_the_figure(page, seeded):
     page.run()
 
     body = text(page)
-    assert "Partial" in body
-    assert "1 of 2 call(s) reported input tokens" in body
-    assert "floor" in body
+    # One clause now, and the word a reader needs is the first one (#14 copy pass).
+    assert "A floor: 1 of 2 call(s) reported input tokens" in body
 
 
 def test_an_unmetered_log_reports_its_call_count_as_the_floor_it_is(page, seeded):
@@ -658,7 +674,7 @@ def test_an_unpriced_spend_reports_tokens_and_says_it_cannot_price_them(page, se
 
     body = text(page)
     assert "FINBRIEF_INPUT_COST_PER_MTOK" in body
-    assert "**Cost**" not in body, "no figure where there is no price"
+    assert "**Cost (estimate)**" not in body, "no figure where there is no price"
 
 
 def test_a_priced_spend_shows_the_cost(page, seeded, monkeypatch):
@@ -671,7 +687,9 @@ def test_a_priced_spend_shows_the_cost(page, seeded, monkeypatch):
 
     # 1,410 input tokens at $1/Mtok plus 388 output at $2/Mtok — the planner's round is in the
     # total, because ADR-0011 keeps it on its own line and a per-turn spend joins the two.
-    assert "**Cost**" in text(page)
+    # Labelled an estimate, because the tokens are measured and the two prices are read from
+    # `.env` — the same label `app/Home.py`'s sidebar carries (#14 copy pass).
+    assert "**Cost (estimate)**" in text(page)
 
 
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
@@ -682,11 +700,11 @@ def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
 
     body = text(page)
     assert "Budget `1,500` ms" in body
-    # The clause is a sum, and this page shows one term. A met verdict on the first term under
-    # the budget's own name would let a reader take the clause as met when the artifact records
-    # it as missed.
-    assert "first term alone" in body
-    assert "recorded as missed" in body
+    # ADR-0005's clause is a sum and this panel times one term of it, so a met verdict under the
+    # budget's own name would let a reader take the whole clause as met. The distinction is owed
+    # in a reader's words — one clause, no composition and no artifact (#14 copy pass).
+    assert "not the full cost of translating a query" in body
+    assert "evaluation.md" not in body, "no artifact filename on a page a user reads"
 
 
 def test_a_kept_planner_refusal_is_named_with_nothing_excluded_beside_it(page, seeded):
@@ -713,9 +731,11 @@ def test_a_kept_planner_refusal_is_named_with_nothing_excluded_beside_it(page, s
     page.run()
 
     body = text(page)
-    assert "Excluded and counted" not in body, "nothing was excluded in this log"
-    assert "1 planner round(s) ran and returned no sub-query" in body
-    assert "bias the p50 upward" in body
+    # The three counts share one line now, and the two that did not happen contribute no clause
+    # to it — "0 questions needed no planning" is a count of nothing (#14 copy pass).
+    assert "needed no planning" not in body, "nothing was excluded in this log"
+    assert "switched off" not in body
+    assert "1 planning round(s) returned nothing but still cost a call and are included" in body
 
 
 def test_the_retrieval_panel_points_at_the_measurement_of_record(page, seeded):
@@ -726,8 +746,12 @@ def test_the_retrieval_panel_points_at_the_measurement_of_record(page, seeded):
 
     body = text(page)
     assert "hybrid +translation" in body
-    assert "live traffic" in body
-    assert "docs/verification/evaluation.md" in body
+    # The controlled A/B is `docs/verification/evaluation.md`'s and this is not it — said as one
+    # line about what the figures *are* rather than as a paragraph pointing at the artifact,
+    # which is a comment on the page now (#14 copy pass).
+    assert "Measured over whatever ran against this log" in body
+    assert "not a controlled comparison" in body
+    assert "evaluation.md" not in body, "no artifact filename on a page a user reads"
 
 
 def test_a_log_of_only_ingest_lines_charts_nothing_and_says_which_panels_are_empty(
@@ -791,7 +815,7 @@ def test_an_unattributable_retrieval_is_named_even_when_nothing_was_timed(page, 
 
     body = text(page)
     assert "No timed retrievals in this log" in body, "the absence of a p50 is still stated"
-    assert "1 retrieval line(s) carried no strategy" in body, (
+    assert "1 retrieval line(s) did not record which settings they ran under" in body, (
         "and the count is not hidden by it"
     )
 
@@ -864,7 +888,7 @@ def test_every_aggregate_the_agent_and_tool_panels_compute_has_a_renderer(page, 
         "by_tool": "No tool calls in this log",
         "by_ticker": "No tool calls with a ticker in this log",
         "stale": "served stale: **not measured**",
-        "age_seconds": "Age of the data served: **not measured**",
+        "age_seconds": "Age of the data served, in seconds: **not measured**",
         "refused": "No validation refusals in this log",
         "unavailable": "No unavailable sources in this log",
         "unavailable_by_error": "No unavailable sources by error type in this log",
