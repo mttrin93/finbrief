@@ -631,7 +631,16 @@ _COULD_NOT_FAIL_HEADER = "| where | it asserted | what it had established |"
 _ROW_MULTIPLICITY = re.compile(r"\((twice|three times)\)")
 
 #: Spelled out, because the prose spells them out and a binding may not quietly accept digits.
-_NUMBER_WORDS = {16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen"}
+_NUMBER_WORDS = {
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+    25: "twenty-five",
+    26: "twenty-six",
+    27: "twenty-seven",
+}
 
 
 def _could_not_fail_rows() -> list[str]:
@@ -649,13 +658,17 @@ def test_the_table_of_checks_that_could_not_fail_counts_itself():
     the section's whole argument, since the claim is that the instances look unrelated until
     they are listed, and a table that miscounts itself is that section's own bug class.
 
-    Derived from the table rather than asserted against a constant: a nineteenth instance
-    arrives as a row, and this is what makes the three sentences follow it.
+    Derived from the table rather than asserted against a constant: a new instance arrives as a
+    row, and this is what makes the three sentences follow it.
+
+    **It has now done its job twice.** T14 (#15) added eight rows, and this equality is what
+    stopped the author leaving `eighteen` behind in three places — including on the one commit
+    whose whole subject was that a count in prose is the figure that rots first.
     """
     rows = _could_not_fail_rows()
     instances = sum(2 if _ROW_MULTIPLICITY.search(row) else 1 for row in rows)
 
-    assert (len(rows), instances) == (17, 18), (
+    assert (len(rows), instances) == (25, 26), (
         f"the table now holds {len(rows)} row(s) and {instances} instance(s). Update the "
         f"sentence above it and the README's two references to it, then update this equality "
         f"— it is here so a new row cannot leave three stale counts behind."
@@ -668,6 +681,37 @@ def test_the_table_of_checks_that_could_not_fail_counts_itself():
         "the README names the table twice — in the document map and in Part 5 — and both "
         "namings carry the instance count"
     )
+
+
+def test_the_limitations_file_counts_itself_and_the_readme_agrees():
+    """The same binding as the table above, added because its absence let a wrong count through.
+
+    `limitations.md` opens "All twenty" and the README says it twice — the document map and
+    Part 5's heading. Nothing checked any of the three against the table, so on the commit that
+    added two rows the author wrote **nineteen** in all three and the suite stayed green. The
+    neighbouring binding caught the identical slip in `findings.md` on that same commit, which
+    is the argument for this one: two files make the same kind of claim, one could not fail.
+
+    Derived from the rows, not from a constant, so a twenty-first limitation updates the prose
+    rather than this test — and `_NUMBER_WORDS` forces the spelled-out form the prose uses.
+    """
+    rows = [
+        line
+        for line in LIMITATIONS.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| ") and not line.startswith("| limitation")
+    ]
+
+    assert len(rows) in _NUMBER_WORDS, (
+        f"{len(rows)} limitations, which has no spelled-out form here — add it to _NUMBER_WORDS"
+    )
+    count = _NUMBER_WORDS[len(rows)]
+    assert f"All {count}." in prose(LIMITATIONS), (
+        f"limitations.md holds {len(rows)} rows and must open by saying so"
+    )
+    # Two namings in the README, counted rather than merely present: it is the *pair* that goes
+    # stale, and a subset check would pass with one of them left behind.
+    assert prose(README).count(f"all {count} limitations") == 1
+    assert prose(README).count(f"All {count}, each with the mechanism") == 1
 
 
 def test_the_translation_budget_is_pinned_by_an_equality_and_not_by_a_bound():

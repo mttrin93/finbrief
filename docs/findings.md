@@ -102,8 +102,8 @@ pre-registered decision.
 
 ## 3. The recurring theme: a claim the thing making it could not check
 
-The same defect, **eighteen** times in seventeen places — tiktoken's warm cache did it twice —
-across ingestion, retrieval, security, evaluation, instrumentation and process. They look
+The same defect, **twenty-six** times in twenty-five places — tiktoken's warm cache did it twice —
+across ingestion, retrieval, security, evaluation, instrumentation, the UI and process. They look
 unrelated apart, which is why they are listed together.
 
 | where | it asserted | what it had established |
@@ -125,12 +125,35 @@ unrelated apart, which is why they are listed together.
 | `log_turn` at the app | turn-id propagation | nothing about wiring: neutralising it left all 1028 tests green, because every test opened the scope itself |
 | `citation_markers` | a bracket-adherence denominator | nothing a harness can reach: emitted by the page and by nothing else |
 | the spend panel's classifier caveat | that the unmetered call is named | nothing on a complete total: it shipped as a clause of the *partial* banner |
+| the model picker's isolation test | that the picker preserved two-session isolation | nothing about the picker: isolation is carried by the per-session `thread_id`, so it passes with the cache key dropped — confirmed against both mutations |
+| `by_model`'s tie-break docstring | a total ordering, unattributed slice leading | nothing: no test reached it, and reversing the sort key broke nothing |
+| the per-model table's row order | the order of the rows | nothing: `== [A,B] or == [B,A]` is satisfied by every order two rows can take |
+| `all_answered_on`'s docstring | that importing `spend.py` was forbidden | nothing — the same file imports `calls_behind` from it four lines above |
+| "checking costs a paid call" | that the model list could not be verified cheaply | nothing: `GET /api/v1/models` is public and free, and two of the four committed slugs were 404s |
+| `model_reported` | that a routing surprise is "visible rather than silent" | nothing: emitted, round-tripped by a test, and read by no surface |
+| the sidebar's unpriced caption | that another model answered | nothing on a planner-only conversation, where nothing had answered at all |
+| the first-party criterion | that a first-party model is reachable | nothing: `x-ai/grok-4.3` is first-party and was refused — the API key's allowlist governs |
 
 **The generalisation: a guard is code, and inherits every failure mode of the code it guards.**
 Four of these sat *inside published measurements*, one sat inside the mechanism built to prevent
 the others, and two were kept hidden by ordinary good practice — the **cache** meant the failing
 path was never exercised, and the **retry** self-healed it so it failed somewhere different every
 time.
+
+**The last eight arrived together, on the smallest ticket in the project, and that is the finding.**
+Multi-model support (#15) is a widget, one cache key and one log field — no new instrument and no
+new measurement — and it produced eight instances, nearly half the previous total. Three were found
+by code review; **five were found by a person using the app**, none of them by the 1,710-test suite.
+Three of those five were successive wrong diagnoses of *one* symptom, each written into a comment as
+established before the next attempt disproved it: a slug list unverified because checking "costs a
+paid call" (it is free), then a data-policy theory, then a first-party theory that its own
+replacement refuted. The pattern is not carelessness in a hard place — it is what happens when code
+makes claims about an environment it cannot observe, and the honest fix each time was to narrow the
+claim rather than to strengthen the check. Which is the fourth rule this section now carries:
+
+- **A claim about something outside the process is a hypothesis, and belongs written as one.** The
+  model list is dated, says what its check does *not* establish, and names the account setting no
+  test here can see.
 
 Three rules follow, and they are the ones this repo now applies to instruments as well as to code:
 

@@ -1,6 +1,6 @@
 # Limitations, each with its mechanism
 
-All eighteen. [The README](../README.md#part-5--limitations) carries the six that would
+All twenty. [The README](../README.md#part-5--limitations) carries the six that would
 change how a reviewer reads the numbers; this file is the whole list, and each row names
 the mechanism rather than the symptom.
 
@@ -25,6 +25,8 @@ the mechanism rather than the symptom.
 | **the gate's four stated gaps** | layer 3 **fails open** (an outage allows the turn; not hypothetical — three candidate models were unavailable on this account and fail-open made them read as the *fastest* rows in a benchmark, catching nothing) · layer 4's novel-phrasing blind spot, with no layer 5 · **a refused answer is still in the agent's memory**, because the validator guards the surface and not the checkpointer · the homoglyph map is not the Unicode confusables table |
 | **a green suite is evidence about its corpus** | the corpus author's blind spot and the rule author's are one blind spot, and running the suite again does not split them. Two bypasses were found by adversarial reading, not by eight passes |
 | **the Universe is fixed at ingest time** | 15 companies, one filing each; adding one is an ingest run, not a setting |
+| **every published number describes one model** | the sidebar picker changes the answering model, and the golden-set scores, the A/B result, the latency figures and the tool eval all ran on `openai/gpt-4o-mini`. A reader who switches has no evaluation behind the model that answers them, and the app makes the same subtraction with money: the two cost knobs price one model, so a conversation answered on another reports its tokens and **no dollar figure**. A per-model claim means the harness run once per model, which is four times the spend for a Tier-2 widget |
+| **which models the picker can actually reach is not knowable here** | OpenRouter returns 404 both for a slug it does not know and for one no *permitted* provider serves — where "permitted" is the API key's allowlist plus the account's data policy, neither visible to this repo. Three committed slugs were refused before the list settled. The committed set is dated, checked against the public catalogue, and honest that existing is not the same as being reachable; the failure names the allowlist rather than asserting a cause it cannot see |
 | **no deployment and no live URL** | Tier-2 #1 and still the highest-value remaining item, since reach gates the value of everything else |
 
 Two deliberate asymmetries that read as limitations and are not. A **gate-blocked question is not
