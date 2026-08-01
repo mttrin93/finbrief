@@ -352,6 +352,13 @@ def unpriced_because_of_the_model(
     `scope` is the caller's noun for its own pool — "this conversation" for one thread, "this
     log" for a whole sink — because the two surfaces total different things and neither may
     borrow the other's word for it.
+
+    **The priced model stays named; a trailing "the tokens above are measured" went.** Asked
+    whether the slug could come out too — it is on screen twice on the analytics page, whose
+    table lists every model — the answer is no. It is the one *actionable* token here, naming
+    the row a reader could price, and on the sidebar, which has no table, it is the only mention
+    at all. The reassurance did go: both surfaces render the token counts immediately above this
+    line, so a sentence insisting they are real answered a question the numbers had answered.
     """
     named = sorted(one for one in models if one is not None)
     unrecorded = None in models or not models
@@ -361,10 +368,7 @@ def unpriced_because_of_the_model(
         answered = f"{scope} ran on another model"
     else:
         answered = f"{scope} recorded no model"
-    return (
-        f"Not priced — the configured rates are for `{priced_model}`, but {answered}. "
-        f"The tokens above are measured."
-    )
+    return f"Not priced: rates are configured for `{priced_model}` only, but {answered}."
 
 
 def calls_behind(event: Event) -> tuple[int, bool]:

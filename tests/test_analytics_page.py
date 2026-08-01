@@ -725,7 +725,7 @@ def test_a_log_answered_on_another_model_shows_tokens_and_withholds_the_cost(
 
     body = text(page)
     assert "**Cost (estimate)**" not in body, "no figure at a rate that is not this model's"
-    assert f"the configured rates are for `{PRICED_MODEL}`" in body
+    assert f"rates are configured for `{PRICED_MODEL}` only" in body
     assert "1,200" in body, "and the tokens are still reported — they were really spent"
     # Not the unpriced advice: telling this reader to set the two variables they have already
     # set would send them to the wrong knob, which is the distinction `render_cost` orders for.
@@ -783,7 +783,20 @@ def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
 
     (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
     assert "not recorded" in list(split["Model"])
-    assert "`not recorded` is turns from before FinBrief recorded one" in text(page)
+    body = text(page)
+    assert "`not recorded` is turns from before the model was logged" in body
+    # **The caption says what those turns ran on; the cell does not.** Relabelling the row as
+    # the configured model was asked for and refused: `all_answered_on` reads this column, so it
+    # would have turned a withheld cost into a printed one over turns nobody attributed —
+    # measured at $0.1056 on the reported log. The fact informs a reader here instead.
+    assert "they ran on whatever the default was then" in body
+    assert "which the log does not name" in body, "and the page does not invent the slug"
+    (split,) = [f.value for f in page.dataframe if "Model" in f.value.columns]
+    # **Two rows, not one merged row** — the assertion the relabel would have broken. Folding
+    # the unattributed turns into the configured model's row feeds `all_answered_on`, and a
+    # withheld cost would have become a printed one.
+    assert sorted(split["Model"]) == sorted([PRICED_MODEL, "not recorded"])
+    assert len(split) == 2
 
 
 def test_a_single_model_log_says_so_instead_of_drawing_a_one_row_comparison(page, seeded):

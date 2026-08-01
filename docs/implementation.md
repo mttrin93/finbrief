@@ -679,6 +679,16 @@ metered nothing shows a blank cell and not a zero, a one-model log gets a senten
 one-row table implying the others answered nothing, and the unattributed row (every turn logged
 before the field existed, which is most of an established sink) is named as such.
 
+**That row was asked to be relabelled as the default model, and the refusal is the interesting
+part.** On this project the request is very nearly right: those turns really did run on
+`FINBRIEF_CHAT_MODEL`, because the picker did not yet exist to change it. It is refused because the
+arithmetic reads that column — `all_answered_on` would go true, and `Spend.dollars` would print a
+figure over turns nobody recorded a model for. Measured on the reported log: **$0.1056**, where the
+honest answer is that it cannot be priced. So the fact is stated in the caption instead ("they ran
+on whatever the default was then, which the log does not name"), where it informs a reader without
+feeding a number, and it names no slug — the page knows the default *now*, not the default *then*,
+and a sink outlives every deploy that wrote to it.
+
 **Its first version was a wall of text**, reported from the running app: three statistics and a
 sample count crammed into one `Turn latency` column, printing `p50 \`7,816\` ms` — backticks and
 all — because `figures()` returns markdown for `st.markdown` and a `st.dataframe` cell renders

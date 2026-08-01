@@ -2210,7 +2210,7 @@ def test_a_conversation_on_a_picked_model_reports_tokens_and_no_dollar_figure(
     panel = panel_text(spend_panel(app))
     assert "1,000,000" in panel, "the tokens were really spent and are reported"
     assert "$" not in panel, "and no figure at a rate that is not this model's"
-    assert f"rates are for `{get_settings().chat_model}`" in panel
+    assert f"rates are configured for `{get_settings().chat_model}` only" in panel
     # Not the set-a-price advice: these are set, and sending this reader to that knob would be
     # advice that cannot help. `fill_spend_meter` orders the two branches for exactly this.
     assert "FINBRIEF_INPUT_COST_PER_MTOK" not in panel

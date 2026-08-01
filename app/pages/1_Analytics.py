@@ -650,12 +650,26 @@ def render_by_model(log) -> None:
         # the totals; and an unattributed row is not a fifth model but turns logged before the
         # field existed, which is most of an established sink. The second half renders only when
         # such a row is there, because a caveat about a row nobody can see is noise.
+        #
+        # **The `not recorded` clause says what those turns ran on, and this is the honest
+        # version of a change asked for as a relabel.** Every one of them really did run on
+        # whatever the default was at the time — here, the model the picker did not yet exist to
+        # change — so folding them into that model's row is *nearly* right, and the
+        # temptation is obvious. It is refused because the arithmetic reads this column:
+        # `all_answered_on` would go true and `Spend.dollars` would print a figure over turns
+        # nobody recorded a model for. Measured on the reported log: $0.1056, where the honest
+        # answer is that it cannot be priced. So the fact goes in the caption, where it informs
+        # a reader, and not in the cell, where it would feed a number.
+        #
+        # It names no slug: the page knows the default *now* and not the default *then*, and a
+        # sink is append-only across every deploy that ever wrote to it.
         unattributed = any(one.model is None for one in slices)
         st.caption(
             "Answering calls only — the planner is logged separately, so rows total less than "
             "the figures above."
             + (
-                " `not recorded` is turns from before FinBrief recorded one."
+                " `not recorded` is turns from before the model was logged: they ran on"
+                " whatever the default was then, which the log does not name."
                 if unattributed
                 else ""
             )
