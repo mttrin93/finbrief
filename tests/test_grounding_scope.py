@@ -22,10 +22,13 @@ import pytest
 
 from finbrief.config import (
     ALPHAVANTAGE_FREE_TIER_CALLS_PER_DAY,
+    CHAT_MODEL_CHOICES,
     CLUSTERS,
     PEERS,
     QUOTE_TTL_SECONDS,
     UNIVERSE,
+    Settings,
+    chat_model_options,
 )
 from finbrief.ingestion.model import Section
 from finbrief.prompts import (
@@ -34,6 +37,7 @@ from finbrief.prompts import (
     GROUNDING_SCOPE_DETAILS,
     GROUNDING_SCOPE_VERIFY,
     LIVE_DATA_SCOPE,
+    MODEL_PICKER_SCOPE,
     SEARCH_FILINGS_DESCRIPTION,
     SYSTEM_PROMPT,
     UNIVERSE_ROWS,
@@ -1266,3 +1270,61 @@ def test_no_test_imports_through_the_tests_package():
         f"{offenders} import through the `tests.` package. Spell it `from fakes import …`: "
         f"the prefixed form needs the repo root on sys.path, which CI does not provide."
     )
+
+
+def test_the_model_pickers_scope_claim_is_bound_to_the_two_fields_it_is_about():
+    """`MODEL_PICKER_SCOPE` asserts a security property; this is what makes it checkable (#15).
+
+    It shipped as a `help=` literal on the widget in `app/Home.py` — on-screen copy claiming
+    that switching models "cannot weaken the gate", with no owner in `prompts.py` and nothing
+    tying it to `security/classifier.py`. That is a claim in prose about code, which is this
+    repo's recurring failure mode and exactly what this module exists to stop.
+
+    **The mechanical fact is which *field* each module reads, not which string it resolves to**,
+    and getting that wrong was the first version of this test: it asserted the picker's options
+    exclude `settings.classifier_model`, which fails on the shipped default — the gate and the
+    agent are both configured to `openai/gpt-4o-mini`, and they are the same string precisely
+    because they are two independently-settable fields that happen to agree.
+
+    So what is asserted is the read path. `security/classifier.py` names `classifier_model` and
+    `retrieval/embeddings.py` names `embedding_model`; neither reads `chat_model`, which is the
+    only field the picker is about — and `Settings` is frozen, so nothing on the page can point
+    either of them somewhere else at runtime. The picker's value reaches `llm.build_chat_model`
+    as an argument and touches configuration nowhere.
+    """
+    readers = {
+        "security/classifier.py": ("classifier_model", "ADR-0006 layer 3"),
+        "retrieval/embeddings.py": ("embedding_model", "the one embeddings constructor"),
+    }
+    for path, (field, what) in readers.items():
+        source = (ROOT / "src" / "finbrief" / path).read_text(encoding="utf-8")
+        assert f"model=settings.{field}" in source, (
+            f"{path} must build {what} from `Settings.{field}`, which is what makes "
+            f"{MODEL_PICKER_SCOPE!r} true"
+        )
+        assert "settings.chat_model" not in source, (
+            f"{path} reads the field the picker changes, so switching models would reach "
+            f"{what} — the one thing the picker's help text promises it cannot"
+        )
+    # Frozen, so the claim cannot be defeated at runtime either: a page that could assign
+    # `settings.classifier_model` would make the read path above true and the sentence false.
+    assert Settings.__dataclass_params__.frozen
+
+    # And the picker offers exactly `chat_model` plus the fixed tuple — no path by which a
+    # selection becomes any other field's value. Checked over an off-list configured model too,
+    # since that is the case `chat_model_options` exists to honour.
+    for configured in (
+        Settings.from_env({"OPENROUTER_API_KEY": "sk-test"}).chat_model,
+        "some/off-list-model",
+    ):
+        assert set(chat_model_options(configured)) == {configured, *CHAT_MODEL_CHOICES}
+
+
+def test_the_pickers_help_text_is_the_owned_string_and_not_a_second_copy():
+    # `prompts.py` owns copy that makes a scope claim, and the page reads it — the rule
+    # `SEARCH_FILINGS_DESCRIPTION` already follows. A literal in `app/Home.py` would be a second
+    # copy of a security claim, which is the drift this file is full of tests against.
+    page = (ROOT / "app" / "Home.py").read_text(encoding="utf-8")
+
+    assert "help=MODEL_PICKER_SCOPE" in page
+    assert "cannot weaken the gate" not in page, "the sentence itself belongs to prompts.py"

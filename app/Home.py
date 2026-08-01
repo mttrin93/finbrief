@@ -87,6 +87,7 @@ from finbrief.prompts import (
     GROUNDING_SCOPE_VERIFY,
     INJECTION_REFUSAL,
     LIVE_DATA_SCOPE,
+    MODEL_PICKER_SCOPE,
     UNIVERSE_ROWS,
 )
 from finbrief.retrieval.hybrid import Retriever
@@ -681,11 +682,11 @@ with st.sidebar:
             "Model",
             options=chat_model_options(settings.chat_model),
             key=CHAT_MODEL_KEY,
-            help=(
-                "Answers only. The prompt-injection classifier and the embeddings are fixed — "
-                "switching here cannot weaken the gate, and could not change retrieval "
-                "without making the index unsearchable."
-            ),
+            # **`prompts.MODEL_PICKER_SCOPE`, not a literal here** (code review of #15). This
+            # help text asserts that layer 3 and the embeddings are outside the picker, which
+            # is a scope claim — the thing `prompts.py` owns and binds, on the precedent that
+            # made `SEARCH_FILINGS_DESCRIPTION` its rather than the tool module's.
+            help=MODEL_PICKER_SCOPE,
         )
         # Switching is free of the conversation, and a reader is owed that sentence: the memory
         # is the checkpointer's and it is keyed on this session's thread, not on the model, so a

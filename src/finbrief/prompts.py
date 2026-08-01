@@ -214,6 +214,33 @@ GROUNDING_SCOPE_VERIFY = (
     f"the primary source for all of it."
 )
 
+#: What the sidebar's model picker changes, and — more to the point — what it cannot (T14, #15).
+#:
+#: **Here rather than in `app/Home.py`, because it is a scope claim** (code review of #15). It
+#: shipped as a `help=` string on the widget, which put an assertion about ADR-0006 layer 3 on
+#: screen with no owner and nothing binding it to the code it describes — the case this module's
+#: rule is written for, one step past the `SEARCH_FILINGS_DESCRIPTION` precedent: a *tool*
+#: description is a prompt when it makes a scope claim, and a *widget* description is the same
+#: thing pointed at a reader instead of a model.
+#:
+#: Two claims, both about `Settings` fields the picker's option list cannot reach
+#: (`config.chat_model_options` composes `chat_model` and `CHAT_MODEL_CHOICES` and nothing
+#: else), and each true because a different module reads a different field:
+#: `security/classifier.py` builds layer 3 from `classifier_model`, and
+#: `retrieval/embeddings.py` builds the one embeddings constructor from `embedding_model`.
+#: `tests/test_grounding_scope.py` binds the sentence to both, so the claim fails there rather
+#: than on screen if a future picker widens.
+#:
+#: The retrieval half is phrased as a consequence rather than a policy on purpose: ingest and
+#: query must share an embedding model, so a picker over it would not weaken retrieval but
+#: **silently destroy** it — a query embedded by a different model retrieves noise with no
+#: error, which is a worse failure than the one a reader would imagine.
+MODEL_PICKER_SCOPE = (
+    "Answers only. The prompt-injection classifier and the embeddings are fixed — "
+    "switching here cannot weaken the gate, and could not change retrieval "
+    "without making the index unsearchable."
+)
+
 
 # --------------------------------------------------------------------------------------
 # The Universe, per company (#13)
