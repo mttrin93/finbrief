@@ -1088,12 +1088,12 @@ to the wrong knob.
 | panel | reads | the claim it is careful about |
 |---|---|---|
 | Activity | `input_gate`, `agent_turn`, `chat_turn_failed` | screenings come only from the app's chat input, so a harness run contributes turns with no screening — the two counts are not two views of one number |
-| The gate | `input_gate`, the three fail-open events | blocks tallied by layer and rule over **blocked lines only**, since an allowed screening writes `layer: null`; the p50 against **both** budgets, revised beside pre-registered |
-| The agent | `agent_turn`, `citation_markers` | divergence is the *complement* of `verbatim`, and it is measured rather than enforced (ADR-0003) — a resolved pronoun is a permitted rewrite, so it describes behaviour rather than counting faults |
+| The gate | `input_gate`, the three fail-open events | blocks tallied by layer and rule over **blocked lines only**, since an allowed screening writes `layer: null`; the p50 against the revised budget, with the pre-registered figure it replaced named beneath it; and what a block *is*, since 0% otherwise reads as an unguarded app |
+| The agent | `agent_turn`, `citation_markers` | divergence is the *complement* of `verbatim`, and it is measured rather than enforced (ADR-0003) — a resolved pronoun is a permitted rewrite, so the panel calls it behaviour rather than faults |
 | Tools | `tool_call`, `tool_refused`, `tool_unavailable`, `stale_fallback` | "tickers the finance tools were called for", not "tickers asked about" — a filings-only question names no ticker in a log that carries no user content |
 | Spend | `agent_turn`, `query_translation` | each field against its own denominator, and the unmetered gate classifier named **unconditionally** |
-| Retrieval | `retrieval` | split by `strategy` × `translation`, and pointed at `evaluation.md` as the measurement of record |
-| The planner | `query_translation` | **one of the two terms** in ADR-0005's clause, which the panel says, because the composed figure is recorded as missed |
+| Retrieval | `retrieval` | split by `strategy` × `translation`, over whatever ran rather than over a trial |
+| The planner | `query_translation` | the planner's own round and **not** the full cost of translating a query, which is ADR-0005's clause and is recorded as missed in `evaluation.md` |
 
 **Two omissions are decisions, and tests hold them.** The page renders no blocked question's
 `normalised` text: that field is ADR-0006's one bounded exception to no-user-content, argued for an
@@ -1113,9 +1113,19 @@ instead of narrowing it.
 *unmeasured* in `docs/verification/evaluation.md`, because `citation_markers` is emitted by
 `app/Home.py` and by nothing else and the tool-calling eval's ten live agent turns produced zero
 such lines. This page aggregates them, so the rate exists for any period the sink was enabled during
-real use. It does **not** close the deferral, and it says so where the number is: the population is
-whoever used the app, which is *observational over logged sessions* rather than the controlled
-measurement over a stratified set the artifact asks for.
+real use. It does **not** close the deferral, and it says so: the population is whoever used the
+app, which is *observational over logged sessions* rather than the controlled measurement over a
+stratified set the artifact asks for. That disclaimer is the **page header's** rather than the
+panel's, because it is true of every figure on the page and a caveat printed three times is one a
+reader skips — the citation panel and the retrieval panel each carried a copy.
+
+**It is written for a reader, not for a reviewer.** No ADR number, ticket id or artifact filename
+reaches the screen: each moved into the comment beside the string it explains, and
+`test_a_populated_log_renders_its_header_and_its_panels` asserts `"ADR" not in body` on the run
+that renders every panel. What survives is what a figure *means* — that a block is an injection
+attempt and not an advice refusal, that markers are `[1]` and `[2]` in an answer, that the age
+shown is how old a quote was when it was used. What was cut is why the design is the way it is,
+which is what this section is for.
 
 **Isolation from the main page.** The page builds no agent — the `@st.cache_resource` instance
 carries ADR-0008's two-session isolation guarantee and rebuilding it would discard every session's

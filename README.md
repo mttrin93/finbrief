@@ -326,13 +326,13 @@ Two to four lines each; the full section for every one is in
   exact paired test with three verdicts rather than two. **4 of 18** comparisons carried a
   measurement. → [3.16](./docs/implementation.md#316-ab-testing-of-rag-strategies)
 - **Advanced analytics dashboard** — a second page (`app/pages/1_Analytics.py`) over the event
-  log, reading Phase 6's instrument rather than adding one: activity, the gate by layer and rule
-  against both latency budgets, the agent's divergence and grounding, tools, spend, retrieval and
-  the planner's round. Four absent states — sink off, named-but-unwritten, present-but-empty,
-  readable — because a chart of zeros is a claim of no traffic. It is where `citation_markers`
-  stops being write-only: the instrument only fires on an app turn, so the harness never produced
-  a line, and the rate here is **observational over logged sessions** rather than the controlled
-  measurement the artifact asked for.
+  log, reading Phase 6's instrument rather than adding one: **7** panels over activity, the gate,
+  the agent, tools, spend, retrieval and the planner's round. **5** absent states, a sentence
+  each, because a chart of zeros is a claim of no traffic — and the fifth is a review finding,
+  since a directory, an unopenable file and undecodable bytes each reached the page as a
+  traceback. It is where `citation_markers` stops being write-only: the instrument fires only on
+  an app turn, so the harness never produced a line, and the rate here is **observational over
+  logged sessions** rather than the controlled measurement the evaluation wanted.
   → [3.19](./docs/implementation.md#319-advanced-analytics-dashboard)
 - **RAGAs evaluation** — a 28-question golden set with source-separated ground truth, all 28 rows
   hand-verified against EDGAR, all four metrics per bucket per arm. Response relevancy is excluded
@@ -372,12 +372,13 @@ complete — Easy 4/4, Medium 6/10, Hard 4/7**, against a bar of 2 medium + 1 ha
 | 20 | Implement your tools as MCP servers | ✕ not built | Tier-2, with the sharpest open question of the four: whether this is a genuine protocol *port* or a second copy of the finance logic behind a second interface. It must reuse one implementation, and that is a design decision rather than a build |
 | 21 | RAGAs evaluation | ✅ complete | [3.21](./docs/implementation.md#321-ragas-evaluation) |
 
-**Why the unbuilt eight are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
+**Why the unbuilt seven are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
 Tier-1 and a skill-stretch Tier-2 with a hard gate between them, and ADR-0010 orders Tier-2 by
 GenAI/RAG skill signal rather than by the assignment's difficulty tags. Everything above is
-Tier-1 plus the four tail items that turned out to cost under an hour each because Tier-1 had
-already built their substrate. The eight remaining are either generic web-app work (17, 18, 19)
-or carry a recorded open question that has to be answered before the work starts (5, 6, 12, 20) —
+Tier-1 plus the five tail items that turned out to be affordable — four of them under an hour
+each — because Tier-1 had already built their substrate. The seven remaining are either generic
+web-app work (17, 18), the Tier-2 tail (8), or carry a recorded open question that has to be
+answered before the work starts (5, 6, 12, 20) —
 and the cut-if-undefendable rule says an item nobody can explain is worth less than an item that
 does not exist. **Deployment plus a live URL is Tier-2 #1 and also unbuilt**; it is not on this
 list because it is not one of the 21, but it is the highest-value remaining item, since reach

@@ -349,10 +349,21 @@ for the ordinary case: a conversation whose every metered call reported both fie
 banner, and the caveat this ADR claims is "stated on screen" was stated only when something
 *else* was already missing. It cannot be a sub-clause of `partial` even in principle —
 `Spend.partial` is defined over reported-versus-counted calls and the classifier never enters
-`calls`, so no value of `partial` is evidence about it. `test_the_unmetered_classifier_is_named_
-on_a_complete_total_too` asserts the sentence on exactly the total the first version left silent.
-The shape of the mistake is this repo's own: a claim in a document that nothing rendered, sitting
-beside a test that passed because it exercised the other branch.
+`calls`, so no value of `partial` is evidence about it. The test asserts the sentence on exactly
+the total the first version left silent. The shape of the mistake is this repo's own: a claim in a
+document that nothing rendered, sitting beside a test that passed because it exercised the other
+branch.
+
+*Amended again by T13's copy pass (#14), and the claim above holds on a different surface.* The
+sentence was typed out in **two** files once the analytics page shipped — `app/Home.py`'s sidebar
+and `app/pages/1_Analytics.py` — which is the duplication this repo keeps catching: two copies of
+one sentence disagree on the turn one of them is edited, and the copy a reader sees is whichever
+page they opened. It is `spend.UNMETERED_CLASSIFIER_NOTE` now, one definition, rendered by the
+analytics page — the surface that totals a **whole log**, where a reader would otherwise take the
+figures for everything spent. The sidebar totals one conversation and no longer repeats it, and
+`test_the_unmetered_classifier_caveat_is_not_duplicated_on_the_sidebar` asserts that it carries
+neither the constant nor a paraphrase. "Stated on screen" therefore still holds, on the page whose
+figures the caveat is about.
 
 **One correctness detail that is the mirror of the usual defect.** A `query_translation` line at
 `max_sub_queries=0` stands behind **zero** chat calls — ADR-0004 §6: the cap removes the
@@ -366,7 +377,9 @@ not depend on it, so the two are bound to each other by a test rather than left 
 unchanged — `classify()` returns a bare `Verdict`, so metering it means changing that return type
 or adding a per-turn event duplicating `input_gate`, for the cheapest call in the system. What is
 new is that the omission is now **stated on screen** rather than only here, because a panel
-reporting a conversation's spend is where a reader would otherwise assume it was complete.
+reporting spend is where a reader would otherwise assume it was complete. Since #14's copy pass
+that screen is the analytics page rather than the sidebar — one definition of the sentence, on
+the surface that totals the whole log; see the amendment above.
 
 ## Amendment (ticket T13, issue #14): the log gets a reader with a face, and one instrument stops being write-only
 
@@ -429,7 +442,9 @@ emitted by `app/Home.py` and by nothing else, which is why `docs/verification/ev
 reports T5's square-bracket adherence rate as unmeasured: the tool-calling eval drove ten live
 agent turns and the log carried zero such lines. The page aggregates them, so the rate now exists
 for any period the sink was enabled during real use. **It does not close that deferral**, and the
-page says so where the number is: this is *observational over logged sessions* — the population is
+page says so in its header: this is *observational over logged sessions* — the population is
 whoever used the app — not the controlled measurement over a stratified set the artifact asks for.
+The header rather than the panel, because the claim is true of every figure on the page and a
+caveat printed once per panel is one a reader learns to skip (#14's copy pass).
 The pointer is rendered by `evaluation/report.py`'s deferral block rather than typed into the
 artifact, because every file in `docs/verification/` is generated.

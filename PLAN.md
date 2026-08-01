@@ -195,7 +195,7 @@ finbrief/
 │   └── observability/     # logging_setup.py, costs.py
 ├── app/
 │   ├── Home.py            # chat page
-│   └── pages/Dashboard.py # analytics (P2)
+│   └── pages/1_Analytics.py # analytics (P2, built as T13)
 ├── scripts/               # ingest_filings.py, record_edgar_fixtures.py (Phase 1),
 │                          # retrieval_smoke.py (Phase 2); scheduled KB update lands
 │                          # with Tier-2
@@ -596,18 +596,22 @@ Each item built only when fully understood; anything not defensible is cut befor
        arithmetic is `observability/analytics.py` — parsing nothing, taking an `EventLog`, on
        `spend.py`'s precedent — because `events.py` returns samples and refuses statistics on
        purpose, and a third owner of the word *p50* is how two of them come to disagree.
-       Seven panels: activity, the gate (blocks by layer and rule, both latency budgets, the
-       three fail-open paths), the agent's behaviour, tools, token spend, retrieval latency and
-       the planner's round.
+       Seven panels: activity, the gate (blocks by layer and rule, the latency budget with the
+       pre-registered figure it revised named beneath it, the three fail-open paths), the
+       agent's behaviour, tools, token spend, retrieval latency and the planner's round.
      - **What it makes readable that nothing did.** T5's square-bracket adherence rate is
        reported as *unmeasured* in `docs/verification/evaluation.md` because `citation_markers`
        is emitted by the app and by nothing else, so T10's ten live agent turns produced none of
        those lines (ADR-0011's amendment). This page aggregates them. It does **not** close the
-       deferral and says so where the number is: observational over logged sessions, not the
-       controlled measurement over a stratified set the artifact asks for.
-     - **Four absent states, because a page cannot refuse to render.** Sink off, named but never
-       written, present but holding no events, readable — and the third carries the malformed-line
-       count, since an empty file and a file of unreadable lines are different problems. Below
+       deferral and says so in the page header, which is where a caveat true of every figure
+       belongs: observational over logged sessions, not the controlled measurement over a
+       stratified set the artifact asks for.
+     - **Five absent states, because a page cannot refuse to render.** Sink off, named but never
+       written, naming a path that will not open, present but holding no events, readable — and
+       the fourth carries the malformed-line count, since an empty file and a file of unreadable
+       lines are different problems. The third is the review's finding: a directory, a file the
+       process cannot open and a file whose bytes are not UTF-8 each raised onto the page as a
+       traceback, which is the one rendering this design may not have. Below
        that, a figure nothing measured says so where the number would be, and "not measured" can
        never render as "missed". Two omissions are deliberate and both are asserted by tests: no
        blocked question's normalised text (ADR-0006's bounded exception was argued for an audit
