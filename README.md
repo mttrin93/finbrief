@@ -36,7 +36,7 @@ A ten-minute read. Each section that has a longer version links to it.
 |---|---|
 | **[Part 1 — Orientation](#part-1--orientation)** | what it is · [quickstart](#12-quickstart) · [the demo walkthrough](#13-the-demo-walkthrough) → [`docs/demo.md`](./docs/demo.md) |
 | **[Part 2 — How it works](#part-2--how-it-works)** | [architecture](#21-architecture) · [the validity gap](#22-the-validity-gap-stated-rather-than-assumed) · [grounding scope](#23-the-grounding-scope-disclosure) · [the rest of the build](#24-the-rest-of-the-build-in-brief) → [`docs/implementation.md`](./docs/implementation.md) |
-| **[Part 3 — Optional tasks](#part-3--optional-tasks)** | [the thirteen in brief](#31-the-thirteen-in-brief) · [all 21, with status](#32-all-21-with-status) |
+| **[Part 3 — Optional tasks](#part-3--optional-tasks)** | [the fourteen in brief](#31-the-fourteen-in-brief) · [all 21, with status](#32-all-21-with-status) |
 | **[Part 4 — What the evaluation established](#part-4--what-the-evaluation-established)** | six numbers → [`docs/findings.md`](./docs/findings.md) · [`docs/verification/evaluation.md`](./docs/verification/evaluation.md) |
 | **[Part 5 — Limitations](#part-5--limitations)** | the six that matter → [`docs/limitations.md`](./docs/limitations.md) |
 | **[Part 6 — ADRs, cost, running it](#part-6--adrs-cost-running-it)** | [ADR index](#61-adr-index) · [what it cost](#62-what-it-cost) · [running it](#63-running-it) → [`docs/implementation.md`](./docs/implementation.md) |
@@ -259,9 +259,9 @@ they index the list in the order I recorded it, and are used only as stable subs
 [§3.2](#32-all-21-with-status) is the full 21-row table, named rather than numbered, so
 nothing here depends on the numbering being anyone else's.
 
-Thirteen are built: **Easy 4/4 · Medium 6/10 · Hard 3/7**, against a bar of 2 medium + 1 hard.
+Fourteen are built: **Easy 4/4 · Medium 6/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
 
-## 3.1 The thirteen, in brief
+## 3.1 The fourteen, in brief
 
 Two to four lines each; the full section for every one is in
 [`docs/implementation.md`](./docs/implementation.md).
@@ -325,6 +325,15 @@ Two to four lines each; the full section for every one is in
   pre-registered refutation channel), four buckets of seven questions, six hypotheses settled by an
   exact paired test with three verdicts rather than two. **4 of 18** comparisons carried a
   measurement. → [3.16](./docs/implementation.md#316-ab-testing-of-rag-strategies)
+- **Advanced analytics dashboard** — a second page (`app/pages/1_Analytics.py`) over the event
+  log, reading Phase 6's instrument rather than adding one: **7** panels over activity, the gate,
+  the agent, tools, spend, retrieval and the planner's round. **5** absent states, a sentence
+  each, because a chart of zeros is a claim of no traffic — and the fifth is a review finding,
+  since a directory, an unopenable file and undecodable bytes each reached the page as a
+  traceback. It is where `citation_markers` stops being write-only: the instrument fires only on
+  an app turn, so the harness never produced a line, and the rate here is **observational over
+  logged sessions** rather than the controlled measurement the evaluation wanted.
+  → [3.19](./docs/implementation.md#319-advanced-analytics-dashboard)
 - **RAGAs evaluation** — a 28-question golden set with source-separated ground truth, all 28 rows
   hand-verified against EDGAR, all four metrics per bucket per arm. Response relevancy is excluded
   from every hypothesis for two measured reasons, and the exclusion is machine-checkable.
@@ -333,8 +342,8 @@ Two to four lines each; the full section for every one is in
 ## 3.2 All 21, with status
 
 All 21 optional tasks. The numbers are this repo's local convention (see
-[Part 3](./docs/implementation.md#part-3--optional-tasks-implemented)); the names are what identifies each row. **13
-complete — Easy 4/4, Medium 6/10, Hard 3/7**, against a bar of 2 medium + 1 hard.
+[Part 3](./docs/implementation.md#part-3--optional-tasks-implemented)); the names are what identifies each row. **14
+complete — Easy 4/4, Medium 6/10, Hard 4/7**, against a bar of 2 medium + 1 hard.
 
 | # | task | status | where / why |
 |---|---|---|---|
@@ -359,16 +368,17 @@ complete — Easy 4/4, Medium 6/10, Hard 3/7**, against a bar of 2 medium + 1 ha
 | 16 | A/B testing of RAG strategies | ✅ complete | [3.16](./docs/implementation.md#316-ab-testing-of-rag-strategies) |
 | 17 | Automated knowledge base updates | ✕ not built | a scheduled GitHub Action over the ingest script; generic scheduling work that reinforces none of the Tier-1 core, and it inherits row 6's idempotency question |
 | 18 | Multi-language support | ✕ not built | the knowledge base is single-language English and the embeddings are English; a UI toggle without query-side translation into English before retrieval would be a language switch that degrades retrieval silently |
-| 19 | Advanced analytics dashboard | ✕ not built | a second Streamlit page over the event log. The data exists ([3.14](./docs/implementation.md#314-logging--monitoring)) and the reader exists; what it adds is a chart, not a GenAI capability, so it lost to everything above it |
+| 19 | Advanced analytics dashboard | ✅ complete | [3.19](./docs/implementation.md#319-advanced-analytics-dashboard) |
 | 20 | Implement your tools as MCP servers | ✕ not built | Tier-2, with the sharpest open question of the four: whether this is a genuine protocol *port* or a second copy of the finance logic behind a second interface. It must reuse one implementation, and that is a design decision rather than a build |
 | 21 | RAGAs evaluation | ✅ complete | [3.21](./docs/implementation.md#321-ragas-evaluation) |
 
-**Why the unbuilt eight are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
+**Why the unbuilt seven are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
 Tier-1 and a skill-stretch Tier-2 with a hard gate between them, and ADR-0010 orders Tier-2 by
 GenAI/RAG skill signal rather than by the assignment's difficulty tags. Everything above is
-Tier-1 plus the four tail items that turned out to cost under an hour each because Tier-1 had
-already built their substrate. The eight remaining are either generic web-app work (17, 18, 19)
-or carry a recorded open question that has to be answered before the work starts (5, 6, 12, 20) —
+Tier-1 plus the five tail items that turned out to be affordable — four of them under an hour
+each — because Tier-1 had already built their substrate. The seven remaining are either generic
+web-app work (17, 18), the Tier-2 tail (8), or carry a recorded open question that has to be
+answered before the work starts (5, 6, 12, 20) —
 and the cut-if-undefendable rule says an item nobody can explain is worth less than an item that
 does not exist. **Deployment plus a live URL is Tier-2 #1 and also unbuilt**; it is not on this
 list because it is not one of the 21, but it is the highest-value remaining item, since reach
@@ -492,6 +502,10 @@ uv run ruff check . && uv run ruff format --check .   # what CI runs
 uv run pytest
 uv run streamlit run app/Home.py
 ```
+
+That serves two pages: **FinBrief**, the assistant, and **Analytics**
+([3.19](./docs/implementation.md#319-advanced-analytics-dashboard)) — a dashboard over the event
+log, which is empty until `FINBRIEF_LOG_FILE` names a sink and says so rather than charting zeros.
 
 Those are hermetic. The five entry points that reach the network — ingest, its no-key `--dry-run`,
 the retrieval smoke check, the security suite and the evaluation harness — are in

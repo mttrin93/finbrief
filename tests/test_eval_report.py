@@ -307,6 +307,35 @@ def test_an_unmeasured_deferral_says_so_rather_than_being_omitted():
     assert "too small to publish" in rendered
 
 
+def test_the_bracket_deferral_points_at_the_page_that_made_it_readable():
+    """AC-8's other half, which nothing verified (code review of #14).
+
+    T13 asks that this note point at `app/pages/1_Analytics.py` as the surface where the
+    app-only `citation_markers` instrument becomes readable. The committed
+    `docs/verification/evaluation.md` does not carry the pointer yet and correctly cannot —
+    every
+    file under `docs/verification/` is generated, and this section is rendered by a paid
+    `scripts/evaluate.py` run. So the artifact half of that criterion is verifiable only here,
+    against the code that will write it, and it shipped with no test at all: prose asserting a
+    pointer, which is exactly the shape that cannot fail.
+
+    It must also keep saying what the pointer does **not** do. The rate the page shows is
+    observational over whoever used the app, not the controlled measurement over a stratified
+    set
+    this row asks for, so naming the surface may not read as closing the deferral.
+    """
+    from finbrief.evaluation.report import deferrals_section
+
+    rendered = deferrals_section()
+
+    assert "app/pages/1_Analytics.py" in rendered, "the surface, by path"
+    assert "observational over logged sessions" in rendered
+    assert "does not close this deferral" in rendered
+    # And the row is still one of the four reported as unmeasured by the run itself: a surface
+    # that can read the instrument is not a run that measured it.
+    assert rendered.count("**not measured by this run**") == 4
+
+
 def test_a_measured_deferral_replaces_the_not_measured_wording():
     from finbrief.evaluation.report import DEFERRALS, deferrals_section
 

@@ -1169,6 +1169,34 @@ def test_the_docs_do_not_quote_a_price_as_though_it_were_measured():
     assert "no rate card" in implementation.lower(), "and so is the reason there is no default"
 
 
+def test_the_readme_dashboard_figures_are_the_ones_the_page_has():
+    """The two counts in the analytics entry, derived from the enum and from the page.
+
+    Both are figures a reader takes on trust, and neither was bound anywhere: the README said
+    **four** absent states while `SinkState` had five — the fifth was added mid-review, and the
+    blurb describing it was not (#14). That is the failure every other binding in this file
+    exists to prevent, in the one entry that had none.
+
+    Counted out of the page's source rather than imported, because `app/` is not an importable
+    package — the pages are scripts Streamlit execs, which is why
+    `tests/test_analytics_page.py` reads `Home.py`'s AST rather than its module.
+    """
+    from finbrief.observability.analytics import SinkState
+
+    page = (ROOT / "app" / "pages" / "1_Analytics.py").read_text(encoding="utf-8")
+    panels = page.count("with st.expander(")
+    readme = prose(README)
+
+    # Neither derivation may quietly come back empty: a refactor that renames the expander call
+    # would make `panels` zero, and "**0** panels" is a sentence the README will never contain,
+    # so the assertion below would fail — but it would fail for the wrong reason, and this says
+    # which one it is.
+    assert panels, "no `with st.expander(` found — the panel count is parsed, not imported"
+
+    assert f"**{len(SinkState)}** absent states" in readme
+    assert f"**{panels}** panels" in readme
+
+
 def test_no_test_imports_through_the_tests_package():
     """`from fakes import …`, never `from tests.fakes import …` — and the difference is CI.
 

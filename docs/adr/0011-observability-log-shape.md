@@ -349,10 +349,21 @@ for the ordinary case: a conversation whose every metered call reported both fie
 banner, and the caveat this ADR claims is "stated on screen" was stated only when something
 *else* was already missing. It cannot be a sub-clause of `partial` even in principle —
 `Spend.partial` is defined over reported-versus-counted calls and the classifier never enters
-`calls`, so no value of `partial` is evidence about it. `test_the_unmetered_classifier_is_named_
-on_a_complete_total_too` asserts the sentence on exactly the total the first version left silent.
-The shape of the mistake is this repo's own: a claim in a document that nothing rendered, sitting
-beside a test that passed because it exercised the other branch.
+`calls`, so no value of `partial` is evidence about it. The test asserts the sentence on exactly
+the total the first version left silent. The shape of the mistake is this repo's own: a claim in a
+document that nothing rendered, sitting beside a test that passed because it exercised the other
+branch.
+
+*Amended again by T13's copy pass (#14), and the claim above holds on a different surface.* The
+sentence was typed out in **two** files once the analytics page shipped — `app/Home.py`'s sidebar
+and `app/pages/1_Analytics.py` — which is the duplication this repo keeps catching: two copies of
+one sentence disagree on the turn one of them is edited, and the copy a reader sees is whichever
+page they opened. It is `spend.UNMETERED_CLASSIFIER_NOTE` now, one definition, rendered by the
+analytics page — the surface that totals a **whole log**, where a reader would otherwise take the
+figures for everything spent. The sidebar totals one conversation and no longer repeats it, and
+`test_the_unmetered_classifier_caveat_is_not_duplicated_on_the_sidebar` asserts that it carries
+neither the constant nor a paraphrase. "Stated on screen" therefore still holds, on the page whose
+figures the caveat is about.
 
 **One correctness detail that is the mirror of the usual defect.** A `query_translation` line at
 `max_sub_queries=0` stands behind **zero** chat calls — ADR-0004 §6: the cap removes the
@@ -366,4 +377,74 @@ not depend on it, so the two are bound to each other by a test rather than left 
 unchanged — `classify()` returns a bare `Verdict`, so metering it means changing that return type
 or adding a per-turn event duplicating `input_gate`, for the cheapest call in the system. What is
 new is that the omission is now **stated on screen** rather than only here, because a panel
-reporting a conversation's spend is where a reader would otherwise assume it was complete.
+reporting spend is where a reader would otherwise assume it was complete. Since #14's copy pass
+that screen is the analytics page rather than the sidebar — one definition of the sentence, on
+the surface that totals the whole log; see the amendment above.
+
+## Amendment (ticket T13, issue #14): the log gets a reader with a face, and one instrument stops being write-only
+
+**Decision.** The analytics page (`app/pages/1_Analytics.py`) reads this sink through
+`observability/events.py` and aggregates it in **`observability/analytics.py`** — a module that
+parses nothing, takes an `EventLog`, and does arithmetic on it. That is `spend.py`'s shape, for
+`spend.py`'s reason: one emitter, one reader, and everything above the reader is arithmetic.
+
+**Why the statistics are not in `events.py`.** That module's docstring refuses them, and the
+refusal is load-bearing: it returns *samples*, because the two p50 budgets belong to the reports
+that quote them and `security/report.py` already owns a median over in-process `Screening`
+objects. A dashboard is such a report. Putting a `p50` in the reader would have made it the
+third owner of one word. The cost of keeping the contract is that `analytics.Rate` and
+`analytics.p50` duplicate `evaluation/deferrals.Rate` and `evaluation/latency.p50` — the app must
+not import the harness — and the two pairs are therefore **bound by test** rather than left to
+drift, like `spend.PLANNER_SILENT_CAP` and `latency.PLANNER_DISABLED_CAP` before them. That cap is
+now a third copy and is in the same binding.
+
+**The five states, and why a dashboard needed more than two.** `latency.load_log` has two answers
+(sink off, or a window with nothing in it) because a harness can refuse to proceed. A page cannot
+refuse; it has to say something. So `SinkState` splits the absence four ways — off, named but
+never written, named but unopenable, present but holding no events — and the last carries
+`EventLog.malformed`, because an empty file and a file of unreadable lines are different problems
+and only one is worth investigating. Every panel repeats the rule one layer down: a figure nothing
+measured says so where the number would be, and `Distribution.within` returns `bool | None` so
+that "not measured" cannot render as "missed".
+
+*Amended by the #14 code review — it shipped with four.* The missing state is the general lesson
+and not a detail: **an enumeration of absences is exhaustive only over the cases the code can
+actually reach**, and three things a real filesystem path resolves to were not among them. A
+directory raises `IsADirectoryError`, a file the process cannot open raises `PermissionError`, and
+a file whose bytes are not UTF-8 raises `UnicodeDecodeError` — all three out of `read_events` and
+onto the page as a Streamlit traceback, which is precisely the rendering a design built around
+telling an absence from a zero may not have. The third is the one worth recording, because it
+defeated a promise made one layer down: `malformed` exists for a run killed mid-write leaving a
+truncated final line, and a write truncated *inside* a multi-byte sequence makes the whole file
+undecodable rather than the one line unparsable. `SinkState.UNREADABLE` carries the exception's
+**type name** (never its message — `finance/cache.py`'s rule, since an error string can carry a
+path and this one is rendered), because "unreadable" alone sends a reader to the wrong knob: a
+directory where a file was meant is a typo in `FINBRIEF_LOG_FILE` and a permission is not. A
+broken symlink stays `MISSING`, which is what it is, and there is a test saying so — widening the
+catch must not quietly capture it.
+
+**What this page does *not* do, and both omissions are decisions.** It renders **no** blocked
+question's `normalised` text: that field is this ADR's one bounded exception to no-user-content,
+argued for an auditor with a grep, and a dashboard is a wider surface than the bound was argued
+for. And it publishes **no cache hit rate**: `tool_call.age_seconds` is `round()`ed at the
+emitter, so a hit 400 ms after a fetch is indistinguishable from a miss, and a rate over it could
+be wrong invisibly. The explicit fields (`stale`, `stale_fallback`) are published instead. Both are
+asserted by tests, so neither can be added back without a decision.
+
+**And the T10 amendment above gets its consequence stated on a surface.** A statistic over this
+sink is a statistic over every run that ever named it, and no field distinguishes an app session
+from an evaluation run. The page therefore reads the **whole file** and says so in its header,
+rather than separating the two by a heuristic on `turn_id` shape — which would be a separation
+nothing could check, and this repo's own recurring defect.
+
+**One instrument stops being write-only.** The amendment above records that `citation_markers` is
+emitted by `app/Home.py` and by nothing else, which is why `docs/verification/evaluation.md`
+reports T5's square-bracket adherence rate as unmeasured: the tool-calling eval drove ten live
+agent turns and the log carried zero such lines. The page aggregates them, so the rate now exists
+for any period the sink was enabled during real use. **It does not close that deferral**, and the
+page says so in its header: this is *observational over logged sessions* — the population is
+whoever used the app — not the controlled measurement over a stratified set the artifact asks for.
+The header rather than the panel, because the claim is true of every figure on the page and a
+caveat printed once per panel is one a reader learns to skip (#14's copy pass).
+The pointer is rendered by `evaluation/report.py`'s deferral block rather than typed into the
+artifact, because every file in `docs/verification/` is generated.

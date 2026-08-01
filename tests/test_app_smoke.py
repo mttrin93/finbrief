@@ -34,6 +34,7 @@ from finbrief.ingestion.edgar import filing_index_url
 from finbrief.ingestion.model import Section
 from finbrief.observability.events import read_events
 from finbrief.observability.logging_setup import log_event
+from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 from finbrief.prompts import (
     ADVICE_REFUSAL,
     DISCLAIMER,
@@ -2177,15 +2178,23 @@ def test_a_partial_total_says_so_beside_the_figure(app, monkeypatch, tmp_path):
 
     panel = spend_panel(app)
     text = panel_text(panel)
-    assert "Partial" in text
-    assert "1 of 2 call(s) reported input tokens" in text
-    assert "floor" in text
-    # **One banner, and this is the element that was orphaned.** The panel is filled twice per
+    # One clause, and the word a reader needs is the first one — "Partial:" was the banner's
+    # opening and "so the figures above are a floor" its tail, which is the same fact twice
+    # (#14 copy pass).
+    assert "A floor: 1 of 2 call(s) reported input tokens" in text
+    # **One of it, and this is the element that was orphaned.** The panel is filled twice per
     # run and the eager fill is one child longer, so before `fill_spend_meter` learned to clear
-    # the slot the browser showed two `Partial:` banners a call apart — the settled figure above
-    # a stale one. An equality rather than a presence check, for the reason CLAUDE.md gives: the
-    # bound version of this passed on both one banner and two.
-    assert len(panel.warning) == 1, [w.value for w in panel.warning]
+    # the slot the browser showed two floor lines a call apart — the settled figure above a
+    # stale one. An equality rather than a presence check, for the reason CLAUDE.md gives: the
+    # bound version of this passed on both one and two.
+    #
+    # Counted over captions because the line is one now: it was an `st.warning`, and a yellow
+    # box beside a number reads as a fault in the number (#14 copy pass). `panel.warning` would
+    # be an empty list here, and `len([]) == 1` would fail loudly — but a *later* demotion of
+    # some other banner would make a warning count pass while measuring nothing, which is why
+    # this counts the sentence rather than the element type.
+    floors = [c.value for c in panel.caption if c.value.startswith("A floor:")]
+    assert len(floors) == 1, floors
 
 
 def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
@@ -2205,20 +2214,27 @@ def test_a_complete_total_is_not_flagged_as_partial(app, monkeypatch, tmp_path):
 
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
-    assert "Partial" not in panel_text(spend_panel(app))
+    assert "A floor" not in panel_text(spend_panel(app))
 
 
-def test_the_unmetered_classifier_is_named_on_a_complete_total_too(app, monkeypatch, tmp_path):
-    # **The case the review found, and it is the common one.** ADR-0011's amendment §4 claims
-    # the gate classifier's omission is "stated on screen"; the sentence sat inside the
-    # `partial` branch, so a conversation where every metered call reported both fields — a
-    # complete total, the ordinary outcome — showed no caveat at all. `test_a_partial_total_
-    # says_so_beside_the_figure` passed and the claim was still false.
-    #
-    # It cannot be a `partial` sub-clause even in principle: `Spend.partial` is about *reported
-    # versus counted* calls and the classifier never enters `calls`, so no value of `partial` is
-    # evidence about it. Asserted on exactly the total the old code left silent (code review of
-    # #13).
+def test_the_unmetered_classifier_caveat_is_not_duplicated_on_the_sidebar(
+    app, monkeypatch, tmp_path
+):
+    """The claim ADR-0011 §4 requires on screen, rendered **once** — and not here.
+
+    This panel and `app/pages/1_Analytics.py` carried the sentence typed out in both files,
+    which is the drift pattern this repo keeps catching: two copies disagree on the turn one of
+    them is edited, and the one a reader sees is whichever page they opened. The sentence is
+    `spend.UNMETERED_CLASSIFIER_NOTE` now and the analytics page — the surface that totals a
+    whole log — is where it renders (#14 copy pass);
+    `tests/test_analytics_page.py::test_the_spend_panel_names_the_classifier_on_a_complete_total`
+    asserts it there, against the constant.
+
+    Kept as a test rather than deleted because the thing worth pinning did not go away, it
+    moved: what must hold now is that the sidebar does not carry a second copy. Asserted on the
+    complete total the caveat was originally written for, so the check still sits on the case
+    the earlier review found (code review of #13).
+    """
     monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
     metered(
         app,
@@ -2234,15 +2250,14 @@ def test_the_unmetered_classifier_is_named_on_a_complete_total_too(app, monkeypa
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
     text = panel_text(spend_panel(app))
-    assert "Partial" not in text, "this is the complete-total case, deliberately"
-    # **The wording, as an equality**, on the refresh-semantics principle: the substring this
-    # used to match survived the sentence losing its `(ADR-0011)` citation, so it could not have
-    # told a cleaned panel from an uncleaned one. Naming the sentence is what makes a citation
-    # creeping back into analyst-facing copy fail here (#13).
-    assert (
-        "The input gate's classifier is never metered, so one paid call per turn is "
-        "missing from these figures by design."
-    ) in [caption.value for caption in spend_panel(app).caption]
+    assert "A floor" not in text, "this is the complete-total case, deliberately"
+    # **The constant, not a substring of it.** The sentence must not be *re-typed* here either:
+    # a paraphrase of it appearing in this panel is the duplication coming back in a form a
+    # substring search for the exact wording would miss, so both are asserted.
+    assert UNMETERED_CLASSIFIER_NOTE not in [
+        caption.value for caption in spend_panel(app).caption
+    ]
+    assert "isn't metered" not in text
 
 
 def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp_path):

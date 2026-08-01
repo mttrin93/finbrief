@@ -424,42 +424,38 @@ def render_spend_meter(*, answering: bool = False) -> None:
         output_per_mtok=settings.output_cost_per_mtok,
     )
     if dollars is None:
+        # No price is assumed rather than guessed at: every model here is reached through
+        # OpenRouter's routing, so there is no rate card in this repo to read one from
+        # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.
         st.caption(
             "Cost is not priced: set `FINBRIEF_INPUT_COST_PER_MTOK` and "
-            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card. No price is "
-            "assumed, because this app reaches every model through OpenRouter's routing."
+            "`FINBRIEF_OUTPUT_COST_PER_MTOK` from your provider's rate card."
         )
     else:
-        st.markdown(f"**Cost** `${dollars:.4f}`")
-    # **Unconditional, and that is the fix.** This sentence sat inside the `partial` branch
-    # below, so a conversation whose every metered call reported both fields showed no caveat at
-    # all — and ADR-0011's amendment §4 claims precisely that the omission is "stated on
-    # screen". The claim was falsified by the surface it was written about (code review of #13).
-    #
-    # It cannot live in `partial` even in principle: `Spend.partial` is defined over *reported
-    # versus counted* calls, and the gate's classifier never enters `calls`, so no value of
-    # `partial` is evidence about it. A structural absence and a reporting shortfall are two
-    # different claims and they get two different sentences.
-    #
-    # **The provenance is here and not in the caption.** ADR-0011 is the record for both halves
-    # — that the classifier's call is unmetered, and that the omission is stated on screen — but
-    # an analyst reading a cost panel does not know what ADR-0011 is, so the citation reads as
-    # developer leakage where the claim reads as information (#13). The claim is what ships; the
-    # number stays in this comment.
-    st.caption(
-        "The input gate's classifier is never metered, so one paid call per turn is "
-        "missing from these figures by design."
-    )
+        # **Labelled an estimate, because it is one.** The two prices are configuration read
+        # from `.env` and the tokens are a measurement; multiplying them gives a figure whose
+        # accuracy is the accuracy of a rate a reader typed in. `**Cost**` alone read as a
+        # billed amount (#14 copy pass), and the analytics page prints the same label.
+        st.markdown(f"**Cost (estimate)** `${dollars:.4f}`")
+    # **The unmetered-classifier caveat is not here.** It was this panel's and the analytics
+    # page's, typed out in both — and ADR-0011 §4 requires the omission stated on screen, not
+    # stated twice. It is `spend.UNMETERED_CLASSIFIER_NOTE` now, rendered on the surface that
+    # totals a whole log; this panel totals one conversation and does not repeat it
+    # (#14 copy pass).
     if spend.partial:
         # **Said beside the figure, not folded into it.** A total missing a call it should have
         # counted is a floor, and a floor presented as a total is the silent narrowing this
         # whole path is built against — so the denominators are printed rather than the
-        # shortfall being left for a reader to infer.
-        st.warning(
-            f"Partial: {spend.input.reported_calls} of {spend.calls} call(s) reported input "
-            f"tokens and {spend.output.reported_calls} reported output tokens, so the figures "
-            f"above are a floor.",
-            icon=":material/data_alert:",
+        # shortfall being left for a reader to infer. One clause, and the word a reader needs is
+        # the first one.
+        #
+        # A caption rather than the `st.warning` this was: nothing here needs attention and a
+        # yellow box beside a number reads as a fault in the number rather than as a qualifier
+        # on it. The same demotion as the analytics page's, which renders the same sentence
+        # (#14 copy pass).
+        st.caption(
+            f"A floor: {spend.input.reported_calls} of {spend.calls} call(s) reported input "
+            f"tokens and {spend.output.reported_calls} reported output."
         )
 
 
