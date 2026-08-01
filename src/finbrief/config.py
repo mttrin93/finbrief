@@ -564,21 +564,36 @@ MAX_QUESTIONS_PER_SESSION = 40
 #: is which model answers by default — `FINBRIEF_CHAT_MODEL`, honoured by `chat_model_options`
 #: below even when it names something absent from here.
 #:
+#: All four are tool-calling models, because the agent binds four tools and a model that cannot
+#: call them answers every question ungrounded.
+#:
+#: **Every slug here exists and advertises `tools`, checked against OpenRouter's public
+#: catalogue on 2026-08-01** — `GET /api/v1/models`, which needs no key and costs nothing, so
+#: the reason the first version of this list went unchecked ("checking costs a paid call") was
+#: simply wrong. Two of its four slugs did not exist: `anthropic/claude-3.5-haiku` and
+#: `google/gemini-2.0-flash-001` are both 404s, and the picker offered them anyway. Found by a
+#: reader picking one and getting an error, which is the worst way to find it (#15).
+#:
+#: **What that check does *not* establish, and this is the part worth reading.** Existing in the
+#: catalogue is not the same as being reachable by a given account. OpenRouter also returns
+#: **404** when no provider endpoint matches the caller's own **data policy**, and when a model
+#: needs credits or a key the account does not have — so a slug verified here can still 404 for
+#: one reader and answer for another. That is an account setting on openrouter.ai, not something
+#: this repo can assert or fix, and it is why the picker's failure has its own message naming
+#: the model rather than the generic "try again" (`app/Home.py`).
+#:
+#: So the freshness guarantee is narrow and dated on purpose: OpenRouter retires slugs on its
+#: own schedule, no test can watch the catalogue (the suite is hermetic — CLAUDE.md), and
+#: re-checking is one `curl` whenever this list is edited. The default is the one slug every
+#: committed measurement actually ran on.
+#:
 #: Four slugs across three providers plus an open weight, which is the exercise: a set of four
 #: OpenAI models would demonstrate nothing about swapping, since tool-calling dialects differ by
-#: provider and that is the difference a picker exists to expose. All four are tool-calling
-#: models, because the agent binds four tools and a model that cannot call them answers every
-#: question ungrounded.
-#:
-#: **Unverified against OpenRouter's live catalogue, deliberately.** Checking costs a paid call
-#: the hermetic suite forbids (CLAUDE.md), and OpenRouter fronts many upstreams and retires
-#: slugs on their schedule rather than this repo's. A retired slug therefore fails at **first
-#: use**, as a provider error on the turn it was picked for — not at startup, and not in a test.
-#: The default is the one slug every committed measurement actually ran on.
+#: provider and that is the difference a picker exists to expose.
 CHAT_MODEL_CHOICES: tuple[str, ...] = (
     "openai/gpt-4o-mini",
-    "anthropic/claude-3.5-haiku",
-    "google/gemini-2.0-flash-001",
+    "anthropic/claude-haiku-4.5",
+    "google/gemini-2.5-flash",
     "meta-llama/llama-3.3-70b-instruct",
 )
 

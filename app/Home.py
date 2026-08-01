@@ -1645,6 +1645,16 @@ def answer_turn(prompt: str) -> None:
             )
             return
 
+        # **One read of the picker, above the `try` that reports its failures** (T14, #15). The
+        # agent is fetched for this model and the same slug is logged onto `agent_turn`; reading
+        # `chosen_model()` twice would be two reads of one widget in one run — identical today,
+        # and the shape that lets a logged attribution disagree with the model that answered the
+        # moment anything between them touches `session_state`.
+        #
+        # It sits *outside* the `try` because the handler below names it: assigned inside, a
+        # failure before the assignment would raise `NameError` from within an error handler,
+        # which is the one place a defensive read is worth the line.
+        model = chosen_model()
         with st.chat_message("assistant"):
             try:
                 # A `status` rather than a spinner, because with four tools the wait has *parts*
@@ -1661,13 +1671,6 @@ def answer_turn(prompt: str) -> None:
                         status.update(label=label)
                         st.write(label)
 
-                    # **One read of the picker, used twice** (T14, #15): the agent is fetched
-                    # for this model and the same slug is what gets logged onto `agent_turn`.
-                    # Reading `chosen_model()` twice here would be two reads of one widget in
-                    # one run — identical today, and the shape that lets a logged attribution
-                    # disagree with the model that answered the moment anything between them
-                    # touches `session_state`.
-                    model = chosen_model()
                     reply = answer(
                         prompt,
                         thread_id=st.session_state.thread_id,
@@ -1714,6 +1717,33 @@ def answer_turn(prompt: str) -> None:
                     error_type=type(exc).__name__,
                 )
                 status.update(label="Failed", state="error", expanded=False)
+                # **"Try again" is wrong for one of these, and it is the one the picker made
+                # reachable** (manual testing of #15). A provider 404 is not transient: the
+                # model cannot be reached by this account and will not be on the next attempt
+                # either, so the generic message sent a reader to retry what cannot work.
+                # PLAN §2's tiers are distinguished by what the *reader* can do, which is the
+                # whole reason the branch above exists — and here what they can do is switch the
+                # model back, not wait.
+                #
+                # Keyed on `NotFoundError`'s **name**, because the type belongs to the `openai`
+                # SDK and this module does not import it: a UI-copy branch is not worth a
+                # dependency on a client library's exception hierarchy, and the name is what the
+                # log line already records.
+                #
+                # OpenRouter returns 404 for two different things and the message names both,
+                # because they need different fixes and neither is visible from here: a slug it
+                # does not know, and a slug whose provider endpoints do not match the account's
+                # own data policy (`config.CHAT_MODEL_CHOICES` records what the committed list
+                # can and cannot promise).
+                if type(exc).__name__ == "NotFoundError":
+                    st.error(
+                        f"`{model}` could not be reached, so nothing was answered. That is "
+                        "either a model OpenRouter does not know or one your account's privacy "
+                        "settings exclude — retrying will not change it. Pick another model "
+                        "under **Configuration**; the default always works if a key is set.",
+                        icon=":material/swap_horiz:",
+                    )
+                    return
                 st.error(
                     f"FinBrief could not answer that ({type(exc).__name__}). Try again — and "
                     f"if it keeps happening, the server log has the detail.",

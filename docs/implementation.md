@@ -659,9 +659,23 @@ the spend for a Tier-2 widget.
 the tuple, deduplicated — so an operator who points the app at a model the tuple has not heard of
 has it honoured rather than overridden. Configured-first is not cosmetic: `st.selectbox` selects
 index 0, so leading the list is what makes the widget's default *be* the setting rather than merely
-contain it. The four slugs are **unverified against OpenRouter's live catalogue**, and the code says
-so — checking costs a paid call the hermetic suite forbids, and a retired slug fails at first use as
-a provider error rather than at startup.
+contain it.
+
+**Two of the four slugs did not exist, and a reader found out by picking one.** The list shipped
+with a comment saying it was unverified "because checking costs a paid call the hermetic suite
+forbids" — which was simply wrong: `GET /api/v1/models` is public, unauthenticated and free.
+`anthropic/claude-3.5-haiku` and `google/gemini-2.0-flash-001` were both 404s, offered in a picker,
+and the failure surfaced as a red banner in manual testing. All four are now checked against that
+catalogue, dated in the comment, with a test pinning the two known-bad strings so a plausible
+edit cannot restore them.
+
+**What the check does not buy, which is the more useful half.** Existing in the catalogue is not
+being *reachable*: OpenRouter also returns 404 when no provider endpoint matches the account's own
+**data policy**, or when a model needs credits the account lacks — so a verified slug can 404 for
+one reader and answer for another, and no test here can tell. That is why the failure has its own
+message. A 404 is not transient, so "try again" was advice that could not help; the banner names
+the model, says retrying will not change it, and points at the picker. PLAN §2's tiers are
+distinguished by what the reader can *do*, and here that is switching back.
 
 ### 3.7 Prompt-injection protection
 

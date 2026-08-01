@@ -549,3 +549,25 @@ one of them: `spend.py` is the same package, and the same file already imports `
 it. The copy's docstring asserted the import was forbidden, four lines below the import that
 disproved it. It is now `spend.answered_only_on`, imported. **The test of a shared-versus-copied
 decision is whether the import would fail, not whether a comment says it would.**
+
+### One more correction, from manual testing of #15
+
+**Two of the four committed slugs did not exist**, and the comment explaining why they were
+unchecked was itself the error: it said checking "costs a paid call the hermetic suite forbids".
+`GET https://openrouter.ai/api/v1/models` is public, unauthenticated and free — so the cost that
+justified shipping an unverified list was zero, and `anthropic/claude-3.5-haiku` and
+`google/gemini-2.0-flash-001` were both 404s sitting in a picker. A reader found them by choosing
+one.
+
+That belongs here rather than only in `config.py` because it is the same family as the three
+corrections above: **a reason given in a comment for not checking something is a claim, and it can
+be false.** The list is now checked and the check is dated, with a test pinning the two known-bad
+strings so a plausible-looking edit cannot restore them.
+
+**What the check cannot establish is the part worth keeping.** OpenRouter returns 404 for a slug it
+does not know *and* for a slug whose provider endpoints do not match the account's own data policy
+— so a verified slug can 404 for one reader and answer for another, and nothing in this repo can
+tell which. The honest response was not a stronger claim but a better failure: a 404 is not
+transient, so "try again" was advice that could not help. The banner names the model, says retrying
+will not change it, and points at the picker — PLAN §2's tiers being distinguished by what the
+*reader* can do, which here is switching back rather than waiting.

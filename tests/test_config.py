@@ -444,6 +444,24 @@ def test_the_default_chat_model_is_one_of_the_offered_choices():
     assert settings.chat_model in CHAT_MODEL_CHOICES
 
 
+def test_no_choice_is_one_of_the_slugs_measured_to_be_a_404():
+    """The two dead options the picker shipped with (manual testing of #15).
+
+    `anthropic/claude-3.5-haiku` and `google/gemini-2.0-flash-001` were both absent from
+    OpenRouter's catalogue, and a reader found out by picking one and getting an error. No test
+    can watch a live catalogue — the suite is hermetic — so what is pinned instead is the
+    *negative*: these exact strings are known-bad and may not come back by a plausible-looking
+    edit. Re-checking the live list is one unauthenticated `curl` and `CHAT_MODEL_CHOICES` says
+    so beside the date it was last done.
+    """
+    known_404 = {"anthropic/claude-3.5-haiku", "google/gemini-2.0-flash-001"}
+
+    assert not known_404 & set(CHAT_MODEL_CHOICES), (
+        "these were measured absent from OpenRouter's catalogue; verify any replacement with "
+        "`curl -s https://openrouter.ai/api/v1/models` before committing it"
+    )
+
+
 def test_every_choice_is_an_openrouter_slug_and_the_set_spans_providers():
     # `provider/model` is the shape OpenRouter routes on; a bare model name reaches it as an
     # unknown model. The provider spread is the point of the picker — a set of four OpenAI

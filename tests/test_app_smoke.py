@@ -590,6 +590,50 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     assert [m["role"] for m in app.session_state.messages] == ["user"]
 
 
+def test_an_unreachable_model_is_not_reported_as_something_to_retry(app, monkeypatch):
+    """The banner a reader actually got from the picker (manual testing of #15).
+
+    A provider **404** is not transient: the model cannot be reached by this account and will
+    not be on the next attempt either, so the generic "Try again" sent a reader to retry
+    something that cannot work. PLAN §2's tiers are distinguished by what the *reader* can do,
+    and here that is switching the model back — which is what the message has to say.
+
+    Raised as the **real** `openai.NotFoundError`, not a look-alike, because the branch keys on
+    the type's name and a hand-rolled stand-in would let the app's spelling of it drift from the
+    SDK's. This is the exception `langchain_openai` propagates from a 404.
+    """
+    import httpx
+    from openai import NotFoundError
+
+    def not_found(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
+        raise NotFoundError(
+            "No endpoints found matching your data policy",
+            response=httpx.Response(
+                404, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat")
+            ),
+            body=None,
+        )
+
+    monkeypatch.setattr(agent, "answer", not_found)
+    app.run()
+    other = next(slug for slug in CHAT_MODEL_CHOICES if slug != get_settings().chat_model)
+    (picker,) = [s for s in app.sidebar.selectbox if "Model" in s.label]
+    picker.select(other).run()
+
+    app.chat_input[0].set_value("What are Tesla's risks?").run()
+
+    assert not app.exception
+    banner = app.error[0].value
+    assert other in banner, "the model that could not be reached is named"
+    assert "retrying will not change it" in banner.lower()
+    assert "Try again" not in banner, "the one message this failure must not carry"
+    assert "Configuration" in banner, "and where to change it"
+    # Still not the provider's message: a client error string can carry a request URL and a URL
+    # can carry a key, which is why the generic branch withholds it too.
+    assert "openrouter.ai" not in banner and "data policy" not in banner
+    assert [m["role"] for m in app.session_state.messages] == ["user"]
+
+
 def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):
     # The detail is not lost, only moved: the banner is for the reader and the traceback is for
     # whoever debugs it, which is what makes withholding the message from the page affordable.
