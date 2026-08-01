@@ -470,13 +470,17 @@ def render_tools(log) -> None:
         "These are the tickers the **finance tools** were called for, not the companies asked "
         "about."
     )
-    # **The unit is on the figures and not also on the label** — it was on both — and it stays
-    # **seconds** where the rest of the app says minutes (`prompts.stale_notice`, the sidebar's
-    # freshness line, the TTL itself). Those describe *one* quote's age, where whole minutes are
-    # what a reader wants; this is a distribution whose interesting region is the first minute,
-    # because a fresh fetch is `0` and a cache hit is anything up to the TTL. Rounded to minutes
-    # a 40-second age prints as `1` and a 20-second one as `0`, which is the fabricated zero
-    # this page exists to avoid (#14 copy pass).
+    # **The unit is on the figures and not also on the label** — it was on both.
+    #
+    # **Seconds, deliberately, and this is the record for it so that it is not "fixed" later.**
+    # Everywhere else the app states an age in minutes: `prompts.stale_notice`, the sidebar's
+    # freshness line, the scope disclosure's `QUOTE_TTL_SECONDS // 60`. Those describe *one*
+    # quote's age, where whole minutes are what a reader wants, and the inconsistency here is
+    # intentional rather than an oversight. This is a **distribution**, and its interesting
+    # region is the first minute: a fresh fetch is `0` and a cache hit is anything up to the
+    # 15-minute TTL, so p50 and p90 both live in the seconds. Rounded to minutes a 40-second age
+    # prints as `1` and a 20-second one as `0` — a real measurement rendered as the absence this
+    # whole page is built to distinguish from a zero. Raised in review and confirmed (#14).
     st.markdown(f"Age of the data served: {figures(tools.age_seconds, unit='s')}")
     st.caption("How old a quote or a headline was at the moment the answer used it.")
     st.markdown("**Refusals, failures and stale fallbacks**")
