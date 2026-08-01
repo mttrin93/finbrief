@@ -668,24 +668,45 @@ def test_a_data_policy_404_names_the_setting_that_caused_it_and_where_to_change_
     assert "guardrail restrictions" not in banner
 
 
-def test_an_unrecognised_model_gets_the_other_404_sentence(app, monkeypatch):
-    # The same status code, a different cause, a different fix — which is why the branch reads
-    # the message at all. Nothing here mentions privacy settings, because sending a reader to
-    # that page for a slug OpenRouter has never heard of is the wrong knob.
+def test_a_404_the_message_does_not_explain_states_what_happened_and_no_cause(app, monkeypatch):
+    """The same status code without the marker — and therefore without a diagnosis (#15).
+
+    **The fixture was the finding.** This case used to send *"No allowed providers are available
+    for the selected model."* — a restriction message — and assert the page answered "OpenRouter
+    does not recognise it", enshrining a mapping from a restricted route to a claim that the
+    slug was imaginary. The message here is one that genuinely means an unknown slug, and what
+    is asserted is what the branch can actually establish: nothing was answered, retrying will
+    not help, pick another model.
+
+    No cause is named, because the marker's absence supports none — `RESTRICTED_404_MARKER`'s
+    miss is meant to fail open into a *generic* banner, and a banner naming a cause is not one.
+    """
     other = picked(
         app,
         monkeypatch,
         a_not_found(
-            "Error code: 404 - {'error': {'message': 'No allowed "
-            "providers are available for the selected model.', 'code': 404}}"
+            "Error code: 404 - {'error': {'message': 'No endpoints found for "
+            "openai/not-a-real-model.', 'code': 404}}"
         ),
     )
 
     banner = app.error[0].value
     assert other in banner
-    assert "does not recognise it" in banner
-    assert "privacy" not in banner.lower(), "the wrong knob for this cause"
+    assert "returned no such model for this API key" in banner
+    assert "Retrying will not change that" in banner
+    assert "Pick a different model under **Configuration**" in banner
+    # **The two sentences that went, asserted absent** — because each was a claim this branch
+    # cannot check and each would come back as a plausible edit. "does not recognise it" is a
+    # diagnosis; "the default always works" is false for an off-list `FINBRIEF_CHAT_MODEL` and
+    # for a key whose allowlist excludes the default.
+    assert "does not recognise" not in banner
+    assert "always works" not in banner
+    assert "privacy" not in banner.lower(), "the wrong knob for an unread cause"
     assert DATA_POLICY_URL not in banner
+    # Still not the provider's message: the branch reads it to choose a sentence and renders
+    # none of it, so the request URL in the error — and any key it carries — stays off the page.
+    assert "sk-secret" not in banner
+    assert "No endpoints found" not in banner
 
 
 def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsys):

@@ -1740,7 +1740,7 @@ def answer_turn(prompt: str) -> None:
                 # The **message is read to choose a branch and never rendered**, which is the
                 # distinction that keeps the existing rule intact: a client error string can
                 # carry a request URL and a URL can carry an API key, so what reaches the page
-                # is this module's own words plus one constant. `DATA_POLICY_404` is that
+                # is this module's own words plus one constant. `DATA_POLICY_URL` is that
                 # constant — OpenRouter's settings page, not a URL taken from the error.
                 if type(exc).__name__ == "NotFoundError":
                     if RESTRICTED_404_MARKER in str(exc).lower():
@@ -1767,11 +1767,26 @@ def answer_turn(prompt: str) -> None:
                             icon=":material/policy:",
                         )
                         return
+                    # **The observation, not a cause** (code review of #15). This is the branch
+                    # for every 404 whose body lacked two words, so it has established that
+                    # OpenRouter returned nothing for this slug on this key and *nothing else*
+                    # — and the sentence it carried said "OpenRouter does not recognise it",
+                    # which is a diagnosis the marker's absence cannot support. A restricted
+                    # route phrased any other way lands here and got told the slug was
+                    # imaginary. `config.RESTRICTED_404_MARKER` already argues that a miss
+                    # should fail open into a generic banner; a banner that names a cause is
+                    # not generic, which is the half that was missing.
+                    #
+                    # **"the default always works if a key is set" went for the same reason,
+                    # and it was the worse of the two**: false whenever `FINBRIEF_CHAT_MODEL`
+                    # names an off-list model — the deployment `chat_model_options` exists to
+                    # honour — and false again on a key whose allowlist excludes the default.
+                    # `config.CHAT_MODEL_CHOICES` spends forty lines establishing that
+                    # reachability is not knowable from in here, and this guaranteed it.
                     st.error(
                         f"`{model}` could not be reached, so nothing was answered — OpenRouter "
-                        "does not recognise it. Retrying will not change that. Pick another "
-                        "model under **Configuration**; the default always works if a key is "
-                        "set.",
+                        "returned no such model for this API key. Retrying will not change "
+                        "that. Pick a different model under **Configuration**.",
                         icon=":material/swap_horiz:",
                     )
                     return
