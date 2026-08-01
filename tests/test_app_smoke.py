@@ -20,6 +20,7 @@ from streamlit.testing.v1 import AppTest
 from finbrief.agent import agent
 from finbrief.agent.agent import AgentTurn, Search, Step
 from finbrief.config import (
+    CHAT_MODEL_CHOICES,
     CLUSTERS,
     MAX_QUESTION_CHARS,
     MAX_QUESTIONS_PER_SESSION,
@@ -106,7 +107,10 @@ def stub_answer(monkeypatch, answer=None, steps=()):
     # `on_step` is accepted and driven, not merely tolerated: T5 made the page pass a callback,
     # and a stub that only absorbed it would leave the progress list untested while looking
     # fine.
-    def fake_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3's other file
+    # `model` is accepted and ignored here on purpose: which model a turn ran on is
+    # `test_app_state.py`'s subject, and this file's is rendering. A stub that *rejected* it
+    # would fail every test in this file for a reason none of them is about.
+    def fake_answer(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         asked.append(question)
         for step in steps:
             if on_step is not None:
@@ -570,7 +574,7 @@ def test_a_failing_model_call_is_reported_not_raised(app, monkeypatch):
     # message: a client's error string can carry a request URL, and a request URL can carry an
     # API key — the same reason `log_event` never records one. Until T5 this branch printed
     # `f"The model call failed: {exc}"`, i.e. the message verbatim.
-    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise RuntimeError("upstream refused: https://api.example/v1?key=sk-secret")
 
     monkeypatch.setattr(agent, "answer", boom)
@@ -594,7 +598,7 @@ def test_a_failure_still_reaches_the_log_with_its_detail(app, monkeypatch, capsy
     # the page calls `configure_logging`, which sets `propagate=False` on the `finbrief` logger
     # and installs its own JSON-lines handler, so `caplog`'s root handler never sees the record.
     # What this asserts is therefore the line an operator actually reads.
-    def boom(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def boom(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise RuntimeError("upstream refused")
 
     monkeypatch.setattr(agent, "answer", boom)
@@ -641,7 +645,7 @@ def test_a_real_turn_tags_every_line_it_emits_with_one_turn_id(
     """
     engine_logger = logging.getLogger("finbrief.rag")
 
-    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_and_emit(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         # Exactly the two events T10 joins on a turn: provenance, and the answer's spend.
         log_event(engine_logger, "retrieval", hits=2, latency_ms=640)
         log_event(engine_logger, "rag_answer", contexts=2, latency_ms=910)
@@ -688,7 +692,7 @@ def test_a_second_question_gets_its_own_turn_id(app, monkeypatch, capsys, tmp_pa
     # identifier exists for — two searches in one step belong together, two turns do not.
     engine_logger = logging.getLogger("finbrief.rag")
 
-    def answer_and_emit(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_and_emit(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         log_event(engine_logger, "retrieval", hits=2)
         return a_turn()
 
@@ -724,7 +728,7 @@ def test_running_out_of_agent_steps_says_what_to_do_about_it(app, monkeypatch):
 
     from finbrief.agent.agent import MAX_AGENT_STEPS
 
-    def out_of_steps(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def out_of_steps(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         raise GraphRecursionError(f"Recursion limit of {MAX_AGENT_STEPS} reached")
 
     monkeypatch.setattr(agent, "answer", out_of_steps)
@@ -1949,8 +1953,15 @@ def metered(app, monkeypatch, **usage):
     """
     engine_logger = logging.getLogger("finbrief.agent.agent")
 
-    def answer_and_meter(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
-        log_event(engine_logger, "agent_turn", thread_id=thread_id, searches=1, **usage)
+    def answer_and_meter(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
+        # **`model` is logged rather than ignored, unlike the other stubs in this file**,
+        # because the meter reads it: since T14 (#15) a total is only priced when every turn ran
+        # on the configured model, so a stub that dropped it would make every cost assertion
+        # below test the unattributed branch while looking like it tested pricing. What flows
+        # through here is the app's own picker value (`chosen_model()`), which is the point.
+        log_event(
+            engine_logger, "agent_turn", thread_id=thread_id, searches=1, model=model, **usage
+        )
         return a_turn()
 
     monkeypatch.setattr(agent, "answer", answer_and_meter)
@@ -2064,6 +2075,47 @@ def test_a_cost_is_shown_only_when_a_price_is_configured(app, monkeypatch, tmp_p
     app.run()
 
     assert "$0.7500" in panel_text(spend_panel(app))
+
+
+def test_a_conversation_on_a_picked_model_reports_tokens_and_no_dollar_figure(
+    app, monkeypatch, tmp_path
+):
+    """T14's pricing rule in the sidebar (#15), with the prices *set*.
+
+    The failure this replaces is invisible by construction: the two knobs describe one model, so
+    a Haiku turn multiplied by the gpt-4o-mini rate renders a plausible figure and nothing on
+    screen distinguishes it from a right one. The tokens are real and stay; the figure goes.
+
+    Driven through the picker rather than by seeding the log, so what is under test is the whole
+    path — widget to cache key to `answer()`'s argument to the log line the meter reads back.
+    """
+    monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "0.15")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "0.60")
+    get_settings.cache_clear()
+    metered(
+        app,
+        monkeypatch,
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        input_tokens_calls=1,
+        output_tokens_calls=1,
+        calls=1,
+    )
+    app.run()
+    other = next(slug for slug in CHAT_MODEL_CHOICES if slug != get_settings().chat_model)
+    (picker,) = [s for s in app.sidebar.selectbox if "Model" in s.label]
+    picker.select(other).run()
+
+    app.chat_input[0].set_value("What are Tesla's risk factors?").run()
+
+    panel = panel_text(spend_panel(app))
+    assert "1,000,000" in panel, "the tokens were really spent and are reported"
+    assert "$" not in panel, "and no figure at a rate that is not this model's"
+    assert f"prices are for `{get_settings().chat_model}`" in panel
+    # Not the set-a-price advice: these are set, and sending this reader to that knob would be
+    # advice that cannot help. `fill_spend_meter` orders the two branches for exactly this.
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" not in panel
 
 
 def row_shape(row) -> tuple[str, ...]:
@@ -2273,7 +2325,7 @@ def test_a_call_count_nothing_reported_is_shown_as_a_floor(app, monkeypatch, tmp
     monkeypatch.setenv("FINBRIEF_LOG_FILE", str(tmp_path / "events.jsonl"))
     planner = logging.getLogger("finbrief.retrieval.query_translation")
 
-    def answer_unmetered(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def answer_unmetered(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         log_event(
             planner,
             "query_translation",
@@ -2345,7 +2397,7 @@ def test_the_meter_is_read_before_the_turn_as_well_as_after(app, monkeypatch, tm
         order.append("meter")
         return real(log, thread_id=thread_id)
 
-    def recording_answer(question, *, thread_id, agent, on_step=None):  # noqa: ARG001 — seam 3
+    def recording_answer(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001 — seam 3
         order.append("turn")
         return a_turn()
 
@@ -2381,7 +2433,7 @@ def in_flight(app, monkeypatch):
     planner = logging.getLogger("finbrief.retrieval.query_translation")
     retriever = logging.getLogger("finbrief.retrieval.retrieve")
 
-    def answer_without_finishing(question, *, thread_id, agent, on_step=None):  # noqa: ARG001
+    def answer_without_finishing(question, *, thread_id, agent, model=None, on_step=None):  # noqa: ARG001
         log_event(
             planner, "query_translation", max_sub_queries=3, sub_queries=2, input_tokens=25
         )

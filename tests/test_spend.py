@@ -21,6 +21,12 @@ from finbrief.observability.tokens import usage_total
 THREAD = "3294dcff-0f78-4e82-a07c-47e8552e378f"
 OTHER_THREAD = "aaaaaaaa-0f78-4e82-a07c-47e8552e378f"
 
+#: The model the configured prices are for — `settings.chat_model` in production. A literal here
+#: rather than a read of `Settings`, because these tests are about the *rule* and not about
+#: which slug is the default this month.
+PRICED_MODEL = "openai/gpt-4o-mini"
+OTHER_MODEL = "anthropic/claude-3.5-haiku"
+
 
 class Reply:
     """A model reply that reports the usage a provider chose to report, and no more."""
@@ -45,10 +51,17 @@ def emitter():
     return logging.getLogger("finbrief.test_spend")
 
 
-def an_agent_turn(emitter, *replies, thread_id=THREAD, suffix="aaaa"):
-    """One `agent_turn` line, metered exactly as `agent/agent.py` meters one."""
+def an_agent_turn(emitter, *replies, thread_id=THREAD, suffix="aaaa", model=PRICED_MODEL):
+    """One `agent_turn` line, metered exactly as `agent/agent.py` meters one.
+
+    `model` defaults to the priced one so that every test written before T14 (#15) still
+    describes a priceable conversation — the pricing rule this file now covers is about the
+    conversations that are *not*, and each of those names its own model.
+    """
     with turn(f"{thread_id}:{suffix}"):
-        log_event(emitter, "agent_turn", thread_id=thread_id, **usage_total(replies))
+        log_event(
+            emitter, "agent_turn", thread_id=thread_id, model=model, **usage_total(replies)
+        )
 
 
 def a_planner_call(emitter, reply=None, *, cap=3, thread_id=THREAD, suffix="aaaa"):
@@ -268,15 +281,23 @@ def test_tokens_are_priced_only_when_a_price_is_configured(sink, emitter):
     an_agent_turn(emitter, Reply(input_tokens=1_000_000, output_tokens=1_000_000))
     spend = spend_from(sink)
 
-    assert spend.dollars(input_per_mtok=None, output_per_mtok=None) is None
-    assert spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60) == pytest.approx(0.75)
+    assert (
+        spend.dollars(input_per_mtok=None, output_per_mtok=None, priced_model=PRICED_MODEL)
+        is None
+    )
+    assert spend.dollars(
+        input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL
+    ) == pytest.approx(0.75)
 
 
 def test_an_unmeasured_conversation_cannot_be_priced_however_the_prices_are_set(sink, emitter):
     an_agent_turn(emitter, Reply())
     spend = spend_from(sink)
 
-    assert spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60) is None
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    )
 
 
 def test_a_partial_total_is_still_priced_because_those_tokens_were_really_spent(sink, emitter):
@@ -286,7 +307,9 @@ def test_a_partial_total_is_still_priced_because_those_tokens_were_really_spent(
     an_agent_turn(emitter, Reply(input_tokens=1_000_000))
     spend = spend_from(sink)
 
-    assert spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60) == pytest.approx(0.15)
+    assert spend.dollars(
+        input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL
+    ) == pytest.approx(0.15)
     assert spend.partial
 
 
@@ -297,7 +320,126 @@ def test_an_empty_log_is_an_unmeasured_conversation_and_not_a_free_one(sink, emi
     assert spend.calls == 0
     assert not spend.measured
     assert spend.unfinished == 0, "nothing has started, so nothing is unfinished"
-    assert spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60) is None
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The prices are for one model (T14, #15)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_conversation_on_the_priced_model_is_priced(sink, emitter):
+    # The base case, and the one every deployment gets by default: the picker's initial
+    # selection is `settings.chat_model`, which is the model the two price knobs are for.
+    an_agent_turn(emitter, Reply(input_tokens=1_000_000, output_tokens=1_000_000))
+    spend = spend_from(sink)
+
+    assert spend.models == frozenset({PRICED_MODEL})
+    assert spend.all_answered_on(PRICED_MODEL)
+    assert spend.dollars(
+        input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL
+    ) == pytest.approx(0.75)
+
+
+def test_a_conversation_on_another_model_reports_tokens_and_refuses_a_figure(sink, emitter):
+    """The rule this ticket exists to enforce (#15).
+
+    The two price knobs are configured for one model. Multiplying a Haiku turn's tokens by the
+    gpt-4o-mini rate produces a number that is simply wrong — and wrong in the one panel whose
+    whole subject is spend, which is worse than an absence. So the tokens are still reported
+    (they were really spent) and the dollar figure is withheld with a reason.
+    """
+    an_agent_turn(
+        emitter, Reply(input_tokens=1_000_000, output_tokens=1_000_000), model=OTHER_MODEL
+    )
+    spend = spend_from(sink)
+
+    assert spend.input.total == 1_000_000, "the tokens are measured and reported"
+    assert spend.output.total == 1_000_000
+    assert not spend.all_answered_on(PRICED_MODEL)
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    ), "a wrong dollar figure is worse than no dollar figure"
+
+
+def test_a_conversation_that_switched_models_is_not_priced_at_either_rate(sink, emitter):
+    # The case the picker makes reachable: one conversation, two models, because the
+    # checkpointer is keyed on the thread and switching keeps the history. Neither rate is
+    # right for the whole of it, and picking the priced turns out of the middle would report a
+    # fraction of a conversation as its cost.
+    an_agent_turn(emitter, Reply(input_tokens=500_000), suffix="aaaa")
+    an_agent_turn(emitter, Reply(input_tokens=500_000), suffix="bbbb", model=OTHER_MODEL)
+    spend = spend_from(sink)
+
+    assert spend.models == frozenset({PRICED_MODEL, OTHER_MODEL})
+    assert spend.input.total == 1_000_000, "both turns' tokens are still counted"
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    )
+
+
+def test_a_turn_with_no_model_recorded_is_unattributed_and_therefore_unpriced(sink, emitter):
+    """An older line, or a caller that named no model — not a vote for the default.
+
+    Every `agent_turn` already in a developer's sink was written before T14, and the analytics
+    page totals the whole file. Treating an absent `model` as "the configured one" would be a
+    guess presented as a reading, which is the fabricated-measurement failure this module's
+    docstring is built against. The tokens are real and stay reported; the attribution is
+    missing and so the price is withheld.
+    """
+    an_agent_turn(emitter, Reply(input_tokens=1_000_000), model=None)
+    spend = spend_from(sink)
+
+    assert spend.models == frozenset({None})
+    assert spend.input.total == 1_000_000
+    assert not spend.all_answered_on(PRICED_MODEL)
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    )
+
+
+def test_the_planners_tokens_do_not_carry_a_model_and_do_not_block_pricing(sink, emitter):
+    """The planner runs on the configured model whatever the picker says, and that is measured.
+
+    `retrieval/retrieve.py` builds its planner with `build_chat_model(settings)` — no override —
+    so a `query_translation` line is *always* on the priced model and carries no `model` field
+    of its own. Reading those lines into `models` would make every translated turn unpriceable
+    for a reason that does not exist.
+
+    If the planner ever takes the picker's model, this test is the one that has to change, and
+    it says so rather than leaving the next reader to infer it from a passing suite.
+    """
+    an_agent_turn(emitter, Reply(input_tokens=400_000))
+    a_planner_call(emitter, Reply(input_tokens=600_000))
+    spend = spend_from(sink)
+
+    assert spend.models == frozenset({PRICED_MODEL}), "answering lines only"
+    assert spend.input.total == 1_000_000, "and the planner's tokens are in the total"
+    assert spend.dollars(
+        input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL
+    ) == pytest.approx(0.15)
+
+
+def test_an_unfinished_turn_is_not_priced_because_nothing_has_attributed_it_yet(sink, emitter):
+    # `agent_turn` is written last, so a turn still being answered has planner tokens and no
+    # attribution. Refusing the figure agrees with `unfinished`, which already tells the reader
+    # this conversation has a turn outstanding — pricing the planner half alone would put a
+    # figure beside that caveat which is a fraction of the turn's real cost.
+    a_planner_call(emitter, Reply(input_tokens=600_000))
+    spend = spend_from(sink)
+
+    assert spend.models == frozenset(), "no answering line has attributed anything"
+    assert spend.unfinished == 1
+    assert (
+        spend.dollars(input_per_mtok=0.15, output_per_mtok=0.60, priced_model=PRICED_MODEL)
+        is None
+    )
 
 
 # --------------------------------------------------------------------------------------

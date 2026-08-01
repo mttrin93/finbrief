@@ -13,6 +13,7 @@ import pytest
 
 from finbrief.config import (
     _TWENTY_F_FILERS,
+    CHAT_MODEL_CHOICES,
     CLUSTERS,
     COMPANIES,
     ITEM_7A_POINTER_FILERS,
@@ -26,6 +27,7 @@ from finbrief.config import (
     PeerCluster,
     RetrievalStrategy,
     Settings,
+    chat_model_options,
     get_settings,
     resolve_log_file,
     resolve_log_level,
@@ -399,3 +401,54 @@ def test_every_normalisable_company_can_be_reached_by_its_legal_name_too():
     for company in UNIVERSE:
         if len(company.ticker) >= MIN_LEXICAL_TICKER_CHARS:
             assert TICKER_BY_COMPANY_NAME[company.name.lower()] == company.ticker
+
+
+# --------------------------------------------------------------------------------------
+# The chat-model picker's option list (T14, #15)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_configured_model_leads_the_options():
+    # The picker must not override an operator's `FINBRIEF_CHAT_MODEL`. Leading the list is
+    # what makes the widget's default *be* the configured model rather than merely contain it:
+    # `st.selectbox` selects index 0, so any other order silently answers on a model nobody
+    # chose on exactly the deployment that set the variable.
+    assert chat_model_options("openai/gpt-4o-mini")[0] == "openai/gpt-4o-mini"
+    assert chat_model_options("some/other-model")[0] == "some/other-model"
+
+
+def test_an_off_list_configured_model_is_offered_rather_than_dropped():
+    options = chat_model_options("some/other-model")
+
+    assert "some/other-model" in options
+    assert set(CHAT_MODEL_CHOICES) <= set(options), "and the fixed set is still offered"
+    assert len(options) == len(CHAT_MODEL_CHOICES) + 1
+
+
+def test_a_configured_model_already_in_the_set_is_not_offered_twice():
+    # `st.selectbox` raises on duplicate options, so this is a crash and not a cosmetic
+    # repetition — and it fires on the *default* configuration, which is the one case a
+    # deployment cannot avoid.
+    options = chat_model_options(CHAT_MODEL_CHOICES[0])
+
+    assert options == CHAT_MODEL_CHOICES
+    assert len(set(options)) == len(options)
+
+
+def test_the_default_chat_model_is_one_of_the_offered_choices():
+    # Not a tautology with the test above: it binds the *tuple* to `Settings`' own default, so
+    # changing `FINBRIEF_CHAT_MODEL`'s fallback without touching the tuple leaves the shipped
+    # app's default model absent from its own picker.
+    settings = Settings.from_env({"OPENROUTER_API_KEY": "sk-test"})
+
+    assert settings.chat_model in CHAT_MODEL_CHOICES
+
+
+def test_every_choice_is_an_openrouter_slug_and_the_set_spans_providers():
+    # `provider/model` is the shape OpenRouter routes on; a bare model name reaches it as an
+    # unknown model. The provider spread is the point of the picker — a set of four OpenAI
+    # models would demonstrate nothing about swapping.
+    assert all(slug.count("/") == 1 and slug == slug.strip() for slug in CHAT_MODEL_CHOICES)
+    providers = {slug.split("/")[0] for slug in CHAT_MODEL_CHOICES}
+    assert len(providers) >= 3, f"one provider per dialect is the exercise; got {providers}"
+    assert len(set(CHAT_MODEL_CHOICES)) == len(CHAT_MODEL_CHOICES)

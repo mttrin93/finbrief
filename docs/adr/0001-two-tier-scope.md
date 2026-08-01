@@ -74,3 +74,55 @@ different sets and, in doing so, dropped **scheduled KB updates** — a cut item
 the record of, no longer recorded anywhere as cut. An ADR whose job is to say what was cut has to
 get the arithmetic of its own list right; the numbered Phase-8 items above the tail were never
 reversed and PLAN §6 tracks them.
+
+---
+
+## Amendment (ticket T14, issue #15) — **multi-model**, the first *numbered* Phase-8 item to return
+
+**What this reverses.** Every reversal above was a tail item. This one is
+**Phase-8 item 4** — one of the numbered items the T12 amendment's own correction is careful to
+say "were never reversed". It is now built: a sidebar picker over four OpenRouter models,
+answering only.
+
+The argument that demoted it is unchanged and still correct. Multi-model reinforces neither the
+retrieval nor the evaluation work, and it would not have been worth displacing any of it —
+**it is the same trade as the four tail items, and it came due for the same reason**: the Tier-1
+gate is long passed, and the substrate turned out to be already there. `llm.build_chat_model` has
+taken a `model=` override since T3, OpenRouter is one base URL for every upstream, and ADR-0008
+already names the model picker as session state in its own decision text ("`st.session_state`
+holds only the `thread_id`, UI toggles (model, strategy), and the display transcript"). What was
+actually built is a widget, one cache key, one log field, and the honesty rules that follow.
+
+**Which is where the interesting part is, and it is not the picker.** Three of the five reversals
+above shipped no new measurement — that is what made them cheap. This one *changes an existing
+one*, and the change is a subtraction: the cost meter's two price knobs describe **one** model, so
+a conversation answered on another cannot be priced at all. ADR-0011's refusal to ship a rate card
+is what forces that (OpenRouter routes by availability, so a price in this repo is a figure nobody
+measured going stale), and four selectable models make the refusal stronger rather than weaker.
+The rule is recorded there, in ADR-0011's own amendment, beside the reinstatement it qualifies:
+**price only when every metered turn ran on the priced model; otherwise report the tokens and say
+why.** A wrong dollar figure is worse than no dollar figure, and this one would have been invisible
+— the tokens behind it are real.
+
+**PLAN §6 item 4's open question is answered by scoping, not by a measurement**, and the
+distinction matters because the question was a real one: *the injection classifier and the
+agent/tool-calling prompts are tuned per model — does swapping silently break tool-calling?* Half
+of it dissolves. The **classifier is not selectable** (`Settings.classifier_model` keeps its own
+field), so ADR-0006 layer 3 is untouched by the picker and no gate claim depends on which model
+answers. The other half is real and is handled by bounding it rather than clearing it: all four
+slugs are tool-calling models, a model that fans out badly is slower rather than wrong
+(`MAX_AGENT_STEPS` bounds the loop either way), and **no per-model tool-calling eval ships**.
+T10's tool eval ran on the default and that remains the measured configuration — a per-model
+number would mean the harness run four times over, which is four times the spend for a Tier-2
+widget. Stated here so the gap is a decision and not an omission.
+
+**Also recorded in ADR-0008**, whose two-session isolation guarantee this touches: the picker adds
+a cache key, so the process now opens **up to four** SQLite connections where it opened exactly
+one. Isolation is unchanged — it was never carried by there being one agent — and that was
+measured before anything was built rather than argued from the code.
+
+**The three that remain cut** after this: the **MCP client** and **tools-as-MCP-server** (Phase-8
+item 3 and its tail), **real-time KB refresh** (item 5), and from the generic tail
+**auth + watchlists**, **scheduled KB updates** and the **multi-language toggle**. Deploy (item 1)
+is unbuilt and still the highest-value remaining item. The cut-if-undefendable rule still applies
+to all of them.

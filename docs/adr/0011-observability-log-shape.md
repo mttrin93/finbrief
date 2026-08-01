@@ -448,3 +448,68 @@ The header rather than the panel, because the claim is true of every figure on t
 caveat printed once per panel is one a reader learns to skip (#14's copy pass).
 The pointer is rendered by `evaluation/report.py`'s deferral block rather than typed into the
 artifact, because every file in `docs/verification/` is generated.
+
+## Amendment (ticket T14, issue #15): four models can answer, so one rate card can price nothing
+
+The picker (ADR-0001's T14 amendment; ADR-0008's) changes the **answering** model per session.
+Nothing about the log's shape changes; two things about what may be *claimed* from it do.
+
+**1. `agent_turn` carries `model`, and a second field carries what actually answered.** A model
+slug is configuration and not user content — it names a product, not a person or a question — so
+it needs no exception to §1's rule and joins the counts-and-verdicts payload directly. There are
+**two** fields because they can disagree: `model` is what the picker requested, `model_reported`
+is what the reply's `response_metadata` said. OpenRouter fronts many upstreams and routes by
+availability, so a routing surprise should be visible rather than silent, and folding them into
+one field would mean either losing the request or reporting the request as a measurement of what
+ran. `model_reported` is `None` whenever the provider named nothing, which every scripted model in
+the suite does — treating that absence as confirmation that the requested model ran is exactly the
+fabricated-measurement failure `observability/tokens.py` exists to forbid.
+
+`model` defaults to `None` rather than to `settings.chat_model` for the same reason: `answer()` is
+handed a *built* agent and cannot see which model is inside it, so the configured slug would be a
+guess indistinguishable from a reading. A caller that names none is **unattributed**, and the
+analytics page gives it a slice labelled as such.
+
+**2. §3's refusal to ship a rate card now bites harder, and the honest consequence is a
+subtraction.** The two knobs are a single pair describing **one** model. Four selectable models
+make a Haiku turn priced at the gpt-4o-mini rate reachable — a figure that is simply wrong, in the
+one panel whose entire subject is spend, and **wrong invisibly**, because the tokens behind it are
+real and the arithmetic is sound. So:
+
+> **Price a conversation only when every metered turn ran on the priced model. Otherwise report
+> the tokens and name the reason.**
+
+This is `Tokens.partial`'s shape rather than a new idea — a **third** absence beside "no price is
+configured" and "nothing reported the tokens a price would multiply", each with its own sentence.
+`Spend.dollars` takes `priced_model` as a **required** keyword, not an optional check: an optional
+one defaults to not checking, which is how the wrong figure would have survived in whichever
+caller was not updated. Three ways to be unattributed all refuse: a second model in the
+conversation, a turn that recorded no model, and no answering line at all. A wrong dollar figure
+is worse than no dollar figure.
+
+**Per-model pricing was considered and declined**, and the argument is §3's unchanged: a rate card
+in this repo is a number nobody measured going stale. Four rate cards are four such numbers. What
+ships instead is the refusal plus the split below.
+
+**3. The planner is not in the split, and that is a fact about the code rather than a
+simplification.** `retrieval/retrieve.py` builds its sub-query planner with
+`build_chat_model(settings)` and takes no override, so a `query_translation` line is **always** on
+the configured model and carries no `model` field at all. Two consequences, both stated where they
+land: those lines are excluded from `Spend.models` (reading their absence in would make every
+translated turn unattributed for a reason that does not exist), and the analytics page's per-model
+rows sum to *less* than the totals above them by exactly the planner's share — which the panel
+says, because unsaid it reads as an arithmetic bug in the table.
+
+**4. The dashboard splits tokens and turn latency by model.** Nearly free once the field exists,
+and the case it exists for is precisely this sink: append-only across every session, so four
+models' turns land in one pool where a single p50 describes none of them. The rules already in
+force carry over unchanged — a model that metered nothing reports an absence and never a zero, a
+one-model log gets a sentence rather than a one-row table implying the others answered nothing,
+and the unattributed row is named as *not a model and not the configured one either*. `by_model`
+lives in `observability/analytics.py` like every other aggregate here: it takes an `EventLog` and
+parses nothing.
+
+**What this does not add.** No per-model quality claim. `docs/verification/evaluation.md` remains
+the measurement artifact of record and every figure in it ran on the default model; a per-model
+number would mean the harness run once per model. ADR-0001's T14 amendment records that as a
+scoping decision rather than an omission.

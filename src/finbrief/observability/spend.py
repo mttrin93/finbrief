@@ -159,11 +159,35 @@ class Spend:
     unfinished: int
     input: Tokens
     output: Tokens
+    #: The models this conversation's **answering** turns ran on — one `agent_turn`'s `model`
+    #: field per turn, and `None` among them for a turn that recorded none (T14, #15).
+    #:
+    #: A set rather than a single value, because one conversation can hold several: the
+    #: checkpointer is keyed on `thread_id` and not on the model, so switching the picker
+    #: mid-conversation keeps the history and adds a second model to the same thread.
+    #:
+    #: **`query_translation` lines are deliberately not in here.** The planner builds its own
+    #: model with `build_chat_model(settings)` and takes no override
+    #: (`retrieval/retrieve.py`), so its line is always on the configured model and carries no
+    #: `model` field at all — reading those absences in would make every translated turn
+    #: unattributed for a reason that does not exist.
+    models: frozenset[str | None] = frozenset()
 
     @property
     def measured(self) -> bool:
         """Whether any call in this conversation reported any count."""
         return self.input.measured or self.output.measured
+
+    def all_answered_on(self, model: str) -> bool:
+        """Whether every answering turn here ran on `model`, and something said so.
+
+        An **equality** against a one-element set, which is what makes each of the three ways to
+        fail fail: a second model in the conversation, a turn that recorded no model at all, and
+        a conversation with no answering line yet. The last two are absences and this returns
+        `False` for them, because "nothing attributed this" is not "this ran on the priced
+        model" — the distinction the whole module is built around.
+        """
+        return self.models == frozenset({model})
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -190,19 +214,40 @@ class Spend:
         )
 
     def dollars(
-        self, *, input_per_mtok: float | None, output_per_mtok: float | None
+        self,
+        *,
+        input_per_mtok: float | None,
+        output_per_mtok: float | None,
+        priced_model: str,
     ) -> float | None:
         """The cost of this spend at the configured prices, or `None` when it cannot be priced.
 
-        `None` for either of two reasons, and the caller says which: no price is configured (the
-        default — see `config.Settings.input_cost_per_mtok`), or nothing reported the tokens a
-        price would multiply. Both are absences and neither is `$0.00`, which on a spend panel
-        would read as "this conversation was free".
+        `None` for **three** reasons now, and the caller says which: no price is configured (the
+        default — see `config.Settings.input_cost_per_mtok`), nothing reported the tokens a
+        price would multiply, or the turns did not all run on `priced_model`. All three are
+        absences and none is `$0.00`, which on a spend panel would read as "this conversation
+        was free".
+
+        **The third is T14's (#15), and it is the same shape as `Tokens.partial`.** The two
+        price knobs are a single pair configured for one model, and no per-model rate card
+        ships — ADR-0011 refused one because OpenRouter fronts many upstreams and routes by
+        availability, so a price in this repo is a figure nobody measured going stale in the one
+        panel about spend. Four selectable models make that stronger, not weaker. What they also
+        make reachable is a turn on Haiku multiplied by the gpt-4o-mini rate, and **a wrong
+        dollar figure is worse than no dollar figure** — especially here, where the wrongness is
+        invisible because the tokens behind it are real.
+
+        `priced_model` is a **required** keyword rather than an optional check. An optional one
+        defaults to not checking, which is how the wrong figure would survive in every caller
+        that had not been updated — and the two callers here are the two surfaces that render
+        spend.
 
         A **partial** total is still priced, because the tokens in it were really spent; what
         the caller owes beside the figure is the fact that it is a floor rather than a total,
         which is `partial` above.
         """
+        if not self.all_answered_on(priced_model):
+            return None
         prices = (
             (self.input.total, input_per_mtok),
             (self.output.total, output_per_mtok),
@@ -263,6 +308,9 @@ def conversation_spend(log: EventLog, *, thread_id: str) -> Spend:
         unfinished=len(started - completed),
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
+        # Answering lines only — `COMPLETED_EVENT` and not `TOKEN_EVENTS`. See `Spend.models`
+        # for why the planner's line is excluded rather than read as an absence.
+        models=frozenset(event.field("model") for event in ours(COMPLETED_EVENT)),
     )
 
 

@@ -545,6 +545,66 @@ MAX_QUESTIONS_PER_SESSION = 40
 
 
 # --------------------------------------------------------------------------------------
+# The answering model the reader may pick (T14, #15)
+# --------------------------------------------------------------------------------------
+
+#: The models the sidebar picker offers for **answering**. A fixed set, not free text: a typo in
+#: a text box reaches OpenRouter as a provider error in the middle of a turn, and the whole
+#: value of a picker is that the set is known.
+#:
+#: **Chat only.** `Settings.classifier_model`, `judge_model` and `embedding_model` are not
+#: selectable and each keeps its own field, for the reason those fields already give — three
+#: roles, three prices, and raising one must not raise the others. The embedding model is doubly
+#: excluded: ingest and query must share it (`retrieval/embeddings.py`), so a picker over it
+#: would degrade retrieval to noise with no error at all.
+#:
+#: A module constant rather than a `Settings` field, on `MAX_QUESTIONS_PER_SESSION`'s reasoning
+#: above: this is what the one human-facing door offers, and a deployment wanting a different
+#: set is changing what the app *is* rather than configuring it. What a deployment *can* change
+#: is which model answers by default — `FINBRIEF_CHAT_MODEL`, honoured by `chat_model_options`
+#: below even when it names something absent from here.
+#:
+#: Four slugs across three providers plus an open weight, which is the exercise: a set of four
+#: OpenAI models would demonstrate nothing about swapping, since tool-calling dialects differ by
+#: provider and that is the difference a picker exists to expose. All four are tool-calling
+#: models, because the agent binds four tools and a model that cannot call them answers every
+#: question ungrounded.
+#:
+#: **Unverified against OpenRouter's live catalogue, deliberately.** Checking costs a paid call
+#: the hermetic suite forbids (CLAUDE.md), and OpenRouter fronts many upstreams and retires
+#: slugs on their schedule rather than this repo's. A retired slug therefore fails at **first
+#: use**, as a provider error on the turn it was picked for — not at startup, and not in a test.
+#: The default is the one slug every committed measurement actually ran on.
+CHAT_MODEL_CHOICES: tuple[str, ...] = (
+    "openai/gpt-4o-mini",
+    "anthropic/claude-3.5-haiku",
+    "google/gemini-2.0-flash-001",
+    "meta-llama/llama-3.3-70b-instruct",
+)
+
+
+def chat_model_options(configured: str) -> tuple[str, ...]:
+    """The picker's options: the configured model first, then `CHAT_MODEL_CHOICES`.
+
+    **Configured-first, and it is not cosmetic.** `st.selectbox` selects index 0, so leading the
+    list is what makes the widget's default *be* `FINBRIEF_CHAT_MODEL` rather than merely
+    contain it. Any other order means a deployment that set the variable answers on a model
+    nobody chose — the picker silently overriding the one piece of configuration it exists to
+    respect.
+
+    An off-list value is **offered, never dropped**: an operator pointing the app at a model
+    this tuple has not heard of has made a decision, and a picker that omitted it would present
+    a default it does not use. Deduplicated because a repeated option is a
+    `StreamlitDuplicateElementId`-class crash rather than a cosmetic repetition, and it would
+    fire on the *default* configuration — the one case no deployment can avoid.
+
+    Takes the configured string rather than a `Settings`, so it sits above that dataclass and
+    stays callable from a test with no environment at all.
+    """
+    return (configured, *(slug for slug in CHAT_MODEL_CHOICES if slug != configured))
+
+
+# --------------------------------------------------------------------------------------
 # Retrieval strategy switches (ADR-0004, ADR-0005)
 # --------------------------------------------------------------------------------------
 

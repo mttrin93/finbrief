@@ -334,7 +334,9 @@ uv run pytest
 
 ## 2.6 User interface
 
-Streamlit chat, one page. What is on it, and where each surface is documented:
+Streamlit chat on one page — the app's second page is the analytics dashboard
+([3.19](#319-advanced-analytics-dashboard)), which reads the event log and is not part of asking a
+question. What is on the chat page, and where each surface is documented:
 
 | surface | what it shows | detail |
 |---|---|---|
@@ -346,6 +348,7 @@ Streamlit chat, one page. What is on it, and where each surface is documented:
 | progress indicators | an `st.status` block naming each step as the agent runs it | |
 | marker note | any `[n]` that resolves to no panel entry, named rather than stripped | [3.3](#33-source-citations) |
 | sidebar | Conversation · How to use FinBrief · Token spend · Grounding scope · Configuration · Universe — four of them collapsed panels | [3.1](#31-conversation-history--export), [3.4](#34-interactive-help--guide), [3.9](#39-token-usage--cost-display) |
+| **model picker** | inside *Configuration*, which is where the answering model was already stated — so the panel that told a reader what answers is the one that changes it. The only control in the sidebar besides *Start over* and the example buttons | [3.5](#35-multi-model-support) |
 | export buttons | the conversation as JSON or CSV | [3.11](#311-conversation-export-in-various-formats) |
 
 **Retrieved text renders through `st.text`, not Markdown**, because a filer's own `$178,353` is a
@@ -425,7 +428,7 @@ and Hard. The numbers `3.1`…`3.21` below are a **local convention of this repo
 list in the order I recorded it, and are used only as stable subsection anchors. [the README's Part 3](../README.md#32-all-21-with-status) is the full 21-row table, named rather than numbered, so
 nothing here depends on the numbering being anyone else's.
 
-Fourteen are built: **Easy 4/4 · Medium 6/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
+Fifteen are built: **Easy 4/4 · Medium 7/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
 
 ## Easy
 
@@ -546,6 +549,101 @@ bypassed `screen()` would be a second door into the agent.
 the gate — a second door for a convenience.
 
 ## Medium
+
+### 3.5 Multi-model support
+
+A sidebar picker over four OpenRouter models, changing the **answering** model only.
+`config.CHAT_MODEL_CHOICES` is a fixed tuple, not free text: a mistyped slug reaches OpenRouter as
+a provider error in the middle of a turn, and the value of a picker is that the set is known. Four
+slugs across three providers plus an open weight, because a set of four OpenAI models would
+demonstrate nothing about swapping — tool-calling dialects differ by provider, and that is the
+difference a picker exposes.
+
+Like the T12 items this **adds no integration**. `llm.build_chat_model` has taken a `model=`
+override since T3, OpenRouter is one base URL for every upstream, and ADR-0008's decision text
+already reserved the session-state slot ("UI toggles (model, strategy)"). What was built is a
+widget, one cache key, one log field, and the rules that follow from a log where four models
+answered.
+
+**What is *not* selectable, and each for its own reason.** `classifier_model` and `judge_model`
+keep their own fields because three roles are three prices and raising one must not raise the
+others; the classifier's exclusion also means a switch cannot weaken ADR-0006's gate, which is half
+of PLAN §6's open question dissolving rather than being answered. `embedding_model` is excluded
+twice over: ingest and query must share it, so a picker there would degrade retrieval to noise
+**with no error at all**.
+
+**The mechanism was measured before anything was built**, because the picker touches the one thing
+ADR-0008's two-session guarantee rests on. `@st.cache_resource` keys on its arguments, so
+`shared_agent(model)` yields one agent *per model* and replaces nothing — the entry for the previous
+model stays live for the sessions still on it. Isolation is unchanged, and the reason is that it was
+never carried by there being one agent: it comes from the per-session `uuid4` thread id. The cost is
+that the process now opens up to four SQLite connections where it opened one, which ADR-0008's
+amendment records along with what contention would look like.
+
+**Which is also why a conversation survives a switch.** Every `build_agent` resolves
+`build_checkpointer` to the same `checkpoint_db`, and the checkpointer is keyed on `thread_id` and
+not on the model — so a second agent reading the same file under the same thread is handed the
+first's history. Asserted at the seam rather than assumed, and asserted on what the second model
+was **shown** (`ScriptedChatModel.prompts`) rather than on the returned state accumulating: a
+follow-up whose prompt lacks the earlier turn has no conversation to resolve *and its debt?*
+against, however well it answers.
+
+**The isolation requirement as first specified was a check that cannot fail**, and this is the
+clearest instance of that bug class in the repo because the fix is a *second* test rather than a
+better assertion. Drop the model from the cached builder and every session silently answers on
+`FINBRIEF_CHAT_MODEL` — while still holding two distinct thread ids, still sending each turn to its
+own thread. An isolation test passes before and after. So `test_app_state.py` carries two tests and
+says which is which: the property (two sessions on two models stay separate, marked as *not* the
+detector) and the detector (the picked model reaches `build_agent`, as an **equality** on the built
+models). Two mutations were applied — the slug accepted and discarded, then the parameter removed
+entirely — and the detector failed on both while the property test passed on both.
+
+**Two fields record which model answered, because they can disagree.** `agent_turn` carries `model`
+— what the picker requested, the key the spend panel and the dashboard aggregate on — and
+`model_reported`, what the reply's own metadata said. OpenRouter routes by availability, so a
+routing surprise should be visible rather than silent. Both default to `None` and never to the
+configured slug: `answer()` is handed a *built* agent and cannot see which model is inside it, so
+filling it in would be a guess rendered indistinguishable from a reading. A slug is configuration
+and not user content, so neither field needs an exception to the logging rules.
+
+**The cost meter gives something up, and that is the most interesting part of the ticket.** The two
+price knobs are a single pair describing one model, and no per-model rate card ships — ADR-0011
+refused one because OpenRouter fronts many upstreams, so a price in this repo is a figure nobody
+measured going stale in the one panel whose subject is spend. Four models make a Haiku turn priced
+at the gpt-4o-mini rate reachable: wrong, and **wrong invisibly**, since the tokens are real and the
+arithmetic is sound. So a conversation is priced only when every metered turn ran on the priced
+model, and otherwise reports its tokens with the reason. It is `Tokens.partial`'s shape — a third
+absence beside "no price configured" and "nothing reported the tokens" — and `priced_model` is a
+**required** keyword, because an optional check defaults to not checking and the wrong figure would
+have survived in whichever caller went unupdated.
+
+**The dashboard splits tokens and turn latency by model**, which is nearly free once the field
+exists and is exactly what this sink needs: append-only across every session, so four models' turns
+land in one pool where a single p50 describes none of them. The rules carry over — a model that
+metered nothing shows words and not zeros, a one-model log gets a sentence rather than a one-row
+table implying the others answered nothing, and the unattributed row (every turn logged before the
+field existed, which is most of an established sink) is named as *not a model and not the configured
+one either*. The rows sum to less than the totals above them, by exactly the planner's share, and
+the panel says so: `retrieval/retrieve.py` builds the sub-query planner with no override, so a
+`query_translation` line is always on the configured model and belongs to no row. Unsaid, that
+difference reads as an arithmetic bug.
+
+**No per-model quality claim, and this is a scoping decision rather than an omission.** PLAN §6's
+open question — do the per-model-tuned tool-calling prompts break on a swap? — is answered by
+bounding it: all four slugs are tool-calling models, and a model that fans out badly is slower
+rather than wrong, since `MAX_AGENT_STEPS` bounds the loop either way. What does **not** ship is a
+per-model tool-calling eval. T10's ran on the default and that remains the measured configuration;
+every figure in `docs/verification/evaluation.md` is a claim about `openai/gpt-4o-mini` and about
+nothing else. A per-model number would mean the harness run four times over, which is four times
+the spend for a Tier-2 widget.
+
+**And `FINBRIEF_CHAT_MODEL` stays the default.** The options are the configured model first, then
+the tuple, deduplicated — so an operator who points the app at a model the tuple has not heard of
+has it honoured rather than overridden. Configured-first is not cosmetic: `st.selectbox` selects
+index 0, so leading the list is what makes the widget's default *be* the setting rather than merely
+contain it. The four slugs are **unverified against OpenRouter's live catalogue**, and the code says
+so — checking costs a paid call the hermetic suite forbids, and a retired slug fails at first use as
+a provider error rather than at startup.
 
 ### 3.7 Prompt-injection protection
 
@@ -675,6 +773,16 @@ every model through OpenRouter, which fronts many upstreams and routes by availa
 price of a call is not something this codebase can assert. A hardcoded figure would be a number
 nobody measured, going stale silently, in the one panel whose entire subject is spend. Two knobs
 rather than one because input and output are priced differently everywhere.
+
+**And they price one model, so there is a third absence** ([3.5](#35-multi-model-support)). Since
+the sidebar lets a reader switch the answering model, a conversation answered on something other
+than the priced one reports its tokens and **no dollar figure** — the same shape as the partial
+rule above, and for a sharper version of the reason: a Haiku turn multiplied by the gpt-4o-mini
+rate is not an incomplete figure but a **wrong** one, and wrong invisibly, since the tokens behind
+it are real and the arithmetic is sound. Three ways to be unpriceable, three sentences: no price
+configured, no tokens reported, or not every metered turn on the priced model. Per-model pricing
+was declined on the paragraph above's own argument — four rate cards are four numbers nobody
+measured.
 
 Measured spend from the last evaluation run, for scale
 ([`evaluation.md`](verification/evaluation.md)):
@@ -1092,6 +1200,7 @@ to the wrong knob.
 | The agent | `agent_turn`, `citation_markers` | divergence is the *complement* of `verbatim`, and it is measured rather than enforced (ADR-0003) — a resolved pronoun is a permitted rewrite, so the panel calls it behaviour rather than faults |
 | Tools | `tool_call`, `tool_refused`, `tool_unavailable`, `stale_fallback` | "tickers the finance tools were called for", not "tickers asked about" — a filings-only question names no ticker in a log that carries no user content |
 | Spend | `agent_turn`, `query_translation` | each field against its own denominator, and the unmetered gate classifier named **unconditionally** |
+| By model | `agent_turn.model` | tokens and turn latency per answering model ([3.5](#35-multi-model-support)) — the rows sum to *less* than the totals above by the planner's share, since the planner runs on the configured model and its line belongs to no row; and the unattributed row is named as neither a model nor the default |
 | Retrieval | `retrieval` | split by `strategy` × `translation`, over whatever ran rather than over a trial |
 | The planner | `query_translation` | the planner's own round and **not** the full cost of translating a query, which is ADR-0005's clause and is recorded as missed in `evaluation.md` |
 

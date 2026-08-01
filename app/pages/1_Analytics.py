@@ -43,6 +43,7 @@ from finbrief.observability.analytics import (
     Tally,
     activity,
     agent_behaviour,
+    by_model,
     citations,
     gate_summary,
     open_sink,
@@ -87,14 +88,20 @@ def sink_path():
     return resolve_log_file(os.environ)
 
 
-def configured_prices() -> tuple[float | None, float | None, bool]:
-    """The two price knobs, and whether configuration could be read at all.
+def configured_prices() -> tuple[float | None, float | None, str | None]:
+    """The two price knobs and the model they are for, or three `None`s when unreadable.
 
     Three states rather than two, because they call for three different sentences. A price is
     configuration and unset means unpriced (ADR-0011 §3 — there is no rate card in this repo,
     since every model is reached through OpenRouter's routing). But a `Settings` that cannot be
     built at all is a *different* absence, and telling a reader to set a price when the real
     problem is a missing key would send them to the wrong knob.
+
+    The third element carried a `readable` boolean until T14 (#15); it carries the **priced
+    model** now, and `None` still means "configuration could not be read" — the two facts have
+    one source and one failure, so the model *is* the readability signal rather than a second
+    thing to keep in step with it. `Spend.dollars` needs it because the two prices describe one
+    model and a reader may pick another.
 
     Unlike `load_env` above this does not stop the page: the log is readable without an API key,
     and refusing to show yesterday's traffic because today's key is missing would be a page
@@ -103,8 +110,8 @@ def configured_prices() -> tuple[float | None, float | None, bool]:
     try:
         settings = get_settings()
     except ConfigError:
-        return None, None, False
-    return settings.input_cost_per_mtok, settings.output_cost_per_mtok, True
+        return None, None, None
+    return settings.input_cost_per_mtok, settings.output_cost_per_mtok, settings.chat_model
 
 
 # --- Rendering helpers ------------------------------------------------------------------
@@ -571,19 +578,98 @@ def render_spend(log) -> None:
     # copy of it, and two copies of one sentence disagree on the turn one of them is edited.
     # This is the surface that renders it: it totals the whole log (#14 copy pass).
     st.caption(UNMETERED_CLASSIFIER_NOTE)
+    render_by_model(log)
+
+
+def render_by_model(log) -> None:
+    """Per-model tokens and turn latency — the panel the picker makes necessary (T14, #15).
+
+    **Inside the spend panel rather than beside it**, because it is the breakdown *of* the
+    totals above: a reader who has just been told the whole log cannot be priced needs the split
+    in the same glance, not two panels away.
+
+    Rendered as a table and not a chart. Four models over two measures is a comparison read
+    row-by-row, and the two measures have different units — a bar chart of tokens beside
+    milliseconds would need two axes to say less. It also keeps every absence printable as a
+    word, which is the constraint a chart cannot meet (`Distribution` may be unmeasured, and a
+    token field nothing reported is `None` and not `0`).
+    """
+    slices = by_model(log)
+    if not slices:
+        absent("answered turn attributed to a model")
+        return
+    if len(slices) == 1 and slices[0].model is not None:
+        # **One model is not a comparison, and a one-row table implies the others answered
+        # nothing.** The figures are already above; what a reader gains here is the label.
+        st.caption(f"Every answered turn in this log ran on `{slices[0].label}`.")
+        return
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Model": one.label,
+                    "Turns": one.turns,
+                    "Input": _tokens(one.tokens.input.total),
+                    "Output": _tokens(one.tokens.output.total),
+                    "Turn latency": figures(one.latency),
+                }
+                for one in slices
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+        height="content",
+    )
+    # **Two sentences the table cannot carry, and both are about what is *not* in it.**
+    #
+    # The planner's tokens belong to no row: `query_translation` carries no model because the
+    # planner takes no override, so the rows sum to less than the totals above by exactly the
+    # planner's share. Unsaid, that difference reads as an arithmetic bug in the table.
+    st.caption(
+        "Rows cover answering calls only. The sub-query planner runs on the configured model "
+        "whatever is picked and is logged separately, so these rows sum to less than the "
+        "totals above."
+    )
+    # And an unattributed row is not a fifth model: it is turns from before the field existed,
+    # which is most of an established sink. Named only when there is one, because a caveat about
+    # a row nobody can see is noise.
+    if any(one.model is None for one in slices):
+        st.caption(
+            "`not recorded` is turns logged before the model was recorded on a turn — not a "
+            "model, and not the configured one either."
+        )
 
 
 def render_cost(totals) -> None:
-    """The priced total, or which of the two absences is in the way."""
-    input_price, output_price, readable = configured_prices()
-    if not readable:
+    """The priced total, or which of the three absences is in the way."""
+    input_price, output_price, priced_model = configured_prices()
+    if priced_model is None:
         st.caption(
             "Cost cannot be shown: this page could not read the app's configuration, so it "
             "does not know whether a price is set. The token counts above are unaffected."
         )
         return
-    dollars = totals.dollars(input_per_mtok=input_price, output_per_mtok=output_price)
-    if dollars is None:
+    dollars = totals.dollars(
+        input_per_mtok=input_price,
+        output_per_mtok=output_price,
+        priced_model=priced_model,
+    )
+    if dollars is None and not totals.all_answered_on(priced_model):
+        # **The third absence, and on this page it is the likely one** (T14, #15). This total is
+        # over the *whole sink*, which spans every session and every model anyone picked — and
+        # every `agent_turn` written before T14 carries no model at all, so an established log
+        # lands here rather than in either branch below.
+        #
+        # Ordered ahead of the unpriced branch for the reason `app/Home.py` orders it the same
+        # way: it is the more specific claim, and "set the two variables" would be advice that
+        # does not help. It names no per-model breakdown as a remedy, because none exists — the
+        # per-model panel above splits *tokens*, which is what this repo can measure.
+        st.caption(
+            f"Cost is not shown: the configured prices are for `{priced_model}`, and this log "
+            "holds turns answered on another model — or on none it recorded. The token counts "
+            "above are measured."
+        )
+    elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through
         # OpenRouter's routing, so there is no rate card in this repo to read one from
         # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.

@@ -46,6 +46,7 @@ from finbrief.config import (
     UNIVERSE,
     ConfigError,
     RetrievalStrategy,
+    chat_model_options,
     get_settings,
     resolve_log_file,
     thinnest_cluster_filer,
@@ -60,6 +61,7 @@ from finbrief.export import (
 )
 from finbrief.finance.ratios import Metric, Unit
 from finbrief.ingestion.edgar import filing_index_url
+from finbrief.llm import build_chat_model
 from finbrief.observability.events import read_events, sink_offset
 from finbrief.observability.logging_setup import configure_logging, log_event
 
@@ -134,19 +136,32 @@ except ConfigError as exc:
 
 
 @st.cache_resource
-def shared_agent():
-    """The one agent and the one checkpointer this process has (ADR-0008).
+def shared_agent(model: str):
+    """The one agent per answering model this process has (ADR-0008, amended by T14).
 
     Cached across reruns *and* across sessions, which is the whole design: a checkpointer
     built per rerun remembers nothing, and one built per session would put every user's
     conversation in its own file for no benefit. Isolation comes from `thread_id` instead.
+
+    **`model` is a cache key, not a switch.** `@st.cache_resource` keys on the arguments, so
+    this yields one agent per model a reader has picked and *replaces* nothing — the entry for
+    the previous model stays live for the sessions still using it. Measured before it was built
+    (#15), because this is the mechanism ADR-0008's two-session guarantee sits on and a
+    replacement would have handed one session another's agent mid-turn.
+
+    Two consequences, both recorded in ADR-0008's T14 amendment. Isolation is **unchanged**: it
+    was never carried by there being one agent, only by the per-session `thread_id`. And the
+    process now opens one SQLite connection per model picked rather than exactly one, because
+    every `build_agent` resolves `build_checkpointer` to the same `checkpoint_db` — which is
+    also precisely why a conversation survives a switch, since the file and the `thread_id` are
+    what a conversation is.
 
     Not wrapped in the configuration banner's `try`: this runs after `get_settings()` has
     already succeeded, so the failures left here (an unwritable checkpoint path, say) are not
     configuration problems a banner could explain, and hiding them would mean a chat input
     that silently cannot answer.
     """
-    return build_agent()
+    return build_agent(model=build_chat_model(settings, model=model))
 
 
 # One id per session, minted before the first message so every turn in this browser tab lands
@@ -212,6 +227,29 @@ if "messages" not in st.session_state:
 #: disagree — which here would fail *open*, back into the blank panel this exists to fix.
 QUESTION_KEY = "question"
 PENDING_QUESTION_KEY = "pending_question"
+
+#: The model picker's widget key, and therefore where the chosen slug lives (T14, #15).
+#:
+#: A widget key rather than a hand-managed `session_state` entry, because Streamlit restores a
+#: keyed widget's value across reruns by itself — which is exactly the "UI toggles (model,
+#: strategy)" slot ADR-0008 already reserves in `session_state`, and nothing more. The picker is
+#: rendered in the sidebar and read ~1,400 lines below at the `answer()` call, so the key is
+#: named here for `QUESTION_KEY`'s reason: a key spelled twice is a lookup that returns `None`
+#: the day the copies disagree, and here that would silently answer on the configured model
+#: while the sidebar showed another.
+CHAT_MODEL_KEY = "chat_model"
+
+
+def chosen_model() -> str:
+    """The model this turn will answer on — the picker's value, or the configured default.
+
+    The fallback is for the ordering rather than for a missing case: on the very first run the
+    widget has not been created yet when the initialisers above execute, and `Settings` is the
+    honest answer at that point because it is what the widget is about to select (its options
+    lead with it). Every run after the first reads the reader's own choice.
+    """
+    return st.session_state.get(CHAT_MODEL_KEY) or settings.chat_model
+
 
 #: The label the progress box ends on, and the one a replayed row puts back.
 #:
@@ -422,8 +460,27 @@ def render_spend_meter(*, answering: bool = False) -> None:
     dollars = spend.dollars(
         input_per_mtok=settings.input_cost_per_mtok,
         output_per_mtok=settings.output_cost_per_mtok,
+        # The prices are a single pair, configured for the model `Settings` names — see
+        # `Spend.dollars`. A conversation answered on anything else is reported in tokens and
+        # not in dollars, which is the branch below.
+        priced_model=settings.chat_model,
     )
-    if dollars is None:
+    if dollars is None and not spend.all_answered_on(settings.chat_model):
+        # **The picker's cost consequence, stated where the figure would have been** (T14, #15).
+        # Ordered before the unpriced branch because it is the more specific claim: with prices
+        # configured *and* another model answering, "set the two variables" is advice that would
+        # not help, and with no prices configured this reader has the same two things to do
+        # either way.
+        #
+        # It names the configured model rather than the picked one, because what a reader has to
+        # act on is which rate the knobs describe — and it does not offer to price the other
+        # model, since no rate card ships here (ADR-0011 §3) and inventing one is the failure
+        # this branch exists to avoid.
+        st.caption(
+            f"Cost is not shown: the configured prices are for `{settings.chat_model}`, and "
+            "this conversation was answered on another model. The tokens above are measured."
+        )
+    elif dollars is None:
         # No price is assumed rather than guessed at: every model here is reached through
         # OpenRouter's routing, so there is no rate card in this repo to read one from
         # (ADR-0011 §3). What a reader needs is the two knobs, which is what the caption gives.
@@ -601,6 +658,30 @@ with st.sidebar:
         st.caption(GROUNDING_SCOPE_VERIFY)
 
     with st.expander(":material/tune: Configuration"):
+        # **The model is a choice now, and this is where it was already stated** (T14, #15). The
+        # line it replaces read `**Model** \`{settings.chat_model}\``, so the panel that told a
+        # reader what was answering is the panel that lets them change it — rather than a
+        # sixth panel, or a control floating above the prose ADR-0008 §4 requires stay first.
+        #
+        # A `selectbox` over `config.chat_model_options`, never a text input: a mistyped slug
+        # reaches OpenRouter as a provider error in the middle of a turn, and the options are
+        # derived rather than listed here so a hardcoded copy cannot drift from `config`.
+        # `FINBRIEF_CHAT_MODEL` leads the list, which is what makes it the default selection.
+        st.selectbox(
+            "Model",
+            options=chat_model_options(settings.chat_model),
+            key=CHAT_MODEL_KEY,
+            help=(
+                "Answers only. The prompt-injection classifier and the embeddings are fixed — "
+                "switching here cannot weaken the gate, and could not change retrieval "
+                "without making the index unsearchable."
+            ),
+        )
+        # Switching is free of the conversation, and a reader is owed that sentence: the memory
+        # is the checkpointer's and it is keyed on this session's thread, not on the model, so a
+        # switch mid-conversation carries the history across (asserted in `test_agent.py` and
+        # `test_app_state.py`, not assumed).
+        st.caption("Switching keeps this conversation — the new model sees what came before.")
         # One value, not two. Until Phase 4 this panel named a `BASELINE_STRATEGY` constant and
         # captioned the gap to the configured one, because the pre-registered default (ADR-0005)
         # was a strategy `retrieve()` refused. Now the configured strategy *is* what answers, so
@@ -608,7 +689,6 @@ with st.sidebar:
         # honest is that `agent.build_agent` reads these same two settings (nothing here
         # restates them).
         st.markdown(
-            f"**Model** `{settings.chat_model}`  \n"
             f"**Strategy** `{settings.retrieval_strategy}"
             f"{' + translation' if settings.query_translation_enabled else ''}`  \n"
             f"**Top-k** `{settings.retrieval_k}`"
@@ -1573,10 +1653,18 @@ def answer_turn(prompt: str) -> None:
                         status.update(label=label)
                         st.write(label)
 
+                    # **One read of the picker, used twice** (T14, #15): the agent is fetched
+                    # for this model and the same slug is what gets logged onto `agent_turn`.
+                    # Reading `chosen_model()` twice here would be two reads of one widget in
+                    # one run — identical today, and the shape that lets a logged attribution
+                    # disagree with the model that answered the moment anything between them
+                    # touches `session_state`.
+                    model = chosen_model()
                     reply = answer(
                         prompt,
                         thread_id=st.session_state.thread_id,
-                        agent=shared_agent(),
+                        agent=shared_agent(model),
+                        model=model,
                         on_step=note,
                     )
                     status.update(label=TURN_COMPLETE, state="complete", expanded=False)

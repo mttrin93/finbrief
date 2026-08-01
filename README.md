@@ -36,7 +36,7 @@ A ten-minute read. Each section that has a longer version links to it.
 |---|---|
 | **[Part 1 — Orientation](#part-1--orientation)** | what it is · [quickstart](#12-quickstart) · [the demo walkthrough](#13-the-demo-walkthrough) → [`docs/demo.md`](./docs/demo.md) |
 | **[Part 2 — How it works](#part-2--how-it-works)** | [architecture](#21-architecture) · [the validity gap](#22-the-validity-gap-stated-rather-than-assumed) · [grounding scope](#23-the-grounding-scope-disclosure) · [the rest of the build](#24-the-rest-of-the-build-in-brief) → [`docs/implementation.md`](./docs/implementation.md) |
-| **[Part 3 — Optional tasks](#part-3--optional-tasks)** | [the fourteen in brief](#31-the-fourteen-in-brief) · [all 21, with status](#32-all-21-with-status) |
+| **[Part 3 — Optional tasks](#part-3--optional-tasks)** | [the fifteen in brief](#31-the-fifteen-in-brief) · [all 21, with status](#32-all-21-with-status) |
 | **[Part 4 — What the evaluation established](#part-4--what-the-evaluation-established)** | six numbers → [`docs/findings.md`](./docs/findings.md) · [`docs/verification/evaluation.md`](./docs/verification/evaluation.md) |
 | **[Part 5 — Limitations](#part-5--limitations)** | the six that matter → [`docs/limitations.md`](./docs/limitations.md) |
 | **[Part 6 — ADRs, cost, running it](#part-6--adrs-cost-running-it)** | [ADR index](#61-adr-index) · [what it cost](#62-what-it-cost) · [running it](#63-running-it) → [`docs/implementation.md`](./docs/implementation.md) |
@@ -259,9 +259,9 @@ they index the list in the order I recorded it, and are used only as stable subs
 [§3.2](#32-all-21-with-status) is the full 21-row table, named rather than numbered, so
 nothing here depends on the numbering being anyone else's.
 
-Fourteen are built: **Easy 4/4 · Medium 6/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
+Fifteen are built: **Easy 4/4 · Medium 7/10 · Hard 4/7**, against a bar of 2 medium + 1 hard.
 
-## 3.1 The fourteen, in brief
+## 3.1 The fifteen, in brief
 
 Two to four lines each; the full section for every one is in
 [`docs/implementation.md`](./docs/implementation.md).
@@ -287,6 +287,13 @@ Two to four lines each; the full section for every one is in
 
 **Medium**
 
+- **Multi-model support** — a sidebar picker over **four** models from **three** providers plus an
+  open weight, changing the *answering* model only; the injection classifier and the embeddings are
+  fixed, so a switch cannot weaken the gate and cannot make the index unsearchable. Switching keeps
+  the conversation, because the checkpointer is keyed on the thread and not on the model.
+  The cost knobs price one model, so a conversation answered on another reports its tokens and
+  **no dollar figure**. No per-model quality claim: every published number ran on the default.
+  → [3.5](./docs/implementation.md#35-multi-model-support)
 - **Prompt-injection protection** — four layers, each catching what the one before it cannot, and
   each measured at the layer: **20/20** attacks stopped by the *expected* layer, **28/28** benign
   questions allowed, **22/22** answer verdicts correct, **5/5** planted payloads retrieved and
@@ -342,8 +349,8 @@ Two to four lines each; the full section for every one is in
 ## 3.2 All 21, with status
 
 All 21 optional tasks. The numbers are this repo's local convention (see
-[Part 3](./docs/implementation.md#part-3--optional-tasks-implemented)); the names are what identifies each row. **14
-complete — Easy 4/4, Medium 6/10, Hard 4/7**, against a bar of 2 medium + 1 hard.
+[Part 3](./docs/implementation.md#part-3--optional-tasks-implemented)); the names are what identifies each row. **15
+complete — Easy 4/4, Medium 7/10, Hard 4/7**, against a bar of 2 medium + 1 hard.
 
 | # | task | status | where / why |
 |---|---|---|---|
@@ -353,7 +360,7 @@ complete — Easy 4/4, Medium 6/10, Hard 4/7**, against a bar of 2 medium + 1 ha
 | 3 | Source citations | ✅ complete | [3.3](./docs/implementation.md#33-source-citations) |
 | 4 | Interactive help / guide | ✅ complete — panel and buttons ship; the `/help` **command** is open | [3.4](./docs/implementation.md#34-interactive-help--guide) |
 | **Medium** | | | |
-| 5 | Multi-model support | ✕ not built | Tier-2, behind the gate, and it carries an open question that must be answered first: the injection classifier and the tool-calling prompts are tuned per model, so a picker needs a per-model check that swapping does not silently break tool selection |
+| 5 | Multi-model support | ✅ complete — answering model only; **no per-model quality claim** | [3.5](./docs/implementation.md#35-multi-model-support) |
 | 6 | Real-time data updates to the knowledge base | ✕ not built | Tier-2, with an open question: whether a live ingest stays idempotent *and* holds the ADR-0007 section gate without racing the cached retriever and the agent's state |
 | 7 | Prompt-injection protection | ✅ complete | [3.7](./docs/implementation.md#37-prompt-injection-protection) |
 | 8 | User authentication and personalisation | ✕ not built | Tier-2 tail. It is also what real rate limiting needs — a bound keyed server-side on something the client does not choose — so the gap is stated in [3.13](./docs/implementation.md#313-rate-limiting--api-key-management) rather than implied |
@@ -372,13 +379,16 @@ complete — Easy 4/4, Medium 6/10, Hard 4/7**, against a bar of 2 medium + 1 ha
 | 20 | Implement your tools as MCP servers | ✕ not built | Tier-2, with the sharpest open question of the four: whether this is a genuine protocol *port* or a second copy of the finance logic behind a second interface. It must reuse one implementation, and that is a design decision rather than a build |
 | 21 | RAGAs evaluation | ✅ complete | [3.21](./docs/implementation.md#321-ragas-evaluation) |
 
-**Why the unbuilt seven are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
+**Why the unbuilt six are unbuilt, in one sentence.** ADR-0001 splits scope into a review-facing
 Tier-1 and a skill-stretch Tier-2 with a hard gate between them, and ADR-0010 orders Tier-2 by
 GenAI/RAG skill signal rather than by the assignment's difficulty tags. Everything above is
-Tier-1 plus the five tail items that turned out to be affordable — four of them under an hour
-each — because Tier-1 had already built their substrate. The seven remaining are either generic
-web-app work (17, 18), the Tier-2 tail (8), or carry a recorded open question that has to be
-answered before the work starts (5, 6, 12, 20) —
+Tier-1, plus the five tail items that turned out to be affordable — four of them under an hour
+each — because Tier-1 had already built their substrate, plus **multi-model (5)**, whose open
+question turned out to be answerable by *scoping* it: the injection classifier is not selectable,
+so no gate claim depends on which model answers, and the tool-calling half is bounded rather than
+measured — which is why no per-model quality number is claimed anywhere. The six remaining are
+either generic web-app work (17, 18), the Tier-2 tail (8), or carry a recorded open question that
+has to be answered before the work starts (6, 12, 20) —
 and the cut-if-undefendable rule says an item nobody can explain is worth less than an item that
 does not exist. **Deployment plus a live URL is Tier-2 #1 and also unbuilt**; it is not on this
 list because it is not one of the 21, but it is the highest-value remaining item, since reach

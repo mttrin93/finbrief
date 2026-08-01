@@ -15,7 +15,10 @@ import json
 import logging
 import os
 import socket
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import fakes
 import pytest
@@ -530,22 +533,45 @@ def agent_builds(monkeypatch):
     handed to the next — and a test asserting "the same agent survived" would pass on a stale
     object from a previous test.
 
-    Yields the list of agents built, so a test can assert the cache built exactly one.
+    Yields one `Build` per construction, so a test can assert the cache built exactly one —
+    and, since T14 (#15), *which model* each construction was for. The keyword arguments are
+    recorded because the model the app picked is only visible here: `build_agent` is handed a
+    constructed chat model, so the slug is an argument to this call and appears nowhere in the
+    object it returns.
     """
     import streamlit as st
 
     from finbrief.agent import agent as agent_module
 
     st.cache_resource.clear()
-    built: list[object] = []
+    built: list[Build] = []
 
     def fake_build_agent(**kwargs):
-        built.append(object())
-        return built[-1]
+        built.append(Build(agent=object(), kwargs=kwargs))
+        return built[-1].agent
 
     monkeypatch.setattr(agent_module, "build_agent", fake_build_agent)
     yield built
     st.cache_resource.clear()
+
+
+@dataclass(frozen=True, slots=True)
+class Build:
+    """One `build_agent` call the app made: what it returned, and what it was asked for."""
+
+    agent: object
+    kwargs: Mapping[str, Any]
+
+    @property
+    def model(self) -> str | None:
+        """The slug of the chat model this agent was built with, if it was built with one.
+
+        `None` rather than a configured default when the app passed no model at all — the
+        distinction the mutation-detecting test in `test_app_state.py` turns on, since dropping
+        the picker's argument is precisely what makes every build modelless.
+        """
+        model = self.kwargs.get("model")
+        return None if model is None else getattr(model, "model_name", None) or str(model)
 
 
 @pytest.fixture(autouse=True)

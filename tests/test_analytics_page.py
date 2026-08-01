@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from finbrief.config import Settings
 from finbrief.observability.logging_setup import configure_logging, log_event, turn
 from finbrief.observability.spend import UNMETERED_CLASSIFIER_NOTE
 
@@ -295,6 +296,13 @@ def a_screening(logger, **fields):
     log_event(logger, "input_gate", **{**defaults, **fields})
 
 
+#: The model the page's `configured_prices()` will name, read from `Settings` rather than typed:
+#: the `page` fixture sets no `FINBRIEF_CHAT_MODEL`, so this is the default it resolves to, and
+#: a literal here would silently stop matching the day that default changes (T14, #15).
+PRICED_MODEL = Settings.from_env({"OPENROUTER_API_KEY": "test-key"}).chat_model
+OTHER_MODEL = "anthropic/claude-3.5-haiku"
+
+
 def a_turn(logger, **fields):
     defaults = {
         "thread_id": "abc",
@@ -309,6 +317,9 @@ def a_turn(logger, **fields):
         "answer_chars": 800,
         "latency_ms": 4200,
         "calls": 1,
+        # The priced model by default, so every test written before T14 (#15) still describes a
+        # priceable log. The tests about the pricing rule name their own model.
+        "model": PRICED_MODEL,
         "input_tokens": 1200,
         "input_tokens_calls": 1,
         "output_tokens": 340,
@@ -694,6 +705,101 @@ def test_a_priced_spend_shows_the_cost(page, seeded, monkeypatch):
     assert "**Cost (estimate)**" in text(page)
 
 
+def test_a_log_answered_on_another_model_shows_tokens_and_withholds_the_cost(
+    page, seeded, monkeypatch
+):
+    """T14's pricing rule at the surface (#15) — prices configured, and still no figure.
+
+    The distinguishing case: with a rate card set *and* another model in the log, the old page
+    would have multiplied one model's tokens by another's rate and printed a dollar figure that
+    looked exactly like a right one. The tokens are measured and stay on screen; the figure does
+    not.
+    """
+    monkeypatch.setenv("FINBRIEF_INPUT_COST_PER_MTOK", "1.0")
+    monkeypatch.setenv("FINBRIEF_OUTPUT_COST_PER_MTOK", "2.0")
+    logger, _ = seeded
+    a_turn(logger, model=OTHER_MODEL)
+
+    page.run()
+
+    body = text(page)
+    assert "**Cost (estimate)**" not in body, "no figure at a rate that is not this model's"
+    assert f"the configured prices are for `{PRICED_MODEL}`" in body
+    assert "1,200" in body, "and the tokens are still reported — they were really spent"
+    # Not the unpriced advice: telling this reader to set the two variables they have already
+    # set would send them to the wrong knob, which is the distinction `render_cost` orders for.
+    assert "FINBRIEF_INPUT_COST_PER_MTOK" not in body
+
+
+def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, seeded):
+    # The panel the picker makes necessary: two models in one sink, and a single p50 over both
+    # describes neither. Asserted through the typed `dataframe` accessor, whose count is checked
+    # — `app.get(...)` on an element type `AppTest` has no wrapper for returns `[]` rather than
+    # raising, and would be a vacuous assertion (CLAUDE.md).
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=9000)
+
+    page.run()
+
+    tables = [frame.value for frame in page.dataframe]
+    (split,) = [frame for frame in tables if "Model" in frame.columns]
+    assert list(split["Model"]) == [PRICED_MODEL, OTHER_MODEL] or list(split["Model"]) == [
+        OTHER_MODEL,
+        PRICED_MODEL,
+    ], "one row per model"
+    assert set(split.columns) == {"Model", "Turns", "Input", "Output", "Turn latency"}
+    assert len(split) == 2
+    # The planner caveat, which is what stops the rows summing to less than the totals above
+    # from reading as an arithmetic bug.
+    assert "sum to less than the totals above" in text(page)
+
+
+def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
+    # Most of an established sink is turns written before the field existed. They get a row, and
+    # the row says what it is — folding them into the configured model would move real tokens
+    # onto a model nothing recorded.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+    log_event(logger, "agent_turn", calls=1, input_tokens=500, latency_ms=1000)
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    assert "not recorded" in list(split["Model"])
+    assert "not a model, and not the configured one either" in text(page)
+
+
+def test_a_single_model_log_says_so_instead_of_drawing_a_one_row_comparison(page, seeded):
+    # A one-row table is not a comparison, and it implies the other models answered nothing
+    # rather than that they never ran. The figures are already above; the label is the addition.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+
+    page.run()
+
+    body = text(page)
+    assert f"Every answered turn in this log ran on `{PRICED_MODEL}`" in body
+    assert not [f for f in page.dataframe if "Model" in f.value.columns], "no table for one row"
+
+
+def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(page, seeded):
+    # `observability/tokens.py`'s rule at the newest surface: a provider that reported no usage
+    # did not make free calls, so the cell reads as an absence and never as `0`.
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL)
+    log_event(logger, "agent_turn", model=OTHER_MODEL, searches=1, latency_ms=7000)
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    unmetered = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert unmetered["Input"] == "not reported"
+    assert unmetered["Output"] == "not reported"
+    assert "0" not in {unmetered["Input"], unmetered["Output"]}
+    assert "p50 `7,000` ms" in unmetered["Turn latency"], "latency measured; tokens were not"
+
+
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
     logger, _ = seeded
     a_session(logger)
@@ -947,9 +1053,13 @@ def test_the_derived_home_key_list_is_the_one_home_actually_uses():
         "messages",
         "sink_offset",
         "questions_asked",
-        # And the two reached by subscript through a module constant.
+        # And the three reached by subscript through a module constant. `chat_model` joined them
+        # in T14 (#15) — the model picker's widget key, which is the "UI toggles (model,
+        # strategy)" slot ADR-0008 reserves. That this equality had to be edited is the parser
+        # working: a new key `Home.py` owns is a new key this page must not write.
         "question",
         "pending_question",
+        "chat_model",
     }
 
 

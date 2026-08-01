@@ -404,6 +404,164 @@ def test_a_turn_is_logged_with_what_it_searched_and_grounded(tmp_path, filings_s
     assert turn.fields["latency_ms"] >= 0
 
 
+# --------------------------------------------------------------------------------------
+# Which model answered (T14, #15)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_turn_records_the_model_it_was_asked_to_answer_on(tmp_path, filings_store, caplog):
+    # The picker's whole record. Without it the spend panel and the analytics page attribute
+    # every turn's tokens to whatever `chat_model` happens to be configured, which is wrong for
+    # three of the four models a reader can pick — and wrong invisibly, since the tokens
+    # themselves are real.
+    #
+    # A model id is configuration, not user content, so it sits inside `logging_setup`'s rules
+    # with no exception: it names a product, not a person or a question.
+    agent, _ = an_agent(tmp_path, filings_store, [AIMessage("Answered without searching.")])
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer(
+            TESLA_QUESTION,
+            thread_id="t-1",
+            agent=agent,
+            model="anthropic/claude-3.5-haiku",
+        )
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["model"] == "anthropic/claude-3.5-haiku"
+
+
+def test_a_caller_that_names_no_model_logs_an_absence_and_not_a_default(
+    tmp_path, filings_store, caplog
+):
+    """`None`, never `settings.chat_model` — the rule `tokens.py` states and this repo keeps
+    breaking.
+
+    Filling in the configured model here would be a *fabricated measurement*: `answer()` is
+    handed a built agent and cannot see which model is inside it, so the configured value would
+    be a guess that reads exactly like a reading. The evaluation harness drives
+    `rag.answer_question` rather than this path, but any future caller that omits the argument
+    should show up on the analytics page as unattributed rather than as a fifth vote for the
+    default.
+    """
+    agent, _ = an_agent(tmp_path, filings_store, [AIMessage("Answered without searching.")])
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer(TESLA_QUESTION, thread_id="t-1", agent=agent)
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["model"] is None
+
+
+def test_the_provider_s_own_word_for_what_answered_is_recorded_beside_the_request(
+    tmp_path, filings_store, caplog
+):
+    """Two fields, because they can disagree and the disagreement is the interesting part.
+
+    OpenRouter fronts many upstreams and routes by availability, so the model that answered is
+    not guaranteed to be the model asked for. `model` is what the picker requested and is the
+    key everything aggregates on; `model_reported` is what the reply said, so a routing surprise
+    is visible instead of silent. Conflating them into one field would mean either losing the
+    request or reporting a guess as a reading.
+    """
+    reply = AIMessage(
+        "Answered without searching.",
+        response_metadata={"model_name": "openai/gpt-4o-mini-2024-07-18"},
+    )
+    agent, _ = an_agent(tmp_path, filings_store, [reply])
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer(TESLA_QUESTION, thread_id="t-1", agent=agent, model="openai/gpt-4o-mini")
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["model"] == "openai/gpt-4o-mini"
+    assert turn.fields["model_reported"] == "openai/gpt-4o-mini-2024-07-18"
+
+
+def test_a_provider_that_names_no_model_leaves_the_reported_field_absent(
+    tmp_path, filings_store, caplog
+):
+    # The common case for every hermetic test in this file, and the honest reading of it: a
+    # reply with no `response_metadata` reported nothing, which is not the same as having
+    # answered on the requested model.
+    agent, _ = an_agent(tmp_path, filings_store, [AIMessage("Answered without searching.")])
+
+    with caplog.at_level("INFO", logger="finbrief.agent.agent"):
+        answer(TESLA_QUESTION, thread_id="t-1", agent=agent, model="openai/gpt-4o-mini")
+
+    (turn,) = [r for r in caplog.records if getattr(r, "event", None) == "agent_turn"]
+    assert turn.fields["model"] == "openai/gpt-4o-mini"
+    assert turn.fields["model_reported"] is None
+
+
+def test_a_conversation_survives_a_model_switch_mid_thread(tmp_path, filings_store):
+    """T14's second hard requirement (#15), asserted rather than assumed.
+
+    The checkpointer is keyed on `thread_id` and not on the model, so switching models mid
+    conversation must keep the history. The arrangement is what a per-model
+    `@st.cache_resource` entry really produces: **two** agents, each with its own
+    `SqliteSaver` connection, both pointed at one file, one thread id between them.
+
+    What is asserted is that the second model was *shown* the first turn — `model.prompts`,
+    not just that the returned state accumulated. A follow-up whose prompt lacks the earlier
+    turn has no conversation to resolve "and its debt?" against, however well it answers.
+    """
+    checkpoint = str(tmp_path / "shared.sqlite")
+    first = ScriptedChatModel(messages=iter([AIMessage("Tesla flags supply-chain risk.")]))
+    second = ScriptedChatModel(messages=iter([AIMessage("Its debt is discussed in Item 7A.")]))
+    agents = [
+        build_agent(
+            model=model,
+            settings=SETTINGS,
+            store=filings_store,
+            checkpointer=build_checkpointer(path=checkpoint),
+            quote=a_quote_source,
+            headlines=a_headline_source,
+        )
+        for model in (first, second)
+    ]
+
+    answer(TESLA_QUESTION, thread_id="one-conversation", agent=agents[0], model="model-a")
+    follow_up = answer(
+        "And its debt?", thread_id="one-conversation", agent=agents[1], model="model-b"
+    )
+
+    assert follow_up.text == "Its debt is discussed in Item 7A."
+    shown = [message.text for message in second.prompts[-1]]
+    assert TESLA_QUESTION in shown, "the second model was shown the first question"
+    assert "Tesla flags supply-chain risk." in shown, "and the first model's answer"
+
+
+def test_two_models_on_two_threads_still_cannot_see_each_other(tmp_path, filings_store):
+    # The other side of the switch, and the property the picker must not weaken: sharing a
+    # checkpoint file across models is only safe because `thread_id` is what separates
+    # conversations. Two models on two threads is the two-session case from `test_app_state.py`
+    # at the seam where it is actually spent.
+    checkpoint = str(tmp_path / "shared.sqlite")
+    models = {
+        "a": ScriptedChatModel(messages=iter([AIMessage("Answer for the first reader.")])),
+        "b": ScriptedChatModel(messages=iter([AIMessage("Answer for the second reader.")])),
+    }
+    agents = {
+        key: build_agent(
+            model=model,
+            settings=SETTINGS,
+            store=filings_store,
+            checkpointer=build_checkpointer(path=checkpoint),
+            quote=a_quote_source,
+            headlines=a_headline_source,
+        )
+        for key, model in models.items()
+    }
+
+    answer("What are Tesla's risks?", thread_id="thread-a", agent=agents["a"], model="a")
+    answer("What are Ford's risks?", thread_id="thread-b", agent=agents["b"], model="b")
+
+    shown = [message.text for message in models["b"].prompts[-1]]
+    assert "What are Tesla's risks?" not in shown
+    assert "Answer for the first reader." not in shown
+
+
 def test_the_shipped_path_runs_the_configuration_it_is_configured_with(tmp_path, filings_store):
     # Until Phase 4 this asserted the opposite — a `BASELINE_STRATEGY` constant pinned to
     # `vector`, because `config.DEFAULT_STRATEGY` was the pre-registered `hybrid` (ADR-0005) and

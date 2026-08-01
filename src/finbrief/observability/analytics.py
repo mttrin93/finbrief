@@ -67,7 +67,15 @@ from finbrief.config import (
     TRANSLATION_LATENCY_BUDGET_MS,
 )
 from finbrief.observability.events import Event, EventLog, read_events
-from finbrief.observability.spend import TOKEN_EVENTS, TOKEN_FIELDS, Tokens, calls_behind
+from finbrief.observability.spend import (
+    COMPLETED_EVENT as ANSWERING_TURN_EVENT,
+)
+from finbrief.observability.spend import (
+    TOKEN_EVENTS,
+    TOKEN_FIELDS,
+    Tokens,
+    calls_behind,
+)
 
 #: The `max_sub_queries` at which the planner makes **no chat round at all** (ADR-0004 §6: the
 #: cap removes the `model.invoke`, it does not truncate its output).
@@ -895,10 +903,29 @@ class TokenTotals:
     floored: int
     input: Tokens
     output: Tokens
+    #: The models the **answering** lines in this population ran on, `None` among them for a
+    #: line that recorded none — `spend.Spend.models`' rule, bound to it by test (T14, #15).
+    #: `query_translation` lines are excluded there and here: the planner takes no model
+    #: override, so its line is always the configured model and carries no field to read.
+    models: frozenset[str | None] = frozenset()
 
     @property
     def measured(self) -> bool:
         return self.input.measured or self.output.measured
+
+    def all_answered_on(self, model: str) -> bool:
+        """Whether every answering line here ran on `model` — `spend.Spend`'s rule verbatim.
+
+        A **third** copy of a definition this repo has already bound twice across these two
+        modules (`calls_behind`, `partial`, `dollars`), and duplicated for the same reason: the
+        app may not import the harness and this page may not import the sidebar's scoping.
+
+        Bound by `test_the_priced_total_agrees_with_the_spend_meter_at_every_price`, which now
+        compares this verdict as well as the arithmetic behind it — two implementations agreeing
+        on a number and disagreeing on when to withhold it would still render two different
+        panels.
+        """
+        return self.models == frozenset({model})
 
     @property
     def calls_are_a_floor(self) -> bool:
@@ -922,13 +949,24 @@ class TokenTotals:
         )
 
     def dollars(
-        self, *, input_per_mtok: float | None, output_per_mtok: float | None
+        self,
+        *,
+        input_per_mtok: float | None,
+        output_per_mtok: float | None,
+        priced_model: str,
     ) -> float | None:
         """The cost at the configured prices, or `None` when it cannot be priced.
 
         Unpriced is the default and it is an absence, not `$0.00`: there is no rate card in
         this repo because every model is reached through OpenRouter's routing (ADR-0011 §3).
+
+        Since T14 (#15) there is a third way to be unpriceable, and on this page it is the
+        common one: the two knobs describe one model, this total spans a whole sink, and a
+        Haiku turn multiplied by the gpt-4o-mini rate is a wrong figure in the one panel about
+        spend. `spend.Spend.dollars` carries the full argument.
         """
+        if not self.all_answered_on(priced_model):
+            return None
         prices = (
             (self.input.total, input_per_mtok),
             (self.output.total, output_per_mtok),
@@ -967,6 +1005,12 @@ def token_totals(log: EventLog, events: Iterable[Event] | None = None) -> TokenT
         floored=floored,
         input=Tokens(totals["input_tokens"], reported["input_tokens"], calls),
         output=Tokens(totals["output_tokens"], reported["output_tokens"], calls),
+        # Answering lines only, out of whatever population the caller narrowed to — see
+        # `TokenTotals.models`. Selected by event name rather than by "has a `model` field", so
+        # a turn that recorded none is an absence in the set instead of vanishing from it.
+        models=frozenset(
+            event.field("model") for event in lines if event.event == ANSWERING_TURN_EVENT
+        ),
     )
 
 
@@ -1018,6 +1062,64 @@ def spend_over_time(log: EventLog) -> SpendOverTime:
                 )
             )
     return SpendOverTime(by_day=tuple(rows), totals=token_totals(log))
+
+
+# --- The per-model split (T14, #15) -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSlice:
+    """One answering model's turns: how many, what they spent, how long they took.
+
+    `model` is `None` for turns that recorded no model — lines written before T14, or by a
+    caller that named none. Those get a slice of their own rather than being folded into the
+    configured model's (which would move real tokens onto a model nothing recorded) or dropped
+    (which would make the slices quietly sum to less than the total beside them).
+
+    Tokens are this model's **answering** lines only. The planner's `query_translation` line
+    carries no model, belongs to no slice, and is therefore in the whole-log total and in none
+    of these — which is why the panel says so. Attributing it to the picked model would be
+    wrong twice over: the planner runs on the configured model whatever the picker says
+    (`retrieval/retrieve.py` builds it with no override), and a turn can be translated without
+    the two lines agreeing about anything else.
+    """
+
+    model: str | None
+    turns: int
+    tokens: TokenTotals
+    latency: Distribution
+
+    @property
+    def label(self) -> str:
+        """How to name this slice on screen. UI copy's own words stay in the page."""
+        return self.model if self.model is not None else "not recorded"
+
+
+def by_model(log: EventLog) -> tuple[ModelSlice, ...]:
+    """Answering turns grouped by the model that answered, busiest slice first.
+
+    Four selectable models writing into one append-only sink is what makes this worth a panel:
+    a single latency p50 over a log where two models answered describes neither of them, and a
+    token total over the same log cannot be priced at all (`TokenTotals.dollars`).
+
+    Ordered by turn count and then by label, so the ordering is total: a tie broken by
+    dictionary order would reshuffle the panel between reruns of the same file. `None` sorts
+    with the empty string, which puts the unattributed slice first among equals — visible
+    rather than buried, which is the point of giving it a slice.
+    """
+    buckets: dict[str | None, list[Event]] = {}
+    for event in log.of(ANSWERING_TURN_EVENT):
+        buckets.setdefault(event.field("model"), []).append(event)
+    slices = [
+        ModelSlice(
+            model=model,
+            turns=len(turns),
+            tokens=token_totals(log, turns),
+            latency=distribution(turns, "latency_ms", label="turn"),
+        )
+        for model, turns in buckets.items()
+    ]
+    return tuple(sorted(slices, key=lambda s: (-s.turns, s.model or "")))
 
 
 # --- Panels 2 and 3: retrieval latency and the planner's round --------------------------

@@ -27,6 +27,7 @@ from finbrief.observability.analytics import (
     SinkUnreadable,
     activity,
     agent_behaviour,
+    by_model,
     citations,
     distribution,
     gate_summary,
@@ -1080,6 +1081,12 @@ def test_a_planner_line_at_a_cap_of_zero_stands_behind_no_call(sink):
 
 THREAD = "6f1c9e2a-1111-2222-3333-444455556666"
 
+#: The model the two configured prices are for, and one that is not — T14's pricing rule (#15).
+#: Literals rather than reads of `Settings`, for `test_spend.py`'s reason: these tests are about
+#: the rule and not about which slug is this month's default.
+PRICED_MODEL = "openai/gpt-4o-mini"
+OTHER_MODEL = "anthropic/claude-3.5-haiku"
+
 #: One conversation shape per branch the two implementations could take, because a binding
 #: over a happy path is a binding any two implementations pass.
 #:
@@ -1093,27 +1100,61 @@ CONVERSATIONS = {
     "both-fields-complete": lambda logger: a_turn(
         logger,
         calls=1,
+        model=PRICED_MODEL,
         input_tokens=1200,
         input_tokens_calls=1,
         output_tokens=340,
         output_tokens_calls=1,
     ),
     "input-only": lambda logger: log_event(
-        logger, "agent_turn", calls=1, input_tokens=1200, input_tokens_calls=1
+        logger,
+        "agent_turn",
+        calls=1,
+        model=PRICED_MODEL,
+        input_tokens=1200,
+        input_tokens_calls=1,
     ),
     "output-only": lambda logger: log_event(
-        logger, "agent_turn", calls=1, output_tokens=340, output_tokens_calls=1
+        logger,
+        "agent_turn",
+        calls=1,
+        model=PRICED_MODEL,
+        output_tokens=340,
+        output_tokens_calls=1,
+    ),
+    # **Two shapes for T14's pricing rule** (#15), because the binding is only a binding over
+    # the branches both implementations can take. Without these every shape in this table is
+    # either priced or unmeasured, and the third absence — measured tokens on a model the
+    # configured prices are not for — never fires on either side.
+    "on-another-model": lambda logger: a_turn(
+        logger,
+        calls=1,
+        model=OTHER_MODEL,
+        input_tokens=1200,
+        input_tokens_calls=1,
+        output_tokens=340,
+        output_tokens_calls=1,
+    ),
+    "model-not-recorded": lambda logger: log_event(
+        logger,
+        "agent_turn",
+        calls=1,
+        input_tokens=1200,
+        input_tokens_calls=1,
+        output_tokens=340,
+        output_tokens_calls=1,
     ),
     "under-reported": lambda logger: a_turn(
         logger,
         calls=3,
+        model=PRICED_MODEL,
         input_tokens=1200,
         input_tokens_calls=2,
         output_tokens=340,
         output_tokens_calls=2,
     ),
     "nothing-metered": lambda logger: log_event(
-        logger, "agent_turn", searches=1, verbatim_searches=1
+        logger, "agent_turn", searches=1, verbatim_searches=1, model=PRICED_MODEL
     ),
     "planner-at-a-cap-of-zero": lambda logger: log_event(
         logger, "query_translation", max_sub_queries=0, sub_queries=0, latency_ms=1
@@ -1199,8 +1240,18 @@ def test_the_priced_total_agrees_with_the_spend_meter_at_every_price(
     mine = token_totals(one_conversation, its_token_lines(one_conversation))
 
     assert mine.dollars(
-        input_per_mtok=input_price, output_per_mtok=output_price
-    ) == theirs.dollars(input_per_mtok=input_price, output_per_mtok=output_price)
+        input_per_mtok=input_price,
+        output_per_mtok=output_price,
+        priced_model=PRICED_MODEL,
+    ) == theirs.dollars(
+        input_per_mtok=input_price,
+        output_per_mtok=output_price,
+        priced_model=PRICED_MODEL,
+    )
+    # T14's third absence is part of the binding too (#15): two implementations that agree on
+    # the arithmetic and disagree on *when to refuse it* would still print two different panels.
+    assert mine.all_answered_on(PRICED_MODEL) == theirs.all_answered_on(PRICED_MODEL)
+    assert mine.models == theirs.models
 
 
 def test_the_binding_spans_every_branch_of_partial(sink):
@@ -1229,6 +1280,122 @@ def test_the_binding_spans_every_branch_of_partial(sink):
     assert (False, False, False, False) in outcomes, (
         "nothing metered is unmeasured, not partial"
     )
+
+
+def test_the_binding_spans_both_sides_of_the_pricing_rule(sink):
+    """The same coverage argument for T14's third absence (#15).
+
+    `test_the_priced_total_agrees_with_the_spend_meter_at_every_price` compares two
+    implementations over `CONVERSATIONS`, and a comparison of two `None`s passes for the wrong
+    reason: if every shape in the table were unattributed, both would refuse to price everything
+    and the binding would prove nothing about the rule. So the table has to reach *both*
+    verdicts, and that is asserted here rather than claimed in a comment above the table.
+    """
+    logger, path = sink
+    verdicts = set()
+    for index, shape in enumerate(SHAPES):
+        with turn(f"{THREAD}:{index}"):
+            CONVERSATIONS[shape](logger)
+        log = events(path)
+        mine = token_totals(
+            log,
+            [event for event in its_token_lines(log) if event.turn_id == f"{THREAD}:{index}"],
+        )
+        verdicts.add(mine.all_answered_on(PRICED_MODEL))
+
+    assert verdicts == {True, False}, (
+        "the table must hold a conversation on the priced model and one that is not"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The per-model split (T14, #15)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_split_reports_one_slice_per_model_with_its_own_tokens_and_latency(sink):
+    # Four models answering into one append-only sink is the case a breakdown exists for: a
+    # single p50 over a log where Haiku answered half the turns describes neither model.
+    logger, path = sink
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000, calls=1, input_tokens=100)
+    a_turn(logger, model=PRICED_MODEL, latency_ms=3000, calls=1, input_tokens=300)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=8000, calls=1, input_tokens=900)
+
+    slices = by_model(events(path))
+
+    # Busiest first, and asserted as an ordered equality: the priced model answered two of the
+    # three turns. A set comparison here would pass on any order at all, which is the whole
+    # thing this assertion is for.
+    assert [s.model for s in slices] == [PRICED_MODEL, OTHER_MODEL]
+    priced = next(s for s in slices if s.model == PRICED_MODEL)
+    assert priced.turns == 2
+    assert priced.tokens.input.total == 400
+    assert priced.latency.p50 == 2000, "its own turns, not the log's"
+    other = next(s for s in slices if s.model == OTHER_MODEL)
+    assert other.turns == 1
+    assert other.tokens.input.total == 900
+    assert other.latency.p50 == 8000
+
+
+def test_a_model_that_metered_nothing_reports_an_absence_and_not_a_zero(sink):
+    # The rule this whole path is built on, at the newest surface: a turn whose provider
+    # reported no usage did not make free calls. A slice of zeros would be a claim.
+    logger, path = sink
+    a_turn(logger, model=OTHER_MODEL, latency_ms=5000)  # no token fields at all
+
+    (only,) = by_model(events(path))
+
+    assert only.model == OTHER_MODEL
+    assert only.turns == 1
+    assert not only.tokens.measured
+    assert only.tokens.input.total is None, "not 0"
+    assert only.latency.p50 == 5000, "latency was measured even though tokens were not"
+
+
+def test_turns_from_before_the_field_existed_are_their_own_slice_and_not_the_default(sink):
+    """An unattributed slice, because the alternative is worse.
+
+    Every `agent_turn` already in a developer's sink predates T14, and this page reads the whole
+    file. Folding those into the configured model's slice would move real tokens onto a model
+    nothing recorded; dropping them would make the slices silently sum to less than the total
+    above. They get a slice whose label is an absence, and the page names it.
+    """
+    logger, path = sink
+    a_turn(logger, latency_ms=2000, calls=1, input_tokens=500)  # no `model` field
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000, calls=1, input_tokens=100)
+
+    slices = by_model(events(path))
+
+    assert {s.model for s in slices} == {None, PRICED_MODEL}
+    unattributed = next(s for s in slices if s.model is None)
+    assert unattributed.tokens.input.total == 500
+
+
+def test_the_slices_account_for_every_answering_turn_in_the_log(sink):
+    """The arithmetic a reader will do by eye, asserted so it holds.
+
+    A breakdown whose parts do not sum to the whole is a breakdown that hides something, and the
+    thing it would hide here is a turn whose `model` field held an unexpected shape. Summed over
+    *turns* and over `agent_turn` tokens — deliberately not against `token_totals(log)`, which
+    also counts the planner's `query_translation` lines. Those carry no model and belong to no
+    slice, which is why the panel says so instead of letting the difference look like a bug.
+    """
+    logger, path = sink
+    a_turn(logger, model=PRICED_MODEL, latency_ms=1000, calls=1, input_tokens=100)
+    a_turn(logger, model=OTHER_MODEL, latency_ms=2000, calls=1, input_tokens=200)
+    a_turn(logger, latency_ms=3000, calls=1, input_tokens=300)
+    log_event(logger, "query_translation", max_sub_queries=3, sub_queries=1, input_tokens=999)
+
+    slices = by_model(log := events(path))
+
+    assert sum(s.turns for s in slices) == len(log.of("agent_turn")) == 3
+    assert sum(s.tokens.input.total or 0 for s in slices) == 600, "the planner is not here"
+
+
+def test_an_empty_log_yields_no_slices_rather_than_one_slice_of_nothing(sink):
+    logger, path = sink  # noqa: F841 — the point is that nothing is written to it
+
+    assert by_model(events(path)) == ()
 
 
 def test_the_analytics_module_keeps_no_second_definition_of_a_lines_call_count(sink):
