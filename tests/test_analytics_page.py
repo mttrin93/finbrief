@@ -317,6 +317,15 @@ OTHER_MODEL = "anthropic/claude-3.5-haiku"
 #: ones; the opening clause is what distinguishes "a reroute is on screen" from "it is not".
 REROUTE_CAPTION = "Served by a different model than requested"
 
+#: The per-model caption's second clause, likewise shared by the test requiring it and the test
+#: forbidding it (code review of #15).
+#:
+#: `render_by_model` appends it only when a `not recorded` row is on screen — "a caveat about a
+#: row nobody can see is noise" — and **only the presence half was checked**. Measured: pinning
+#: `unattributed = True` so the clause renders on every log left the whole page suite green,
+#: while `= False` was caught. The same asymmetry as `REROUTE_CAPTION` above, in the same panel.
+UNATTRIBUTED_CAVEAT = "`not recorded` is turns from before the model was logged"
+
 
 def a_turn(logger, **fields):
     defaults = {
@@ -782,6 +791,7 @@ def test_the_per_model_table_splits_tokens_and_latency_with_a_row_each(page, see
     assert slow["p50 ms"] == 9000 and slow["max ms"] == 9000
     # The planner caveat, which is what stops the rows totalling less than the figures above
     # from reading as an arithmetic bug. One caption now, not two stacked paragraphs.
+    assert UNATTRIBUTED_CAVEAT not in text(page), "no such row here, so no caveat about one"
     assert "rows total less than the figures above" in text(page)
 
 
@@ -798,7 +808,7 @@ def test_the_unattributed_row_is_named_as_not_a_model(page, seeded):
     (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
     assert "not recorded" in list(split["Model"])
     body = text(page)
-    assert "`not recorded` is turns from before the model was logged" in body
+    assert UNATTRIBUTED_CAVEAT in body
     # **The caption says what those turns ran on; the cell does not.** Relabelling the row as
     # the configured model was asked for and refused: `all_answered_on` reads this column, so it
     # would have turned a withheld cost into a printed one over turns nobody attributed —
@@ -882,6 +892,12 @@ def test_a_log_whose_only_metered_line_is_the_planners_does_not_blame_another_mo
     assert "recorded no model" in body
     assert "another model" not in body, "nothing answered, so nothing answered elsewhere"
     assert "**Cost (estimate)**" not in body, "and still no figure at the wrong rate"
+    # **And the per-model panel says the same thing in its own words rather than vanishing**
+    # (code review of #15). `by_model` returns nothing over a log with no answering line, and
+    # the early return that prints this was reachable, rendered on exactly this fixture, and
+    # asserted nowhere — deleting the call left the suite green. It is the five-states rule
+    # ADR-0011 makes this page carry: a panel with nothing to show says so.
+    assert "No answered turn attributed to a model in this log" in body
 
 
 def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(page, seeded):
@@ -902,6 +918,32 @@ def test_a_model_that_metered_nothing_shows_words_rather_than_zeros_in_its_row(p
     assert pd.isna(unmetered["Input"]) and pd.isna(unmetered["Output"])
     assert unmetered["Input"] != 0 and unmetered["Output"] != 0
     assert unmetered["p50 ms"] == 7000, "latency was measured even though tokens were not"
+
+
+def test_a_model_whose_turns_reported_no_latency_shows_a_blank_and_not_an_instant_turn(
+    page, seeded
+):
+    """The same rule on the other axis, which had no test at all (code review of #15).
+
+    `_ms` returns `None` rather than `0` for an unmeasured distribution, and its docstring says
+    why — "a zero would be a claim that a turn was instant". Nothing held it: mutating it to
+    `return 0 if value is None else round(value)` left the whole page suite green.
+
+    The state is reachable without contrivance. A turn that recorded its model and no
+    `latency_ms` gives a slice with tokens and an empty `Distribution`, so all three latency
+    cells would have printed `0` — three fabricated zeros in the panel this module's own
+    docstring forbids them in.
+    """
+    logger, _ = seeded
+    a_turn(logger, model=PRICED_MODEL, latency_ms=4000)
+    log_event(logger, "agent_turn", model=OTHER_MODEL, calls=1, input_tokens=500)  # no latency
+
+    page.run()
+
+    (split,) = [frame.value for frame in page.dataframe if "Model" in frame.value.columns]
+    untimed = split[split["Model"] == OTHER_MODEL].iloc[0]
+    assert all(pd.isna(untimed[column]) for column in ("p50 ms", "p90 ms", "max ms"))
+    assert untimed["Input"] == 500, "its tokens were measured even though its latency was not"
 
 
 def test_the_planner_panel_says_which_term_of_the_budget_it_is(page, seeded):
