@@ -254,7 +254,7 @@ one before it cannot, measured against a committed corpus.
 
 | concern | choice | why |
 |---|---|---|
-| agent | LangChain / LangGraph `create_agent` + a file-backed `SqliteSaver` checkpointer | the checkpointer is the agent's **memory of record** (ADR-0008) |
+| agent | LangChain `create_agent` on LangGraph + a file-backed `SqliteSaver` checkpointer | the checkpointer is the agent's **memory of record** (ADR-0008) |
 | model access | OpenRouter, OpenAI-compatible SDK, one chat constructor (`llm.py`) | one place a model is built, so ingest and query cannot drift |
 | chat model | `openai/gpt-4o-mini` | `config.py` default |
 | gate classifier | `openai/gpt-4o-mini`, its own field | the gate pays for one YES/NO per turn and a brief is worth more, so raising one must not raise the other |

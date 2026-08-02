@@ -7,11 +7,9 @@ not answer is refused rather than answered badly. The scope is 15 large-cap comp
 Items of each one's latest annual filing — [declared on screen, with its exact
 arithmetic](#23-the-grounding-scope-disclosure), rather than implied.
 
-**What it asks to be judged on.** Every quality number in these documents is requoted from a
-generated file under [`docs/verification/`](./docs/verification/) and bound to it by
-`tests/test_grounding_scope.py` — so a re-run that moves a figure fails the test suite instead of
-leaving prose asserting the old one. Several of those numbers came back saying *we cannot tell*,
-and that is what they say here.
+Every quality figure here is copied from a generated file under
+[`docs/verification/`](./docs/verification/), and a test asserts the two match — so a re-run that
+changes a number fails the suite rather than leaving stale prose behind.
 
 ![A question about Tesla's risk factors answered with numbered citations and a sources panel, then a
 follow-up naming no company that resolves anyway while the citations keep counting, then a full brief
@@ -21,7 +19,7 @@ with price and peer-ratio cards](./docs/assets/finbrief-demo.gif)
 
 | | |
 |---|---|
-| **Stack** | Python · Streamlit · LangChain / LangGraph `create_agent` · OpenRouter · ChromaDB + BM25 · Guardrails AI |
+| **Stack** | Python · Streamlit · LangChain `create_agent` on LangGraph · OpenRouter · ChromaDB + BM25 · Guardrails AI |
 | **Data** | SEC EDGAR via `edgartools` · Yahoo Finance (unofficially, via `yfinance`) · news RSS |
 | **Evidence** | five generated files under [`docs/verification/`](./docs/verification/) — never hand-authored |
 | **Design record** | eleven ADRs under [`docs/adr/`](./docs/adr/) · plan in [`PLAN.md`](./PLAN.md) · spec in [`docs/spec/finbrief.md`](./docs/spec/finbrief.md) · glossary in [`CONTEXT.md`](./CONTEXT.md) |
@@ -74,9 +72,10 @@ peer clusters, and makes three promises it can be held to:
 - **Honest.** It states what it is *not* grounded in, refuses personalised advice with a
   disclaimer, and shows a stale figure's age rather than a fresh-looking guess.
 
-The Universe serves triple duty (`PLAN.md` §1): the scope of the knowledge base, the cast of the
-demo, and the peer pool for ratio comparison — which is what lets peer averaging add **zero new
-API surface** (ADR-0009).
+The same 15 companies define the knowledge base, the demo cast, and the peer pool. Peers are
+always Universe members, so a ratio comparison can only request tickers the app already reaches —
+the **fetch surface never grows** (ADR-0009), though on a cold cache those peer quotes are still
+real calls.
 
 ## 1.2 Quickstart
 
@@ -130,7 +129,7 @@ on a first take: **warm the quote cache** (a cold stall can hold the cache lock 
                     └───────────────┬───────────────────────────┘
                                     │
                     ┌───────────────▼───────────────────────────┐
-                    │  Agent — LangGraph create_agent           │
+                    │  Agent — LangChain create_agent           │
                     │  SqliteSaver checkpointer = memory        │
                     │  citation register at before_model        │
                     └──┬──────────┬──────────┬──────────┬───────┘
@@ -157,8 +156,10 @@ on a first take: **warm the quote cache** (a cold stall can hold the cache lock 
      │ → chunks + provenance hdr  │        │ observability/ log_event │
      └────────────────────────────┘        └─────────────────────────┘
 
-     evaluation/ (ADR-0002) calls retrieve() and rag.answer_question DIRECTLY —
-     no agent, no Streamlit. That is the seam the headline numbers measure.
+     The evaluation harness calls retrieve() and rag.answer_question
+     directly — no agent, no Streamlit. So the headline numbers measure the
+     retrieval chain, not the full path a user's question takes. The agent's
+     tool-selection layer is measured separately.
 ```
 
 **Two entry points into the same retrieval code, on purpose.** `rag.answer_question` is the
@@ -237,11 +238,12 @@ fine-tune: an analyst persona, financial vocabulary, and a refusal policy that l
 X?"* through the front door and refuses it at layer 4 with a disclaimer, because an advice request
 is not an injection. → [`implementation.md`: Domain specialisation](./docs/implementation.md#24-domain-specialisation)
 
-**Technical implementation** — LangGraph `create_agent` over OpenRouter with a `SqliteSaver`
-checkpointer, every knob in `config.py`, error handling in three tiers (API retry with a stale
-banner · retrieval fallback · refusals as UX), input validation against the Universe whitelist, and
-a hermetic test suite of **1,507 tests** whose no-network contract is enforced at the socket layer,
-all four DNS resolvers, `curl_cffi` and `uvloop` rather than asserted.
+**Technical implementation** — LangChain `create_agent` over OpenRouter with a LangGraph
+`SqliteSaver` checkpointer, every knob in `config.py`, error handling in three tiers (API retry
+with a stale banner · retrieval fallback · refusals as UX), input validation against the
+Universe whitelist, and a hermetic test suite of **1,507 tests** whose no-network contract is
+enforced at the socket layer, all four DNS resolvers, `curl_cffi` and `uvloop` rather than
+asserted.
 → [`implementation.md`: Technical implementation](./docs/implementation.md#25-technical-implementation)
 
 **User interface** — a Streamlit chat page: sources panel rendering retrieved text verbatim through
