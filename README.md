@@ -155,17 +155,12 @@ on a first take: **warm the quote cache** (a cold stall can hold the cache lock 
      │ EDGAR → sections → gate    │        ┌───────────┴─────────────┐
      │ → chunks + provenance hdr  │        │ observability/ log_event │
      └────────────────────────────┘        └─────────────────────────┘
-
-     The evaluation harness calls retrieve() and rag.answer_question
-     directly — no agent, no Streamlit. So the headline numbers measure the
-     retrieval chain, not the full path a user's question takes. The agent's
-     tool-selection layer is measured separately.
 ```
 
-**Two entry points into the same retrieval code, on purpose.** `rag.answer_question` is the
-deterministic `question → contexts → answer` chain the evaluation harness drives, and
-`search_filings` is the same `retrieve()` wrapped as a tool for the agent loop. One code path,
-measured and shipped, which is what stops an eval rig from diverging from the product.
+The evaluation harness calls `retrieve()` and `rag.answer_question` directly — no agent, no
+Streamlit — so the headline numbers measure the retrieval chain, not the full path a question
+takes. Both entry points reach the same `retrieve()`, so the evaluation can't drift from what
+ships; the agent's tool-selection layer is measured separately.
 
 ## 2.2 The validity gap, stated rather than assumed
 
