@@ -224,6 +224,24 @@ def sidebar_captions(app) -> str:
     return " ".join(caption.value for caption in app.sidebar.caption)
 
 
+def page_captions(app) -> str:
+    """Every caption on the page, joined — for the notes that render under an answer.
+
+    Read as text rather than by element type on purpose: the marker note was an `st.warning`,
+    and `assert not app.warning` passes on a page rendering that note as a caption just as it
+    does on a page rendering no note at all. A negative check about this note therefore names
+    the sentence (CLAUDE.md — prefer a check that exercises the thing over one that describes
+    it), and the positive ones read the same string.
+    """
+    return " ".join(caption.value for caption in app.caption)
+
+
+#: The lead-in of `render_marker_note`, which is what a negative assertion about it can name.
+#: Not the whole sentence: the tail is the numbers and spans, which is what the positive tests
+#: assert.
+MARKER_NOTE = "markers in this answer do not resolve"
+
+
 def sources_panel(assistant):
     """The `Sources (n)` expander of one assistant turn, or `None` if it has none.
 
@@ -1888,7 +1906,7 @@ def test_an_unresolvable_marker_is_named_beside_the_answer(app, monkeypatch):
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
     assert not app.exception
-    assert "[6]" in " ".join(warning.value for warning in app.warning)
+    assert "[6]" in page_captions(app)
 
 
 def test_a_publisher_name_in_brackets_is_named_as_a_syntax_collision(app, monkeypatch):
@@ -1902,18 +1920,20 @@ def test_a_publisher_name_in_brackets_is_named_as_a_syntax_collision(app, monkey
 
     app.chat_input[0].set_value("What is Tesla's price and its risks?").run()
 
-    assert "Yahoo Finance" in " ".join(warning.value for warning in app.warning)
+    assert "Yahoo Finance" in page_captions(app)
 
 
 def test_an_answer_whose_markers_all_resolve_gets_no_note(app, monkeypatch):
-    # The common case, and the reason the note is worth having: a warning that fires on correct
+    # The common case, and the reason the note is worth having: a note that fires on correct
     # answers is one a reader learns to ignore.
     stub_answer(monkeypatch, a_turn())
     app.run()
 
     app.chat_input[0].set_value("What are Tesla's risk factors?").run()
 
-    assert not app.warning
+    # The sentence, not `not app.caption`: an answer always renders captions — the disclaimer at
+    # least — so an element-type check here would be either vacuous or false.
+    assert MARKER_NOTE not in page_captions(app)
 
 
 # --------------------------------------------------------------------------------------
@@ -3046,4 +3066,4 @@ def test_a_follow_up_may_cite_a_source_an_earlier_turn_retrieved(app, monkeypatc
     app.chat_input[0].set_value("Say more about the first one.").run()
 
     assert not app.exception
-    assert not app.warning
+    assert MARKER_NOTE not in page_captions(app), "[1] resolves against the earlier turn"

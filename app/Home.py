@@ -1384,8 +1384,11 @@ def render_marker_note(report: MarkerReport) -> None:
     resolvable. A caption merging them would leave the reader unsure which of their `[n]`s to
     distrust.
 
-    A warning rather than a caption, unlike `render_context_reuse_note`: context reuse is the
-    correct path, and this is the answer telling the reader to check something they cannot.
+    **A caption and not the `st.warning` this was**, like `render_context_reuse_note` beside it:
+    this is a report about the answer's citations, and a yellow box under an answer reads as a
+    fault in the *answer* rather than as a note on what a reader can and cannot check. The same
+    demotion as the token panel's floor note, for the same reason. The icon moves inline because
+    `st.caption` takes no `icon=`.
     """
     if report.clean:
         return
@@ -1407,9 +1410,10 @@ def render_marker_note(report: MarkerReport) -> None:
             f"{spans} — square brackets are reserved for numbered filing excerpts, so this "
             f"is a publisher's name where a citation should be"
         )
-    st.warning(
-        "Some markers in this answer do not resolve: " + "; ".join(problems) + ".",
-        icon=":material/link_off:",
+    st.caption(
+        ":material/link_off: Some markers in this answer do not resolve: "
+        + "; ".join(problems)
+        + "."
     )
 
 
