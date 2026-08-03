@@ -176,17 +176,23 @@ is real, and ADR-0003 commits to stating it rather than assuming it away:
 
 Three mechanisms keep the gap small and, where they cannot, measured:
 
-- **The tool passes the question through unchanged.** `search_filings` pre-processes nothing on
-  our side, and a test pins that half — the half we control.
-- **The agent is *asked* to pass the user's question verbatim**, with exactly one permitted edit
-  (resolving a pronoun, because the engine is stateless and *"its debt"* names no company). That
-  is a prompt, and nothing in the code enforces it. The enforcing alternative — overwriting the
-  model's argument — was rejected, because the one edit that must be permitted is
-  indistinguishable from the rewrite that must not be.
-- **So the divergence is logged and reported**: **100% divergence, 8 of 8 searches**, all of them
-  *first* searches in their thread, which cannot be reference resolutions — so none of them is
-  the one rewrite the description permits. That is a finding rather than a criterion this project
-  claims to have met, and it is not something to tune the prompt against
+- **The tool passes its argument through unchanged.** `search_filings` pre-processes nothing on
+  our side — whatever string it receives goes straight to `retrieve()`, and a test pins that.
+  This is the half we control.
+- **The other half is the model's choice of that argument.** The tool's description asks it to
+  send the user's question verbatim, with exactly one permitted edit: resolving a pronoun,
+  because the engine is stateless and *"its debt"* names no company. That description is a
+  prompt, and nothing in the code enforces it. The enforcing alternative — overwriting whatever
+  the model sent with the user's raw question — was rejected, because from the code's side the
+  edit that must be permitted and the rewrite that must not be look identical: in both, the
+  argument simply differs.
+- **So the divergence is measured instead.** Each probe runs in a fresh conversation, so eight
+  cases produced eight searches — and all eight sent a query different from the question as
+  typed. Because each was the first search in its conversation, none could have been the
+  permitted edit: with no earlier turn, there is no pronoun to resolve. This is reported as
+  something the project learned, not a target it claims to have hit, and not a number to improve
+  by rewording the prompt — nothing enforces the rule, so a better score would only mean the
+  wording suited this model that day
   ([findings.md §4](./docs/findings.md#4-prompt-rules-are-instruments-not-enforcement)).
 
 One consequence worth being explicit about: a multi-hop question is decomposed *inside*
