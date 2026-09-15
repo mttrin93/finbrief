@@ -1,5 +1,7 @@
 # FinBrief — a domain-specialised RAG assistant for equity research
 
+[![CI](https://github.com/mttrin93/finbrief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mttrin93/finbrief/actions/workflows/ci.yml)
+
 **Ask about a company's 10-K and get an answer you can check.** Every claim carries an inline
 `[n]` resolving to the chunk it came from, linked to that filing on EDGAR; price, peer ratios and
 headlines come from tools, because a 10-K has no prices in it; and a question the assistant should
